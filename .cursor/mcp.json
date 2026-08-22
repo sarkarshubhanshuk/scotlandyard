@@ -2,6 +2,12 @@
   "mcpServers": {
     "notion": {
       "url": "https://mcp.notion.com/mcp"
+    },
+    "ScotlandYardGameMaster": {
+      "command": "C:/Users/hp/OneDrive/Documents/Projects/Scotland Yard/backend/venv/Scripts/python.exe",
+      "args": [
+        "C:/Users/hp/OneDrive/Documents/Projects/Scotland Yard/backend/game_master.py"
+      ]
     }
   }
 }
