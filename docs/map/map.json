@@ -1,0 +1,2128 @@
+{
+  "nodes": [
+    {
+      "id": 1,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 8, "type": "taxi" },
+        { "destination": 9, "type": "taxi" },
+        { "destination": 46, "type": "bus" },
+        { "destination": 58, "type": "bus" },
+        { "destination": 46, "type": "metro" }
+      ]
+    },
+    {
+      "id": 2,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 10, "type": "taxi" },
+        { "destination": 20, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 3,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 4, "type": "taxi" },
+        { "destination": 11, "type": "taxi" },
+        { "destination": 12, "type": "taxi" },
+        { "destination": 23, "type": "bus" },
+        { "destination": 22, "type": "bus" }
+      ]
+    },
+    {
+      "id": 4,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 3, "type": "taxi" },
+        { "destination": 13, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 5,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 15, "type": "taxi" },
+        { "destination": 16, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 6,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 7, "type": "taxi" },
+        { "destination": 29, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 7,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+		{ "destination": 6, "type": "taxi" },
+        { "destination": 17, "type": "taxi" },
+        { "destination": 42, "type": "bus" }
+      ]
+    },
+    {
+      "id": 8,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 1, "type": "taxi" },
+        { "destination": 18, "type": "taxi" },
+        { "destination": 19, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 9,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 1, "type": "taxi" },
+        { "destination": 19, "type": "taxi" },
+        { "destination": 20, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 10,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 2, "type": "taxi" },
+        { "destination": 11, "type": "taxi" },
+        { "destination": 21, "type": "taxi" },
+        { "destination": 34, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 11,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 3, "type": "taxi" },
+        { "destination": 10, "type": "taxi" },
+        { "destination": 22, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 12,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 3, "type": "taxi" },
+        { "destination": 23, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 13,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 4, "type": "taxi" },
+        { "destination": 14, "type": "taxi" },
+        { "destination": 23, "type": "taxi" },
+        { "destination": 24, "type": "taxi" },
+        { "destination": 14, "type": "bus" },
+        { "destination": 23, "type": "bus" },
+        { "destination": 52, "type": "bus" },
+        { "destination": 46, "type": "metro" },
+        { "destination": 67, "type": "metro" },
+        { "destination": 89, "type": "metro" }
+      ]
+    },
+    {
+      "id": 14,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 13, "type": "taxi" },
+        { "destination": 15, "type": "taxi" },
+        { "destination": 25, "type": "taxi" },
+        { "destination": 13, "type": "bus" },
+        { "destination": 15, "type": "bus" }
+      ]
+    },
+    {
+      "id": 15,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 5, "type": "taxi" },
+        { "destination": 14, "type": "taxi" },
+        { "destination": 16, "type": "taxi" },
+        { "destination": 26, "type": "taxi" },
+        { "destination": 14, "type": "bus" },
+        { "destination": 29, "type": "bus" },
+        { "destination": 41, "type": "bus" }
+      ]
+    },
+    {
+      "id": 16,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 5, "type": "taxi" },
+        { "destination": 15, "type": "taxi" },
+        { "destination": 28, "type": "taxi" },
+        { "destination": 29, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 17,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 7, "type": "taxi" },
+        { "destination": 30, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 18,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 8, "type": "taxi" },
+        { "destination": 31, "type": "taxi" },
+        { "destination": 43, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 19,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 8, "type": "taxi" },
+        { "destination": 9, "type": "taxi" },
+        { "destination": 32, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 20,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 2, "type": "taxi" },
+        { "destination": 9, "type": "taxi" },
+        { "destination": 33, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 21,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 10, "type": "taxi" },
+        { "destination": 33, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 22,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 11, "type": "taxi" },
+        { "destination": 23, "type": "taxi" },
+        { "destination": 34, "type": "taxi" },
+        { "destination": 35, "type": "taxi" },
+        { "destination": 3, "type": "bus" },
+        { "destination": 23, "type": "bus" },
+        { "destination": 34, "type": "bus" },
+        { "destination": 65, "type": "bus" }
+      ]
+    },
+    {
+      "id": 23,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 12, "type": "taxi" },
+        { "destination": 13, "type": "taxi" },
+        { "destination": 22, "type": "taxi" },
+        { "destination": 37, "type": "taxi" },
+        { "destination": 3, "type": "bus" },
+        { "destination": 13, "type": "bus" },
+        { "destination": 22, "type": "bus" },
+        { "destination": 67, "type": "bus" }
+      ]
+    },
+    {
+      "id": 24,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 13, "type": "taxi" },
+        { "destination": 37, "type": "taxi" },
+        { "destination": 38, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 25,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 14, "type": "taxi" },
+        { "destination": 38, "type": "taxi" },
+        { "destination": 39, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 26,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 15, "type": "taxi" },
+        { "destination": 27, "type": "taxi" },
+        { "destination": 39, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 27,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 26, "type": "taxi" },
+        { "destination": 28, "type": "taxi" },
+        { "destination": 40, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 28,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 16, "type": "taxi" },
+        { "destination": 27, "type": "taxi" },
+        { "destination": 41, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 29,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 6, "type": "taxi" },
+        { "destination": 16, "type": "taxi" },
+        { "destination": 41, "type": "taxi" },
+        { "destination": 42, "type": "taxi" },
+        { "destination": 15, "type": "bus" },
+        { "destination": 41, "type": "bus" },
+        { "destination": 42, "type": "bus" },
+        { "destination": 55, "type": "bus" }
+      ]
+    },
+    {
+      "id": 30,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 17, "type": "taxi" },
+        { "destination": 42, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 31,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 18, "type": "taxi" },
+        { "destination": 43, "type": "taxi" },
+        { "destination": 44, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 32,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 19, "type": "taxi" },
+        { "destination": 33, "type": "taxi" },
+        { "destination": 44, "type": "taxi" },
+        { "destination": 45, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 33,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 20, "type": "taxi" },
+        { "destination": 21, "type": "taxi" },
+        { "destination": 32, "type": "taxi" },
+        { "destination": 46, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 34,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 10, "type": "taxi" },
+        { "destination": 22, "type": "taxi" },
+        { "destination": 47, "type": "taxi" },
+        { "destination": 48, "type": "taxi" },
+        { "destination": 22, "type": "bus" },
+        { "destination": 46, "type": "bus" },
+        { "destination": 63, "type": "bus" }
+      ]
+    },
+    {
+      "id": 35,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 22, "type": "taxi" },
+        { "destination": 36, "type": "taxi" },
+        { "destination": 48, "type": "taxi" },
+        { "destination": 65, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 36,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 35, "type": "taxi" },
+        { "destination": 37, "type": "taxi" },
+        { "destination": 49, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 37,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 23, "type": "taxi" },
+        { "destination": 24, "type": "taxi" },
+        { "destination": 36, "type": "taxi" },
+        { "destination": 50, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 38,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 24, "type": "taxi" },
+        { "destination": 25, "type": "taxi" },
+        { "destination": 50, "type": "taxi" },
+        { "destination": 51, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 39,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 25, "type": "taxi" },
+        { "destination": 26, "type": "taxi" },
+        { "destination": 51, "type": "taxi" },
+        { "destination": 52, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 40,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 27, "type": "taxi" },
+        { "destination": 41, "type": "taxi" },
+        { "destination": 52, "type": "taxi" },
+        { "destination": 53, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 41,
+      "allowed_transport": ["taxi","bus"],
+      "connections": [
+        { "destination": 28, "type": "taxi" },
+        { "destination": 29, "type": "taxi" },
+        { "destination": 40, "type": "taxi" },
+        { "destination": 54, "type": "taxi" },
+        { "destination": 15, "type": "bus" },
+        { "destination": 29, "type": "bus" },
+        { "destination": 52, "type": "bus" },
+        { "destination": 87, "type": "bus" }
+      ]
+    },
+    {
+      "id": 42,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 29, "type": "taxi" },
+        { "destination": 30, "type": "taxi" },
+        { "destination": 56, "type": "taxi" },
+        { "destination": 72, "type": "taxi" },
+        { "destination": 7, "type": "bus" },
+        { "destination": 29, "type": "bus" },
+        { "destination": 72, "type": "bus" }
+      ]
+    },
+    {
+      "id": 43,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 18, "type": "taxi" },
+        { "destination": 31, "type": "taxi" },
+        { "destination": 57, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 44,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 31, "type": "taxi" },
+        { "destination": 32, "type": "taxi" },
+        { "destination": 58, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 45,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 32, "type": "taxi" },
+        { "destination": 46, "type": "taxi" },
+        { "destination": 58, "type": "taxi" },
+        { "destination": 59, "type": "taxi" },
+        { "destination": 60, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 46,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 33, "type": "taxi" },
+        { "destination": 45, "type": "taxi" },
+        { "destination": 47, "type": "taxi" },
+        { "destination": 61, "type": "taxi" },
+        { "destination": 1, "type": "bus" },
+        { "destination": 34, "type": "bus" },
+        { "destination": 58, "type": "bus" },
+        { "destination": 78, "type": "bus" },
+        { "destination": 1, "type": "metro" },
+        { "destination": 13, "type": "metro" },
+        { "destination": 74, "type": "metro" },
+        { "destination": 79, "type": "metro" }
+      ]
+    },
+    {
+      "id": 47,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 34, "type": "taxi" },
+        { "destination": 46, "type": "taxi" },
+        { "destination": 62, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 48,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 34, "type": "taxi" },
+        { "destination": 35, "type": "taxi" },
+        { "destination": 62, "type": "taxi" },
+        { "destination": 63, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 49,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 36, "type": "taxi" },
+        { "destination": 50, "type": "taxi" },
+        { "destination": 66, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 50,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 37, "type": "taxi" },
+        { "destination": 38, "type": "taxi" },
+        { "destination": 49, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 51,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 38, "type": "taxi" },
+        { "destination": 39, "type": "taxi" },
+        { "destination": 52, "type": "taxi" },
+        { "destination": 67, "type": "taxi" },
+        { "destination": 68, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 52,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 39, "type": "taxi" },
+        { "destination": 40, "type": "taxi" },
+        { "destination": 51, "type": "taxi" },
+        { "destination": 69, "type": "taxi" },
+        { "destination": 13, "type": "bus" },
+        { "destination": 67, "type": "bus" },
+        { "destination": 86, "type": "bus" }
+      ]
+    },
+    {
+      "id": 53,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 40, "type": "taxi" },
+        { "destination": 54, "type": "taxi" },
+        { "destination": 69, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 54,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 41, "type": "taxi" },
+        { "destination": 53, "type": "taxi" },
+        { "destination": 55, "type": "taxi" },
+        { "destination": 70, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 55,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 54, "type": "taxi" },
+        { "destination": 71, "type": "taxi" },
+        { "destination": 29, "type": "bus" },
+        { "destination": 89, "type": "bus" }
+      ]
+    },
+    {
+      "id": 56,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 42, "type": "taxi" },
+        { "destination": 91, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 57,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 43, "type": "taxi" },
+        { "destination": 58, "type": "taxi" },
+        { "destination": 73, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 58,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 44, "type": "taxi" },
+        { "destination": 45, "type": "taxi" },
+        { "destination": 57, "type": "taxi" },
+        { "destination": 59, "type": "taxi" },
+        { "destination": 74, "type": "taxi" },
+        { "destination": 75, "type": "taxi" },
+        { "destination": 1, "type": "bus" },
+        { "destination": 46, "type": "bus" },
+        { "destination": 74, "type": "bus" },
+        { "destination": 77, "type": "bus" }
+      ]
+    },
+    {
+      "id": 59,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 45, "type": "taxi" },
+        { "destination": 58, "type": "taxi" },
+        { "destination": 75, "type": "taxi" },
+        { "destination": 76, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 60,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 45, "type": "taxi" },
+        { "destination": 61, "type": "taxi" },
+        { "destination": 76, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 61,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 46, "type": "taxi" },
+        { "destination": 60, "type": "taxi" },
+        { "destination": 62, "type": "taxi" },
+        { "destination": 76, "type": "taxi" },
+        { "destination": 78, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 62,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 47, "type": "taxi" },
+        { "destination": 48, "type": "taxi" },
+        { "destination": 61, "type": "taxi" },
+        { "destination": 79, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 63,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 48, "type": "taxi" },
+        { "destination": 64, "type": "taxi" },
+        { "destination": 79, "type": "taxi" },
+        { "destination": 80, "type": "taxi" },
+        { "destination": 34, "type": "bus" },
+        { "destination": 65, "type": "bus" },
+        { "destination": 79, "type": "bus" },
+        { "destination": 100, "type": "bus" }
+      ]
+    },
+    {
+      "id": 64,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 63, "type": "taxi" },
+        { "destination": 65, "type": "taxi" },
+        { "destination": 81, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 65,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 35, "type": "taxi" },
+        { "destination": 64, "type": "taxi" },
+        { "destination": 66, "type": "taxi" },
+        { "destination": 82, "type": "taxi" },
+        { "destination": 22, "type": "bus" },
+        { "destination": 63, "type": "bus" },
+        { "destination": 67, "type": "bus" },
+        { "destination": 82, "type": "bus" }
+      ]
+    },
+    {
+      "id": 66,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 49, "type": "taxi" },
+        { "destination": 65, "type": "taxi" },
+        { "destination": 67, "type": "taxi" },
+        { "destination": 82, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 67,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 51, "type": "taxi" },
+        { "destination": 66, "type": "taxi" },
+        { "destination": 68, "type": "taxi" },
+        { "destination": 84, "type": "taxi" },
+        { "destination": 23, "type": "bus" },
+        { "destination": 52, "type": "bus" },
+        { "destination": 65, "type": "bus" },
+        { "destination": 82, "type": "bus" },
+        { "destination": 102, "type": "bus" },
+        { "destination": 13, "type": "metro" },
+        { "destination": 79, "type": "metro" },
+        { "destination": 89, "type": "metro" },
+        { "destination": 111, "type": "metro" }
+      ]
+    },
+    {
+      "id": 68,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 51, "type": "taxi" },
+        { "destination": 67, "type": "taxi" },
+        { "destination": 69, "type": "taxi" },
+        { "destination": 85, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 69,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 52, "type": "taxi" },
+        { "destination": 53, "type": "taxi" },
+        { "destination": 68, "type": "taxi" },
+        { "destination": 86, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 70,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 54, "type": "taxi" },
+        { "destination": 71, "type": "taxi" },
+        { "destination": 87, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 71,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 55, "type": "taxi" },
+        { "destination": 70, "type": "taxi" },
+        { "destination": 72, "type": "taxi" },
+        { "destination": 89, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 72,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 42, "type": "taxi" },
+        { "destination": 71, "type": "taxi" },
+        { "destination": 90, "type": "taxi" },
+        { "destination": 91, "type": "taxi" },
+        { "destination": 42, "type": "bus" },
+        { "destination": 105, "type": "bus" },
+        { "destination": 107, "type": "bus" }
+      ]
+    },
+    {
+      "id": 73,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 57, "type": "taxi" },
+        { "destination": 74, "type": "taxi" },
+        { "destination": 92, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 74,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 58, "type": "taxi" },
+        { "destination": 73, "type": "taxi" },
+        { "destination": 75, "type": "taxi" },
+        { "destination": 92, "type": "taxi" },
+        { "destination": 58, "type": "bus" },
+        { "destination": 94, "type": "bus" },
+        { "destination": 46, "type": "metro" }
+      ]
+    },
+    {
+      "id": 75,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 58, "type": "taxi" },
+        { "destination": 59, "type": "taxi" },
+        { "destination": 74, "type": "taxi" },
+        { "destination": 94, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 76,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 59, "type": "taxi" },
+        { "destination": 60, "type": "taxi" },
+        { "destination": 61, "type": "taxi" },
+        { "destination": 77, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 77,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 76, "type": "taxi" },
+        { "destination": 78, "type": "taxi" },
+        { "destination": 95, "type": "taxi" },
+        { "destination": 96, "type": "taxi" },
+        { "destination": 58, "type": "bus" },
+        { "destination": 78, "type": "bus" },
+        { "destination": 94, "type": "bus" },
+        { "destination": 124, "type": "bus" }
+      ]
+    },
+    {
+      "id": 78,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 61, "type": "taxi" },
+        { "destination": 77, "type": "taxi" },
+        { "destination": 79, "type": "taxi" },
+        { "destination": 97, "type": "taxi" },
+        { "destination": 46, "type": "bus" },
+        { "destination": 77, "type": "bus" },
+        { "destination": 79, "type": "bus" }
+      ]
+    },
+    {
+      "id": 79,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 62, "type": "taxi" },
+        { "destination": 63, "type": "taxi" },
+        { "destination": 78, "type": "taxi" },
+        { "destination": 98, "type": "taxi" },
+        { "destination": 63, "type": "bus" },
+        { "destination": 78, "type": "bus" },
+        { "destination": 46, "type": "metro" },
+        { "destination": 67, "type": "metro" },
+        { "destination": 93, "type": "metro" },
+        { "destination": 111, "type": "metro" }
+      ]
+    },
+    {
+      "id": 80,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 63, "type": "taxi" },
+        { "destination": 99, "type": "taxi" },
+        { "destination": 100, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 81,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 64, "type": "taxi" },
+        { "destination": 82, "type": "taxi" },
+        { "destination": 100, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 82,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 65, "type": "taxi" },
+        { "destination": 66, "type": "taxi" },
+        { "destination": 81, "type": "taxi" },
+        { "destination": 101, "type": "taxi" },
+        { "destination": 65, "type": "bus" },
+        { "destination": 67, "type": "bus" },
+        { "destination": 100, "type": "bus" },
+        { "destination": 140, "type": "bus" }
+      ]
+    },
+    {
+      "id": 83,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 101, "type": "taxi" },
+        { "destination": 102, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 84,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 67, "type": "taxi" },
+        { "destination": 85, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 85,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 68, "type": "taxi" },
+        { "destination": 84, "type": "taxi" },
+        { "destination": 103, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 86,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 69, "type": "taxi" },
+        { "destination": 103, "type": "taxi" },
+        { "destination": 104, "type": "taxi" },
+        { "destination": 52, "type": "bus" },
+        { "destination": 87, "type": "bus" },
+        { "destination": 102, "type": "bus" },
+        { "destination": 116, "type": "bus" }
+      ]
+    },
+    {
+      "id": 87,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 70, "type": "taxi" },
+        { "destination": 88, "type": "taxi" },
+        { "destination": 86, "type": "bus" },
+        { "destination": 105, "type": "bus" }
+      ]
+    },
+    {
+      "id": 88,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 87, "type": "taxi" },
+        { "destination": 89, "type": "taxi" },
+        { "destination": 104, "type": "taxi" },
+        { "destination": 105, "type": "taxi" },
+        { "destination": 117, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 89,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 71, "type": "taxi" },
+        { "destination": 88, "type": "taxi" },
+        { "destination": 105, "type": "taxi" },
+        { "destination": 55, "type": "bus" },
+        { "destination": 105, "type": "bus" },
+        { "destination": 13, "type": "metro" },
+        { "destination": 67, "type": "metro" },
+        { "destination": 140, "type": "metro" },
+        { "destination": 159, "type": "metro" }
+      ]
+    },
+    {
+      "id": 90,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 72, "type": "taxi" },
+        { "destination": 91, "type": "taxi" },
+        { "destination": 105, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 91,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 56, "type": "taxi" },
+        { "destination": 72, "type": "taxi" },
+        { "destination": 90, "type": "taxi" },
+        { "destination": 105, "type": "taxi" },
+        { "destination": 107, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 92,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 73, "type": "taxi" },
+        { "destination": 74, "type": "taxi" },
+        { "destination": 93, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 93,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 92, "type": "taxi" },
+        { "destination": 94, "type": "taxi" },
+        { "destination": 94, "type": "bus" },
+        { "destination": 79, "type": "metro" }
+      ]
+    },
+    {
+      "id": 94,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 75, "type": "taxi" },
+        { "destination": 93, "type": "taxi" },
+        { "destination": 95, "type": "taxi" },
+        { "destination": 74, "type": "bus" },
+        { "destination": 77, "type": "bus" },
+        { "destination": 93, "type": "bus" }
+      ]
+    },
+    {
+      "id": 95,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 94, "type": "taxi" },
+        { "destination": 77, "type": "taxi" },
+        { "destination": 122, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 96,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 77, "type": "taxi" },
+        { "destination": 97, "type": "taxi" },
+        { "destination": 109, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 97,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 78, "type": "taxi" },
+        { "destination": 96, "type": "taxi" },
+        { "destination": 98, "type": "taxi" },
+        { "destination": 109, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 98,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 79, "type": "taxi" },
+        { "destination": 97, "type": "taxi" },
+        { "destination": 99, "type": "taxi" },
+        { "destination": 110, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 99,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 80, "type": "taxi" },
+        { "destination": 98, "type": "taxi" },
+        { "destination": 110, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 100,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 80, "type": "taxi" },
+        { "destination": 81, "type": "taxi" },
+        { "destination": 101, "type": "taxi" },
+        { "destination": 112, "type": "taxi" },
+        { "destination": 113, "type": "taxi" },
+        { "destination": 63, "type": "bus" },
+        { "destination": 82, "type": "bus" },
+        { "destination": 111, "type": "bus" }
+      ]
+    },
+    {
+      "id": 101,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 82, "type": "taxi" },
+        { "destination": 83, "type": "taxi" },
+        { "destination": 100, "type": "taxi" },
+        { "destination": 114, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 102,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 83, "type": "taxi" },
+        { "destination": 103, "type": "taxi" },
+        { "destination": 115, "type": "taxi" },
+        { "destination": 67, "type": "bus" },
+        { "destination": 86, "type": "bus" },
+        { "destination": 127, "type": "bus" }
+      ]
+    },
+    {
+      "id": 103,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 85, "type": "taxi" },
+        { "destination": 86, "type": "taxi" },
+        { "destination": 102, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 104,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 86, "type": "taxi" },
+        { "destination": 88, "type": "taxi" },
+        { "destination": 116, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 105,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 88, "type": "taxi" },
+        { "destination": 89, "type": "taxi" },
+        { "destination": 90, "type": "taxi" },
+        { "destination": 91, "type": "taxi" },
+        { "destination": 106, "type": "taxi" },
+        { "destination": 118, "type": "taxi" },
+        { "destination": 72, "type": "bus" },
+        { "destination": 87, "type": "bus" },
+        { "destination": 89, "type": "bus" },
+        { "destination": 118, "type": "bus" }
+      ]
+    },
+    {
+      "id": 106,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 105, "type": "taxi" },
+        { "destination": 107, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 107,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 91, "type": "taxi" },
+        { "destination": 106, "type": "taxi" },
+        { "destination": 119, "type": "taxi" },
+        { "destination": 72, "type": "bus" },
+        { "destination": 161, "type": "bus" }
+      ]
+    },
+    {
+      "id": 109,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 96, "type": "taxi" },
+        { "destination": 97, "type": "taxi" },
+        { "destination": 110, "type": "taxi" },
+        { "destination": 124, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 110,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 98, "type": "taxi" },
+        { "destination": 99, "type": "taxi" },
+        { "destination": 109, "type": "taxi" },
+        { "destination": 111, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 111,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 110, "type": "taxi" },
+        { "destination": 112, "type": "taxi" },
+        { "destination": 124, "type": "taxi" },
+        { "destination": 100, "type": "bus" },
+        { "destination": 124, "type": "bus" },
+        { "destination": 67, "type": "metro" },
+        { "destination": 79, "type": "metro" },
+        { "destination": 153, "type": "metro" },
+        { "destination": 163, "type": "metro" }
+      ]
+    },
+    {
+      "id": 112,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 100, "type": "taxi" },
+        { "destination": 111, "type": "taxi" },
+        { "destination": 125, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 113,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 100, "type": "taxi" },
+        { "destination": 114, "type": "taxi" },
+        { "destination": 125, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 114,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 101, "type": "taxi" },
+        { "destination": 113, "type": "taxi" },
+        { "destination": 115, "type": "taxi" },
+        { "destination": 126, "type": "taxi" },
+        { "destination": 131, "type": "taxi" },
+        { "destination": 132, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 115,
+      "allowed_transport": ["taxi", "boat"],
+      "connections": [
+        { "destination": 102, "type": "taxi" },
+        { "destination": 114, "type": "taxi" },
+        { "destination": 126, "type": "taxi" },
+        { "destination": 127, "type": "taxi" },
+        { "destination": 118, "type": "boat" },
+        { "destination": 157, "type": "boat" }
+      ]
+    },
+    {
+      "id": 116,
+      "allowed_transport": ["taxi","bus"],
+      "connections": [
+        { "destination": 104, "type": "taxi" },
+        { "destination": 117, "type": "taxi" },
+        { "destination": 127, "type": "taxi" },
+        { "destination": 128, "type": "taxi" },
+        { "destination": 86, "type": "bus" },
+        { "destination": 118, "type": "bus" },
+        { "destination": 127, "type": "bus" },
+        { "destination": 142, "type": "bus" }
+      ]
+    },
+    {
+      "id": 117,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 88, "type": "taxi" },
+        { "destination": 116, "type": "taxi" },
+        { "destination": 118, "type": "taxi" },
+        { "destination": 129, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 118,
+      "allowed_transport": ["taxi", "bus", "boat"],
+      "connections": [
+        { "destination": 105, "type": "taxi" },
+        { "destination": 117, "type": "taxi" },
+        { "destination": 119, "type": "taxi" },
+        { "destination": 105, "type": "bus" },
+        { "destination": 116, "type": "bus" },
+        { "destination": 135, "type": "bus" },
+        { "destination": 115, "type": "boat" }
+      ]
+    },
+    {
+      "id": 119,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 107, "type": "taxi" },
+        { "destination": 118, "type": "taxi" },
+        { "destination": 136, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 120,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 121, "type": "taxi" },
+        { "destination": 144, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 121,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 120, "type": "taxi" },
+        { "destination": 122, "type": "taxi" },
+        { "destination": 145, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 122,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 95, "type": "taxi" },
+        { "destination": 121, "type": "taxi" },
+        { "destination": 123, "type": "taxi" },
+        { "destination": 146, "type": "taxi" },
+        { "destination": 123, "type": "bus" },
+        { "destination": 144, "type": "bus" }
+      ]
+    },
+    {
+      "id": 123,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 122, "type": "taxi" },
+        { "destination": 124, "type": "taxi" },
+        { "destination": 137, "type": "taxi" },
+        { "destination": 148, "type": "taxi" },
+        { "destination": 149, "type": "taxi" },
+        { "destination": 122, "type": "bus" },
+        { "destination": 124, "type": "bus" },
+        { "destination": 144, "type": "bus" },
+        { "destination": 165, "type": "bus" }
+      ]
+    },
+    {
+      "id": 124,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 109, "type": "taxi" },
+        { "destination": 111, "type": "taxi" },
+        { "destination": 123, "type": "taxi" },
+        { "destination": 138, "type": "taxi" },
+        { "destination": 130, "type": "taxi" },
+        { "destination": 77, "type": "bus" },
+        { "destination": 111, "type": "bus" },
+        { "destination": 123, "type": "bus" },
+        { "destination": 153, "type": "bus" }
+      ]
+    },
+    {
+      "id": 125,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 112, "type": "taxi" },
+        { "destination": 113, "type": "taxi" },
+        { "destination": 131, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 126,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 115, "type": "taxi" },
+        { "destination": 114, "type": "taxi" },
+        { "destination": 140, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 127,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 115, "type": "taxi" },
+        { "destination": 116, "type": "taxi" },
+        { "destination": 133, "type": "taxi" },
+        { "destination": 134, "type": "taxi" },
+        { "destination": 102, "type": "bus" },
+        { "destination": 116, "type": "bus" },
+        { "destination": 133, "type": "bus" }
+      ]
+    },
+    {
+      "id": 128,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 116, "type": "taxi" },
+        { "destination": 129, "type": "taxi" },
+        { "destination": 134, "type": "taxi" },
+        { "destination": 142, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 129,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 117, "type": "taxi" },
+        { "destination": 128, "type": "taxi" },
+        { "destination": 135, "type": "taxi" },
+        { "destination": 142, "type": "taxi" },
+        { "destination": 143, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 130,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 124, "type": "taxi" },
+        { "destination": 131, "type": "taxi" },
+        { "destination": 139, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 131,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 114, "type": "taxi" },
+        { "destination": 125, "type": "taxi" },
+        { "destination": 130, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 132,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 114, "type": "taxi" },
+        { "destination": 140, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 133,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 127, "type": "taxi" },
+        { "destination": 140, "type": "taxi" },
+        { "destination": 141, "type": "taxi" },
+        { "destination": 127, "type": "bus" },
+        { "destination": 140, "type": "bus" },
+        { "destination": 157, "type": "bus" }
+      ]
+    },
+    {
+      "id": 134,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 127, "type": "taxi" },
+        { "destination": 128, "type": "taxi" },
+        { "destination": 142, "type": "taxi" },
+        { "destination": 141, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 135,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 129, "type": "taxi" },
+        { "destination": 136, "type": "taxi" },
+        { "destination": 143, "type": "taxi" },
+        { "destination": 160, "type": "taxi" },
+        { "destination": 118, "type": "bus" },
+        { "destination": 159, "type": "bus" },
+        { "destination": 161, "type": "bus" }
+      ]
+    },
+    {
+      "id": 136,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 119, "type": "taxi" },
+        { "destination": 135, "type": "taxi" },
+        { "destination": 162, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 137,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 123, "type": "taxi" },
+        { "destination": 147, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 138,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 124, "type": "taxi" },
+        { "destination": 150, "type": "taxi" },
+        { "destination": 152, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 139,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 130, "type": "taxi" },
+        { "destination": 140, "type": "taxi" },
+        { "destination": 153, "type": "taxi" },
+        { "destination": 154, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 140,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 126, "type": "taxi" },
+        { "destination": 132, "type": "taxi" },
+        { "destination": 133, "type": "taxi" },
+        { "destination": 139, "type": "taxi" },
+        { "destination": 154, "type": "taxi" },
+        { "destination": 156, "type": "taxi" },
+        { "destination": 82, "type": "bus" },
+        { "destination": 133, "type": "bus" },
+        { "destination": 156, "type": "bus" },
+        { "destination": 154, "type": "bus" },
+        { "destination": 89, "type": "metro" },
+        { "destination": 153, "type": "metro" },
+        { "destination": 159, "type": "metro" }
+      ]
+    },
+    {
+      "id": 141,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 133, "type": "taxi" },
+        { "destination": 134, "type": "taxi" },
+        { "destination": 142, "type": "taxi" },
+        { "destination": 158, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 142,
+      "allowed_transport": ["taxi","bus"],
+      "connections": [
+        { "destination": 128, "type": "taxi" },
+        { "destination": 129, "type": "taxi" },
+        { "destination": 134, "type": "taxi" },
+        { "destination": 141, "type": "taxi" },
+        { "destination": 143, "type": "taxi" },
+        { "destination": 158, "type": "taxi" },
+        { "destination": 159, "type": "taxi" },
+        { "destination": 116, "type": "bus" },
+        { "destination": 157, "type": "bus" },
+        { "destination": 159, "type": "bus" }
+      ]
+    },
+    {
+      "id": 143,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 129, "type": "taxi" },
+        { "destination": 135, "type": "taxi" },
+        { "destination": 142, "type": "taxi" },
+        { "destination": 159, "type": "taxi" },
+        { "destination": 160, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 144,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 120, "type": "taxi" },
+        { "destination": 145, "type": "taxi" },
+        { "destination": 177, "type": "taxi" },
+        { "destination": 122, "type": "bus" },
+        { "destination": 123, "type": "bus" },
+        { "destination": 163, "type": "bus" }
+      ]
+    },
+    {
+      "id": 145,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 121, "type": "taxi" },
+        { "destination": 144, "type": "taxi" },
+        { "destination": 146, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 146,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 122, "type": "taxi" },
+        { "destination": 145, "type": "taxi" },
+        { "destination": 147, "type": "taxi" },
+        { "destination": 163, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 147,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 137, "type": "taxi" },
+        { "destination": 146, "type": "taxi" },
+        { "destination": 164, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 148,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 123, "type": "taxi" },
+        { "destination": 149, "type": "taxi" },
+        { "destination": 164, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 149,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 123, "type": "taxi" },
+        { "destination": 148, "type": "taxi" },
+        { "destination": 150, "type": "taxi" },
+        { "destination": 165, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 150,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 138, "type": "taxi" },
+        { "destination": 149, "type": "taxi" },
+        { "destination": 151, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 151,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 165, "type": "taxi" },
+        { "destination": 150, "type": "taxi" },
+        { "destination": 152, "type": "taxi" },
+        { "destination": 166, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 152,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 138, "type": "taxi" },
+        { "destination": 151, "type": "taxi" },
+        { "destination": 153, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 153,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 139, "type": "taxi" },
+        { "destination": 152, "type": "taxi" },
+        { "destination": 154, "type": "taxi" },
+        { "destination": 166, "type": "taxi" },
+        { "destination": 167, "type": "taxi" },
+        { "destination": 124, "type": "bus" },
+        { "destination": 154, "type": "bus" },
+        { "destination": 180, "type": "bus" },
+        { "destination": 184, "type": "bus" },
+        { "destination": 111, "type": "metro" },
+        { "destination": 140, "type": "metro" },
+        { "destination": 163, "type": "metro" },
+        { "destination": 185, "type": "metro" }
+      ]
+    },
+    {
+      "id": 154,
+      "allowed_transport": ["taxi","bus"],
+      "connections": [
+        { "destination": 139, "type": "taxi" },
+        { "destination": 140, "type": "taxi" },
+        { "destination": 153, "type": "taxi" },
+        { "destination": 155, "type": "taxi" },
+        { "destination": 140, "type": "bus" },
+        { "destination": 153, "type": "bus" },
+        { "destination": 156, "type": "bus" }
+      ]
+    },
+    {
+      "id": 155,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 154, "type": "taxi" },
+        { "destination": 156, "type": "taxi" },
+        { "destination": 167, "type": "taxi" },
+        { "destination": 168, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 156,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 140, "type": "taxi" },
+        { "destination": 155, "type": "taxi" },
+        { "destination": 157, "type": "taxi" },
+        { "destination": 169, "type": "taxi" },
+        { "destination": 140, "type": "bus" },
+        { "destination": 154, "type": "bus" },
+        { "destination": 157, "type": "bus" },
+        { "destination": 184, "type": "bus" }
+      ]
+    },
+    {
+      "id": 157,
+      "allowed_transport": ["taxi", "bus", "boat"],
+      "connections": [
+        { "destination": 156, "type": "taxi" },
+        { "destination": 158, "type": "taxi" },
+        { "destination": 170, "type": "taxi" },
+        { "destination": 133, "type": "bus" },
+        { "destination": 142, "type": "bus" },
+        { "destination": 156, "type": "bus" },
+        { "destination": 185, "type": "bus" },
+        { "destination": 115, "type": "boat" },
+        { "destination": 194, "type": "boat" }
+      ]
+    },
+    {
+      "id": 158,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 141, "type": "taxi" },
+        { "destination": 142, "type": "taxi" },
+        { "destination": 157, "type": "taxi" },
+        { "destination": 171, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 159,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 142, "type": "taxi" },
+        { "destination": 143, "type": "taxi" },
+        { "destination": 160, "type": "taxi" },
+        { "destination": 172, "type": "taxi" },
+        { "destination": 188, "type": "taxi" },
+        { "destination": 135, "type": "bus" },
+        { "destination": 142, "type": "bus" },
+        { "destination": 161, "type": "bus" },
+        { "destination": 187, "type": "bus" },
+        { "destination": 199, "type": "bus" },
+        { "destination": 89, "type": "metro" },
+        { "destination": 140, "type": "metro" },
+        { "destination": 185, "type": "metro" }
+      ]
+    },
+    {
+      "id": 160,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 143, "type": "taxi" },
+        { "destination": 159, "type": "taxi" },
+        { "destination": 161, "type": "taxi" },
+        { "destination": 173, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 161,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 135, "type": "taxi" },
+        { "destination": 160, "type": "taxi" },
+        { "destination": 174, "type": "taxi" },
+        { "destination": 107, "type": "bus" },
+        { "destination": 135, "type": "bus" },
+        { "destination": 159, "type": "bus" },
+        { "destination": 199, "type": "bus" }
+      ]
+    },
+    {
+      "id": 162,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 136, "type": "taxi" },
+        { "destination": 175, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 163,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 146, "type": "taxi" },
+        { "destination": 164, "type": "taxi" },
+        { "destination": 177, "type": "taxi" },
+        { "destination": 144, "type": "bus" },
+        { "destination": 176, "type": "bus" },
+        { "destination": 191, "type": "bus" },
+        { "destination": 111, "type": "metro" },
+        { "destination": 153, "type": "metro" }
+      ]
+    },
+    {
+      "id": 164,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 147, "type": "taxi" },
+        { "destination": 148, "type": "taxi" },
+        { "destination": 163, "type": "taxi" },
+        { "destination": 178, "type": "taxi" },
+        { "destination": 179, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 165,
+      "allowed_transport": ["taxi","bus"],
+      "connections": [
+        { "destination": 149, "type": "taxi" },
+        { "destination": 151, "type": "taxi" },
+        { "destination": 179, "type": "taxi" },
+        { "destination": 180, "type": "taxi" },
+        { "destination": 123, "type": "bus" },
+        { "destination": 180, "type": "bus" },
+        { "destination": 191, "type": "bus" }
+      ]
+    },
+    {
+      "id": 166,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 151, "type": "taxi" },
+        { "destination": 153, "type": "taxi" },
+        { "destination": 181, "type": "taxi" },
+        { "destination": 183, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 167,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 153, "type": "taxi" },
+        { "destination": 155, "type": "taxi" },
+        { "destination": 168, "type": "taxi" },
+        { "destination": 183, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 168,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 155, "type": "taxi" },
+        { "destination": 167, "type": "taxi" },
+        { "destination": 184, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 169,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 156, "type": "taxi" },
+        { "destination": 184, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 170,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 157, "type": "taxi" },
+        { "destination": 171, "type": "taxi" },
+        { "destination": 185, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 171,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 158, "type": "taxi" },
+        { "destination": 170, "type": "taxi" },
+        { "destination": 172, "type": "taxi" },
+        { "destination": 186, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 172,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 159, "type": "taxi" },
+        { "destination": 171, "type": "taxi" },
+        { "destination": 187, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 173,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 160, "type": "taxi" },
+        { "destination": 174, "type": "taxi" },
+        { "destination": 188, "type": "taxi" },
+        { "destination": 200, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 174,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 161, "type": "taxi" },
+        { "destination": 173, "type": "taxi" },
+        { "destination": 175, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 175,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 162, "type": "taxi" },
+        { "destination": 174, "type": "taxi" },
+        { "destination": 200, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 176,
+      "allowed_transport": ["taxi","bus"],
+      "connections": [
+        { "destination": 177, "type": "taxi" },
+        { "destination": 189, "type": "taxi" },
+        { "destination": 163, "type": "bus" },
+        { "destination": 190, "type": "bus" }
+      ]
+    },
+    {
+      "id": 177,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 144, "type": "taxi" },
+        { "destination": 163, "type": "taxi" },
+        { "destination": 176, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 178,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 164, "type": "taxi" },
+        { "destination": 189, "type": "taxi" },
+        { "destination": 191, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 179,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 164, "type": "taxi" },
+        { "destination": 165, "type": "taxi" },
+        { "destination": 191, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 180,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 165, "type": "taxi" },
+        { "destination": 181, "type": "taxi" },
+        { "destination": 193, "type": "taxi" },
+        { "destination": 153, "type": "bus" },
+        { "destination": 165, "type": "bus" },
+        { "destination": 184, "type": "bus" },
+        { "destination": 190, "type": "bus" }
+      ]
+    },
+    {
+      "id": 181,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 166, "type": "taxi" },
+        { "destination": 180, "type": "taxi" },
+        { "destination": 182, "type": "taxi" },
+        { "destination": 193, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 182,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 181, "type": "taxi" },
+        { "destination": 183, "type": "taxi" },
+        { "destination": 195, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 183,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 166, "type": "taxi" },
+        { "destination": 167, "type": "taxi" },
+        { "destination": 182, "type": "taxi" },
+        { "destination": 184, "type": "taxi" },
+        { "destination": 196, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 184,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 168, "type": "taxi" },
+        { "destination": 169, "type": "taxi" },
+        { "destination": 183, "type": "taxi" },
+        { "destination": 185, "type": "taxi" },
+        { "destination": 196, "type": "taxi" },
+        { "destination": 197, "type": "taxi" },
+        { "destination": 153, "type": "bus" },
+        { "destination": 156, "type": "bus" },
+        { "destination": 185, "type": "bus" },
+        { "destination": 180, "type": "bus" }
+      ]
+    },
+    {
+      "id": 185,
+      "allowed_transport": ["taxi", "bus", "metro"],
+      "connections": [
+        { "destination": 170, "type": "taxi" },
+        { "destination": 184, "type": "taxi" },
+        { "destination": 186, "type": "taxi" },
+        { "destination": 157, "type": "bus" },
+        { "destination": 184, "type": "bus" },
+        { "destination": 187, "type": "bus" },
+        { "destination": 199, "type": "bus" },
+        { "destination": 153, "type": "metro" },
+        { "destination": 159, "type": "metro" }
+      ]
+    },
+    {
+      "id": 186,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 171, "type": "taxi" },
+        { "destination": 185, "type": "taxi" },
+        { "destination": 198, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 187,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 172, "type": "taxi" },
+        { "destination": 188, "type": "taxi" },
+        { "destination": 198, "type": "taxi" },
+        { "destination": 159, "type": "bus" },
+        { "destination": 185, "type": "bus" },
+        { "destination": 199, "type": "bus" }
+      ]
+    },
+    {
+      "id": 188,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 159, "type": "taxi" },
+        { "destination": 173, "type": "taxi" },
+        { "destination": 187, "type": "taxi" },
+        { "destination": 199, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 189,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 176, "type": "taxi" },
+        { "destination": 178, "type": "taxi" },
+        { "destination": 190, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 190,
+      "allowed_transport": ["taxi","bus"],
+      "connections": [
+        { "destination": 189, "type": "taxi" },
+        { "destination": 191, "type": "taxi" },
+        { "destination": 176, "type": "bus" },
+        { "destination": 180, "type": "bus" },
+        { "destination": 191, "type": "bus" }
+      ]
+    },
+    {
+      "id": 191,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 178, "type": "taxi" },
+        { "destination": 179, "type": "taxi" },
+        { "destination": 190, "type": "taxi" },
+        { "destination": 192, "type": "taxi" },
+        { "destination": 163, "type": "bus" },
+        { "destination": 165, "type": "bus" },
+        { "destination": 190, "type": "bus" }
+      ]
+    },
+    {
+      "id": 192,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 191, "type": "taxi" },
+        { "destination": 194, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 193,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 180, "type": "taxi" },
+        { "destination": 181, "type": "taxi" },
+        { "destination": 194, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 194,
+      "allowed_transport": ["taxi", "boat"],
+      "connections": [
+        { "destination": 192, "type": "taxi" },
+        { "destination": 193, "type": "taxi" },
+        { "destination": 195, "type": "taxi" },
+        { "destination": 157, "type": "boat" }
+      ]
+    },
+    {
+      "id": 195,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 182, "type": "taxi" },
+        { "destination": 194, "type": "taxi" },
+        { "destination": 197, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 196,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 183, "type": "taxi" },
+        { "destination": 184, "type": "taxi" },
+        { "destination": 197, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 197,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 184, "type": "taxi" },
+        { "destination": 195, "type": "taxi" },
+        { "destination": 196, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 198,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 186, "type": "taxi" },
+        { "destination": 187, "type": "taxi" }
+      ]
+    },
+    {
+      "id": 199,
+      "allowed_transport": ["taxi", "bus"],
+      "connections": [
+        { "destination": 188, "type": "taxi" },
+        { "destination": 200, "type": "taxi" },
+        { "destination": 159, "type": "bus" },
+        { "destination": 161, "type": "bus" },
+        { "destination": 185, "type": "bus" },
+        { "destination": 187, "type": "bus" }
+      ]
+    },
+    {
+      "id": 200,
+      "allowed_transport": ["taxi"],
+      "connections": [
+        { "destination": 173, "type": "taxi" },
+        { "destination": 175, "type": "taxi" },
+        { "destination": 199, "type": "taxi" }
+      ]
+    }
+  ]
+}
