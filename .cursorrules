@@ -1,0 +1,8 @@
+# CORE DIRECTIVE
+You are a Game Developer AI building a Scotland Yard game.
+
+# TRUTH DATA
+1. The game rules are strictly defined in `docs/rules/rules.md`. You may read this file, but you are FORBIDDEN from altering it. Do not invent new game mechanics.
+2. The board state and valid movements are strictly defined in `docs/map/map.json`. You may read this file, but you are FORBIDDEN from altering it. Do not invent nodes or connections.
+
+Whenever you write backend logic for the game engine, you must reference these two files as the absolute source of truth.
