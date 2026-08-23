@@ -31,12 +31,20 @@ class MrXState(TypedDict):
     black_tickets: int
     double_tickets: int
 
+class DetectiveStrategy(TypedDict):
+    """Stores a detective's global strategy (moves for everyone + rationale)"""
+    proposed_board_moves: Dict[str, int]
+    rationale: str
+
 class ScotlandYardState(TypedDict):
     """
     The master memory object passed through all LangGraph agent nodes.
     """
     # Game Progress Tracking
     round_number: int
+
+    # Tracks the 1-3 voting loops
+    debate_loop_count: int  
     
     # Mr. X Status & Travel Log
     mr_x: MrXState
@@ -48,8 +56,11 @@ class ScotlandYardState(TypedDict):
     # Using Annotated with operator.add appends new messages rather than replacing history
     messages: Annotated[List[BaseMessage], operator.add]
     
-    # Move Proposals submitted during individual turn analysis (e.g., {"detective_1": 45, "detective_2": 23})
-    proposed_moves: Annotated[Dict[str, int], update_dict]
+    # Each detective proposes moves for ALL detectives
+    proposed_strategies: Annotated[Dict[str, DetectiveStrategy], update_dict]
+
+    # Moves that have passed the 3-vote threshold
+    locked_moves: Annotated[Dict[str, int], update_dict]
     
     # Final Locked Moves agreed upon after debate consensus
     final_moves: Annotated[Dict[str, int], update_dict]
