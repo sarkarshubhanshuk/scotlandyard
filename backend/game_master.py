@@ -1,9 +1,10 @@
+import sys
 import json
 from pathlib import Path
-from mcp.server.mcpserver import MCPServer
+from fastmcp import FastMCP
 
 # Initialize the MCP Server
-mcp = MCPServer("ScotlandYardGameMaster")
+mcp = FastMCP("ScotlandYardGameMaster")
 
 # Resolve paths dynamically based on this file's location
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -73,5 +74,5 @@ def read_rules() -> str:
 
 if __name__ == "__main__":
     # Run the server using Standard I/O (required for MCP communication)
-    print(f"Starting Game Master MCP Server... Loaded {len(map_data)} nodes.")
-    mcp.run(transport="stdio")
+    print(f"Starting Game Master MCP Server... Loaded {len(map_data)} nodes.", file=sys.stderr)
+    mcp.run()
