@@ -1,6 +1,7 @@
 import sys
 import json
 from pathlib import Path
+from typing import List, Optional
 from fastmcp import FastMCP
 
 # Initialize the MCP Server
@@ -30,20 +31,32 @@ def get_node_info(node_id: int) -> dict:
     return {"error": f"Node {node_id} does not exist on the board."}
 
 @mcp.tool()
-def get_valid_moves(node_id: int, taxi_tickets: int, bus_tickets: int, metro_tickets: int, black_tickets: int = 0) -> list:
+def get_valid_moves(
+    node_id: int,
+    taxi_tickets: int,
+    bus_tickets: int,
+    metro_tickets: int,
+    black_tickets: int = 0,
+    occupied_nodes: Optional[List[int]] = None
+) -> list:
     """
     Calculates all legally available target nodes a player can move to from their current node,
-    based STRICTLY on the tickets they currently possess.
+    based STRICTLY on the tickets they currently possess. Destinations listed in occupied_nodes
+    (nodes currently held by another player) are excluded, per the board's node-occupancy rule.
     """
     node_info = get_node_info(node_id)
     if "error" in node_info:
         return [node_info]
 
+    occupied = set(occupied_nodes or [])
     valid_moves = []
     for connection in node_info["connections"]:
         req_type = connection["type"]
         target = connection["destination"]
-        
+
+        if target in occupied:
+            continue
+
         # Check if the player has the required ticket for this connection
         can_move = False
         if req_type == "taxi" and (taxi_tickets > 0 or black_tickets > 0):

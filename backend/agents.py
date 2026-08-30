@@ -51,53 +51,86 @@ async def propose_node(state: ScotlandYardState) -> dict:
     print(f"\n--- DEBATE LOOP {state.get('debate_loop_count', 0) + 1} / 3: STRATEGY PROPOSAL ---")
     llm, tools = await get_detective_llm()
     structured_llm = llm.with_structured_output(SingleStrategy)
-    
-    # Pre-fetch valid moves from the MCP Game Master for ALL detectives
-    # This completely eliminates LLM hallucination/teleportation
+
+    locked = state.get("locked_moves", {})
+    pending_detectives = [d for d in DETECTIVE_NAMES if d not in locked]
+
+    # Pre-fetch valid moves from the MCP Game Master for every still-undecided detective.
+    # occupied_nodes enforces the board's node-occupancy rule (no two detectives share a
+    # node) server-side, rather than relying on the LLM to honor a prompt instruction.
     valid_moves_tool = next((t for t in tools if t.name == "get_valid_moves"), None)
     legal_moves_context = {}
-    
+    legal_move_sets = {}
+    all_detective_nodes = {d["node_id"] for d in state["detectives"].values()}
+
     if valid_moves_tool:
-        for d_id, d_info in state["detectives"].items():
-            legal_moves_context[d_id] = await valid_moves_tool.ainvoke({
+        for d_id in pending_detectives:
+            d_info = state["detectives"][d_id]
+            occupied = list(all_detective_nodes - {d_info["node_id"]})
+            moves = await valid_moves_tool.ainvoke({
                 "node_id": d_info["node_id"],
                 "taxi_tickets": d_info["taxi_tickets"],
                 "bus_tickets": d_info["bus_tickets"],
-                "metro_tickets": d_info["metro_tickets"]
+                "metro_tickets": d_info["metro_tickets"],
+                "occupied_nodes": occupied
             })
+            legal_moves_context[d_id] = moves
+            legal_move_sets[d_id] = {m["target_node"] for m in moves if "target_node" in m}
 
     strategies = {}
     board_state = json.dumps(state["detectives"], indent=2)
-    
-    for det_id in DETECTIVE_NAMES:
+
+    # Detectives whose move already passed a vote don't need to keep proposing —
+    # their outcome is final, so skip the LLM call for them entirely.
+    for det_id in pending_detectives:
         prompt = f"""
         You are {det_id}.
         {get_psychology_prompt(state['round_number'], det_id)}
-        
+
         Board State: {board_state}
         Mr X Last Known: Node {state['mr_x']['last_known_node']}, History: {state['mr_x']['transport_history']}
-        
-        CRITICAL: Here are the ONLY legal target nodes each detective can reach this turn:
+
+        Already Locked Moves This Round (FINAL - do not propose a different destination for
+        these detectives, and do not send anyone else to these nodes): {json.dumps(locked, indent=2)}
+
+        CRITICAL: Here are the ONLY legal target nodes each still-undecided detective can reach
+        this turn (already excludes nodes currently occupied by other detectives):
         {json.dumps(legal_moves_context, indent=2)}
-        
-        Task: Propose a target node for ALL 5 detectives. YOU MUST ONLY SELECT FROM THE LEGAL MOVES PROVIDED ABOVE.
+
+        Task: Propose a target node for ALL 5 detectives. For any detective listed in "Already
+        Locked Moves", repeat their locked node exactly. For everyone else, YOU MUST ONLY SELECT
+        FROM THE LEGAL MOVES PROVIDED ABOVE.
         """
         try:
             strategy_obj = await structured_llm.ainvoke([SystemMessage(content=prompt)])
+            proposed_moves = {
+                "detective_1": strategy_obj.detective_1_move,
+                "detective_2": strategy_obj.detective_2_move,
+                "detective_3": strategy_obj.detective_3_move,
+                "detective_4": strategy_obj.detective_4_move,
+                "detective_5": strategy_obj.detective_5_move,
+            }
+
+            # Server-side enforcement: never trust the LLM's raw output for locked moves
+            # or move legality, since a small/local model can still ignore prompt instructions.
+            for target_id in DETECTIVE_NAMES:
+                if target_id in locked:
+                    proposed_moves[target_id] = locked[target_id]
+                elif proposed_moves[target_id] not in legal_move_sets.get(target_id, set()):
+                    fallback_node = state["detectives"][target_id]["node_id"]
+                    print(f"[VALIDATION] {det_id}'s proposal for {target_id} (Node "
+                          f"{proposed_moves[target_id]}) is illegal. Reverting {target_id} to "
+                          f"stay at Node {fallback_node}.")
+                    proposed_moves[target_id] = fallback_node
+
             strategies[det_id] = {
-                "proposed_board_moves": {
-                    "detective_1": strategy_obj.detective_1_move,
-                    "detective_2": strategy_obj.detective_2_move,
-                    "detective_3": strategy_obj.detective_3_move,
-                    "detective_4": strategy_obj.detective_4_move,
-                    "detective_5": strategy_obj.detective_5_move,
-                },
+                "proposed_board_moves": proposed_moves,
                 "rationale": strategy_obj.rationale
             }
             # Fulfilling your request to see the individual strategies BEFORE debate!
             print(f"\n[{det_id.upper()} PROPOSAL]: {strategy_obj.rationale}")
             print(f"Moves: {strategies[det_id]['proposed_board_moves']}")
-            
+
         except Exception as e:
             strategies[det_id] = {"proposed_board_moves": {}, "rationale": "Fallback due to parser error."}
 
@@ -138,12 +171,34 @@ async def debate_node(state: ScotlandYardState) -> dict:
 
 async def vote_node(state: ScotlandYardState) -> dict:
     print("\n--- VOTING PHASE ---")
-    llm, _ = await get_detective_llm()
+    llm, tools = await get_detective_llm()
     structured_llm = llm.with_structured_output(VotingBallot)
-    
+
+    current_locked = state.get("locked_moves", {})
+    pending_detectives = [d for d in DETECTIVE_NAMES if d not in current_locked]
+
+    # Recompute legal targets (with occupancy) for still-undecided detectives so we can
+    # discard any illegal vote before it reaches the tally, mirroring propose_node.
+    valid_moves_tool = next((t for t in tools if t.name == "get_valid_moves"), None)
+    legal_move_sets = {}
+    all_detective_nodes = {d["node_id"] for d in state["detectives"].values()}
+
+    if valid_moves_tool:
+        for d_id in pending_detectives:
+            d_info = state["detectives"][d_id]
+            occupied = list(all_detective_nodes - {d_info["node_id"]})
+            moves = await valid_moves_tool.ainvoke({
+                "node_id": d_info["node_id"],
+                "taxi_tickets": d_info["taxi_tickets"],
+                "bus_tickets": d_info["bus_tickets"],
+                "metro_tickets": d_info["metro_tickets"],
+                "occupied_nodes": occupied
+            })
+            legal_move_sets[d_id] = {m["target_node"] for m in moves if "target_node" in m}
+
     all_votes = []
     debate_transcript = state["messages"][-1].content if state["messages"] else ""
-    
+
     # 1. Collect Votes
     for det_id in DETECTIVE_NAMES:
         # Fetch the dynamic psychology context based on the round number
@@ -184,17 +239,23 @@ async def vote_node(state: ScotlandYardState) -> dict:
         v = ballot_record["votes"]
         print(f"{voter.upper()} voted for -> D1: {v['detective_1']}, D2: {v['detective_2']}, D3: {v['detective_3']}, D4: {v['detective_4']}, D5: {v['detective_5']}")
 
-    # 3. Tally Votes
+    # 3. Tally Votes (skip already-locked detectives and any vote for an illegal node -
+    # never trust the LLM's raw ballot output for legality)
     vote_counts = {det: defaultdict(int) for det in DETECTIVE_NAMES}
     for ballot_record in all_votes:
+        voter = ballot_record["voter"]
         for det_id, node in ballot_record["votes"].items():
+            if det_id in current_locked:
+                continue
+            if node not in legal_move_sets.get(det_id, set()):
+                print(f"[VALIDATION] {voter}'s vote for {det_id} (Node {node}) is illegal and was discarded.")
+                continue
             vote_counts[det_id][node] += 1
-            
+
     # 4. Determine Pass/Fail and Print Tally
     print("\n[FINAL TALLY & RESULTS]")
     newly_locked = {}
-    current_locked = state.get("locked_moves", {})
-    
+
     for det_id, counts in vote_counts.items():
         if det_id in current_locked:
             print(f"{det_id.upper()}: Already locked in a previous loop.")
