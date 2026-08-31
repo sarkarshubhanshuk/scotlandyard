@@ -41,6 +41,7 @@ and link it from the Table of Contents below.
 ## Table of Contents
 
 1. [Detective Move Decision Cycle](#1-detective-move-decision-cycle)
+2. [Round Resolution, Mr. X's Turn, and the API Layer](#2-round-resolution-mr-xs-turn-and-the-api-layer)
 
 ---
 
@@ -208,10 +209,148 @@ state and returns a fresh `initial_state` for the next round: `round_number` inc
 
 ### Known Limitations
 
-- `build_next_round_state` does not apply `final_moves` to detective positions or deduct
-  tickets from the spent transport type — that logic (a "resolve round" / "apply moves" step)
-  has not been built yet.
 - `vote_node` does not check whether two *different* detectives' tallies both reach majority
   for the same node in the same loop (each detective's tally is still computed independently).
   This is a cross-voter, cross-tally case — distinct from the within-one-ballot duplicate
-  check described below — and is worth revisiting alongside a proper "apply moves" step.
+  check described above — and is worth revisiting alongside a proper "apply moves" step (now
+  built — see §2 below — but this specific cross-tally gap was not part of that work).
+
+---
+
+## 2. Round Resolution, Mr. X's Turn, and the API Layer
+
+### Overview
+
+Everything §1 leaves unfinished: applying `final_moves` to the board, deducting/transferring
+tickets, detecting capture and the other win conditions, handling Mr. X's own (human-played)
+turn including double-moves and surfacing reveals, and a live server a browser frontend can
+actually talk to.
+
+### Trigger
+
+One full round = Mr. X's human-submitted turn (`backend/mrx_turn.py`), then the detective
+decision cycle (§1, `detective_graph`), then round resolution (`backend/round_resolver.py`).
+Orchestrated per-game by a `GameSession` (`backend/session.py`) and driven externally via the
+Starlette API (`backend/server.py`).
+
+### Flow
+
+**Game creation** (`session.create_game`)
+- Randomly draws 6 unique starting nodes from the rules' pool for Mr. X + the 5 detectives (or
+  accepts `seed_positions` for deterministic tests), assigns rules-mandated starting tickets,
+  and sets `round_number=1`. Games live in a plain in-memory `GAMES` dict — no persistence, no
+  TTL; a game exists only as long as the server process does, matching "a page refresh discards
+  the game."
+
+**Mr. X's turn** (`mrx_turn.submit_mr_x_move`)
+- `get_mr_x_legal_moves` computes Mr. X's real legal destinations (occupied nodes always
+  excluded) annotated with which ticket type(s) could pay for each — an empty result means Mr.
+  X truly cannot move this round, which is an immediate Mr. X loss under the rules (he can never
+  forfeit), checked proactively rather than discovered via a rejected submission.
+- A single request carries an entire move — one hop, or both hops of a double-move
+  (`{"hop1": {...}, "hop2": {...}}`) — and nothing commits unless the whole thing validates.
+  There is no cross-request "pending double-move" state; the human client decides both hops
+  itself before submitting.
+- Each hop names its own `ticket_type_spent` explicitly (never inferred) — unlike detectives,
+  Mr. X is a human who gets the real tactical choice of spending a matching ticket vs. a black
+  ticket (mandatory for `boat` connections). A double-move's second hop is validated against
+  tickets remaining **after** the first hop's deduction (a hand-built snapshot, not Mr. X's live
+  inventory), so spending the same scarce ticket type on both hops is correctly rejected.
+- On a surfacing round (3/8/13/18/24), a double-move reveals only the **intermediate** node
+  (`last_known_node`/`last_known_round`) — the final destination stays hidden, same as a
+  non-surfacing round. (Confirmed with the project owner: the rules' literal text describes this
+  case ambiguously, since surfacing is a per-round, not per-hop, property.)
+- On success, flips `session.status` to `"detective_loop_running"` — this is the signal the API
+  layer uses to know the round-stream endpoint is now live.
+
+**Detective loop + resolution** (`round_resolver.run_detective_loop`, `round_resolver.resolve_round`)
+- `run_detective_loop` drives `detective_graph.astream(state, stream_mode=["updates", "values"])`
+  — `"updates"` chunks identify which node just ran for event labeling, the last `"values"`
+  chunk becomes the new `session.state` directly, reusing `state.py`'s own reducers rather than
+  reimplementing them.
+- `resolve_round` applies `final_moves` to `detective_1..5` **sequentially, in fixed order**,
+  never trusting the graph's output for legality (re-derived via `game_master.compute_valid_moves`
+  — the same posture §1 already applies to every LLM response). When a target node is reachable
+  via more than one transport type (verified real case: map.json's node 1 ↔ node 46 via both bus
+  and metro), `pick_transport` deterministically prefers whichever type the detective holds the
+  most tickets of, tie-broken taxi > bus > metro — a server-side apply-time decision, not
+  something detectives ever choose themselves (see Design Rationale).
+- **Capture is checked after EVERY individual detective's move**, not once at the end — the
+  instant a detective's new node equals Mr. X's real `current_node`, the round stops and the
+  remaining detectives never move.
+- If no capture: checks whether Mr. X now has any legal move at all (detectives win if not),
+  then whether all 5 detectives are simultaneously trapped (Mr. X wins if so), then whether
+  `round_number == 24` was just completed (Mr. X wins). Otherwise calls `build_next_round_state`
+  (§1) unchanged and sets `status = "awaiting_mr_x_move"` for the next round.
+
+**API layer** (`backend/server.py`, `backend/serializers.py`)
+- `POST /games`, `GET /games/{id}`, `GET /games/{id}/mrx/legal-moves`,
+  `POST /games/{id}/mrx/move`, `GET /games/{id}/round/stream` (SSE via `sse_starlette`, chosen
+  over WebSocket since this is one-directional server→client data once opened).
+- `serializers.serialize_public_state` is the **single choke point** every route and streamed
+  event goes through to build an outward-facing payload — this is what structurally guarantees
+  `mr_x.current_node` can never leak to a client, rather than relying on handler-by-handler
+  discipline. Only `mr_x`'s ticket counts, `last_known_node`/`last_known_round`, and
+  `transport_history` are ever exposed for him (ticket counts are public per the rules'
+  Inventory Visibility rule; position is not).
+
+### State Involved
+
+| Field | Role in this mechanic |
+|---|---|
+| `mr_x.current_node` | Mr. X's real, secret position — added in this mechanic; never read by any detective-facing code path (§1) and never serialized by `serialize_public_state` |
+| `mr_x.last_known_node` / `last_known_round` | Set only by `mrx_turn` on a surfacing-round move |
+| `mr_x.transport_history` | Appended to by `mrx_turn` on every hop (records the ticket type spent, not necessarily the underlying route type — a black ticket is logged as `"black"`, matching the rules' obfuscation intent) |
+| `detectives[*].node_id`, ticket counts | Mutated by `resolve_round`, never by the graph itself |
+| `final_moves` | Read (never written) by `resolve_round`; still produced exactly as §1 describes |
+
+### Implementation References
+
+- `backend/state.py` — `MrXState.current_node` (additive field)
+- `backend/game_master.py:compute_valid_moves` — pure function extracted from the `get_valid_moves`
+  MCP tool so server-side code can call it in-process, without the MCP stdio subprocess round-trip
+  that only LLM tool-calling actually needs
+- `backend/session.py:GameSession`, `create_game`
+- `backend/mrx_turn.py:get_mr_x_legal_moves`, `submit_mr_x_move`
+- `backend/round_resolver.py:pick_transport`, `run_detective_loop`, `resolve_round`
+- `backend/serializers.py:serialize_public_state`, `serialize_loop_event`
+- `backend/server.py` — the Starlette app and its routes
+- `backend/test_phase4_resolve.py`, `backend/test_api_smoke.py` — verification (see Known
+  Limitations for what these do *not* cover)
+
+### Design Rationale
+
+- **Transport-type ambiguity resolved at apply-time, not in the LLM schema**: extending §1's
+  `build_strategy_schema`/`build_ballot_schema` to also require a transport-type field would mean
+  rewriting the just-hardened duplicate/legality/contested-node logic for negligible strategic
+  value — a detective's target-node choice is what its psychology prompt reasons about, not the
+  specific ticket spent to get there. `pick_transport`'s "most remaining tickets, tie-broken
+  taxi > bus > metro" rule is a reasonable default that conserves the scarce metro allotment; it
+  can be revisited if ticket-economy strategy ever becomes a design priority.
+- **Starlette, not FastAPI**: `starlette`, `uvicorn`, `sse-starlette`, and `websockets` were
+  already present as transitive installs; FastAPI was not, and there is no
+  `requirements.txt`/`pyproject.toml` anywhere pinning either. For this small, fixed route set,
+  FastAPI's main value-adds (auto request validation / OpenAPI docs) weren't worth a new
+  dependency.
+- **A single atomic request for a double-move**: avoids a cross-request "pending double-move"
+  state machine entirely. The client (a human, unlike the detectives) decides both hops itself
+  before submitting; nothing commits unless the whole thing validates.
+- **No persistence / session TTL**: accepted non-goal — matches "refreshing the page discards
+  the game" from the project's own UI design decisions.
+
+### Known Limitations
+
+- The React/Phaser frontend that actually calls this API does not exist yet — this mechanic was
+  built specifically so that frontend work can target a real, live backend from day one, not the
+  other way around.
+- `docs/map/node_positions.json` (per-node board pixel coordinates, needed for the frontend's
+  board rendering) was generated by `tools/extract_node_positions.py` from `board.svg`'s own
+  circle-marker + text-label geometry, and `tools/node_coordinate_picker.html` exists to visually
+  spot-check / hand-correct it — but no human has actually run that verification pass yet.
+- `test_full_round_stream_manual` in `test_api_smoke.py` (the one test that exercises a real,
+  full `run_detective_loop` through the API) has never actually been run — the Groq API key in
+  `.env` was found expired while testing §1's hardening work, and refreshing it is a prerequisite.
+- No detection yet for two *different* detectives' final moves colliding on the same node (this
+  would only be possible if §1's own proposal/vote uniqueness enforcement had a bug, since
+  `final_moves` is supposed to already be collision-free by construction — `resolve_round` does
+  not add an extra defensive check for this).

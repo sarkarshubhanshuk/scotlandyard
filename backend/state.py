@@ -18,8 +18,11 @@ class Detective(TypedDict):
 
 class MrXState(TypedDict):
     """
-    Schema for Mr. X's public information visible to all detectives.
+    Schema for Mr. X's state. Only last_known_node/last_known_round/transport_history are
+    ever shown to detectives (see agents.py's prompts) - current_node is his real, secret
+    position and must never be read by any detective-facing code path.
     """
+    current_node: int                 # Mr. X's true position - NEVER exposed to detectives
     last_known_node: Optional[int]    # None during rounds 1-2 before the 1st reveal
     last_known_round: Optional[int]   # Round number when he last revealed his location
     transport_history: List[str]      # Complete travel log, e.g., ["taxi", "bus", "black"]

@@ -30,8 +30,7 @@ def get_node_info(node_id: int) -> dict:
             return node
     return {"error": f"Node {node_id} does not exist on the board."}
 
-@mcp.tool()
-def get_valid_moves(
+def compute_valid_moves(
     node_id: int,
     taxi_tickets: int,
     bus_tickets: int,
@@ -43,6 +42,10 @@ def get_valid_moves(
     Calculates all legally available target nodes a player can move to from their current node,
     based STRICTLY on the tickets they currently possess. Destinations listed in occupied_nodes
     (nodes currently held by another player) are excluded, per the board's node-occupancy rule.
+
+    Plain function (not an MCP tool) so server-side code - round resolution, Mr. X's human turn -
+    can call it directly in-process, without paying the MCP stdio subprocess round-trip that only
+    LLM tool-calling actually needs.
     """
     node_info = get_node_info(node_id)
     if "error" in node_info:
@@ -75,6 +78,22 @@ def get_valid_moves(
             })
 
     return valid_moves
+
+@mcp.tool()
+def get_valid_moves(
+    node_id: int,
+    taxi_tickets: int,
+    bus_tickets: int,
+    metro_tickets: int,
+    black_tickets: int = 0,
+    occupied_nodes: Optional[List[int]] = None
+) -> list:
+    """
+    Calculates all legally available target nodes a player can move to from their current node,
+    based STRICTLY on the tickets they currently possess. Destinations listed in occupied_nodes
+    (nodes currently held by another player) are excluded, per the board's node-occupancy rule.
+    """
+    return compute_valid_moves(node_id, taxi_tickets, bus_tickets, metro_tickets, black_tickets, occupied_nodes)
 
 @mcp.tool()
 def read_rules() -> str:

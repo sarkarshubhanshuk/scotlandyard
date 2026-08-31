@@ -1,0 +1,822 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Node Position Verifier</title>
+<style>
+  body { font-family: sans-serif; margin: 0; display: flex; height: 100vh; }
+  #board-pane { flex: 1; overflow: auto; background: #f0f0f0; padding: 20px; }
+  #side-pane { width: 340px; padding: 16px; border-left: 1px solid #ccc; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+  svg { background: #fff; }
+  .node-marker { fill: #ff0000; fill-opacity: 0.55; stroke: #900; stroke-width: 1; cursor: grab; }
+  .node-marker.selected { fill: #00aaff; stroke: #005580; }
+  .node-label { font-size: 9px; fill: #000; pointer-events: none; text-anchor: middle; }
+  .edge-line { stroke: #999; stroke-width: 0.6; opacity: 0.5; }
+  textarea { width: 100%; height: 160px; font-family: monospace; font-size: 11px; }
+  button { padding: 8px 12px; cursor: pointer; }
+  #status { font-size: 13px; color: #444; }
+  h2 { font-size: 15px; margin: 0 0 4px 0; }
+  p { font-size: 12px; color: #555; margin: 4px 0; }
+</style>
+</head>
+<body>
+<div id="board-pane">
+  <svg id="board-root" viewBox="0 0 600 450" width="1200" height="900">
+  </svg>
+</div>
+<div id="side-pane">
+  <h2>Node Position Verifier</h2>
+  <p>
+    All 199 node positions were extracted automatically from board.svg's own text labels + circle
+    markers (see tools/extract_node_positions.py) - this tool is only for spot-checking that
+    result and nudging any node that looks visually wrong.
+  </p>
+  <p>Gray lines are board connections (from map.json) - a badly misplaced node will show up as an
+     obviously wrong long/crossing line. Drag a red marker to correct its position.</p>
+  <div id="status">Loaded 199 node positions.</div>
+  <div>
+    <label>Jump to node #: <input id="jump-input" type="number" min="1" max="200"></label>
+    <button id="jump-btn">Highlight</button>
+  </div>
+  <button id="export-btn">Export node_positions.json</button>
+  <h2>Live JSON preview</h2>
+  <textarea id="json-preview" readonly></textarea>
+</div>
+
+<script>
+const NODE_POSITIONS = {"1": {"x": 75.0, "y": 25.0}, "8": {"x": 50.0, "y": 50.0}, "18": {"x": 25.0, "y": 75.0}, "43": {"x": 25.0, "y": 125.0}, "31": {"x": 50.0, "y": 100.0}, "19": {"x": 75.0, "y": 75.0}, "9": {"x": 100.0, "y": 50.0}, "20": {"x": 150.0, "y": 75.0}, "32": {"x": 100.0, "y": 100.0}, "33": {"x": 175.0, "y": 100.0}, "44": {"x": 75.0, "y": 125.0}, "57": {"x": 50.0, "y": 150.0}, "58": {"x": 100.0, "y": 150.0}, "45": {"x": 125.0, "y": 125.0}, "46": {"x": 175.0, "y": 125.0}, "21": {"x": 200.0, "y": 75.0}, "2": {"x": 200.5, "y": 25.0}, "10": {"x": 225.0, "y": 50.0}, "34": {"x": 225.0, "y": 100.0}, "47": {"x": 200.0, "y": 125.0}, "22": {"x": 250.0, "y": 75.0}, "11": {"x": 250.0, "y": 50.0}, "3": {"x": 250.0, "y": 25.0}, "12": {"x": 275.0, "y": 50.0}, "23": {"x": 300.0, "y": 75.0}, "4": {"x": 300.5, "y": 25.0}, "13": {"x": 325.0, "y": 50.0}, "48": {"x": 225.0, "y": 125.0}, "35": {"x": 250.0, "y": 100.0}, "36": {"x": 300.0, "y": 100.0}, "49": {"x": 325.0, "y": 125.0}, "50": {"x": 350.0, "y": 125.0}, "37": {"x": 325.0, "y": 100.0}, "24": {"x": 350.0, "y": 75.0}, "59": {"x": 125.0, "y": 150.0}, "73": {"x": 50.0, "y": 175.0}, "74": {"x": 75.0, "y": 175.0}, "92": {"x": 25.0, "y": 200.0}, "76": {"x": 125.0, "y": 175.0}, "94": {"x": 75.0, "y": 200.0}, "77": {"x": 150.0, "y": 175.0}, "93": {"x": 50.0, "y": 200.0}, "95": {"x": 100.0, "y": 200.0}, "75": {"x": 100.0, "y": 175.0}, "98": {"x": 200.0, "y": 200.0}, "60": {"x": 150.0, "y": 150.0}, "61": {"x": 175.0, "y": 150.0}, "62": {"x": 200.0, "y": 150.0}, "78": {"x": 175.0, "y": 175.0}, "79": {"x": 200.0, "y": 175.0}, "97": {"x": 175.0, "y": 200.0}, "96": {"x": 150.0, "y": 200.0}, "63": {"x": 225.0, "y": 150.0}, "80": {"x": 225.0, "y": 175.0}, "99": {"x": 225.0, "y": 200.0}, "100": {"x": 250.0, "y": 200.0}, "81": {"x": 275.0, "y": 175.0}, "64": {"x": 250.0, "y": 150.0}, "65": {"x": 300.0, "y": 150.0}, "82": {"x": 300.0, "y": 175.0}, "66": {"x": 325.0, "y": 150.0}, "67": {"x": 375.0, "y": 150.0}, "83": {"x": 350.0, "y": 175.0}, "101": {"x": 325.0, "y": 200.0}, "14": {"x": 375.0, "y": 50.0}, "25": {"x": 375.0, "y": 75.0}, "38": {"x": 350.0, "y": 100.0}, "39": {"x": 400.0, "y": 100.0}, "51": {"x": 375.0, "y": 125.0}, "68": {"x": 400.0, "y": 150.0}, "84": {"x": 375.0, "y": 175.0}, "85": {"x": 400.0, "y": 175.0}, "103": {"x": 400.0, "y": 200.0}, "102": {"x": 375.0, "y": 200.0}, "15": {"x": 400.0, "y": 50.0}, "26": {"x": 400.0, "y": 75.0}, "27": {"x": 425.0, "y": 75.0}, "28": {"x": 450.0, "y": 75.0}, "16": {"x": 475.0, "y": 50.0}, "40": {"x": 425.0, "y": 100.0}, "41": {"x": 450.0, "y": 100.0}, "5": {"x": 450.0, "y": 25.0}, "29": {"x": 500.0, "y": 75.0}, "52": {"x": 400.0, "y": 125.0}, "53": {"x": 425.0, "y": 125.0}, "54": {"x": 450.0, "y": 125.0}, "69": {"x": 425.0, "y": 150.0}, "70": {"x": 450.0, "y": 150.0}, "71": {"x": 500.0, "y": 150.0}, "55": {"x": 500.0, "y": 125.0}, "86": {"x": 425.0, "y": 175.0}, "87": {"x": 450.0, "y": 175.0}, "88": {"x": 475.0, "y": 175.0}, "89": {"x": 500.0, "y": 175.0}, "104": {"x": 425.0, "y": 200.0}, "105": {"x": 500.0, "y": 200.0}, "90": {"x": 525.0, "y": 175.0}, "72": {"x": 550.0, "y": 150.0}, "42": {"x": 550.0, "y": 100.0}, "56": {"x": 575.0, "y": 125.0}, "17": {"x": 550.0, "y": 50.0}, "7": {"x": 550.0, "y": 25.0}, "30": {"x": 575.0, "y": 75.0}, "91": {"x": 575.0, "y": 175.0}, "106": {"x": 550.0, "y": 200.0}, "107": {"x": 575.0, "y": 200.0}, "118": {"x": 500.0, "y": 225.0}, "119": {"x": 575.0, "y": 225.0}, "117": {"x": 475.0, "y": 225.0}, "116": {"x": 425.0, "y": 225.0}, "115": {"x": 375.0, "y": 225.0}, "127": {"x": 400.0, "y": 250.0}, "126": {"x": 350.0, "y": 250.0}, "128": {"x": 425.0, "y": 250.0}, "129": {"x": 475.0, "y": 250.0}, "133": {"x": 375.0, "y": 275.0}, "134": {"x": 400.0, "y": 275.0}, "135": {"x": 500.0, "y": 275.0}, "136": {"x": 575.0, "y": 275.0}, "143": {"x": 475.0, "y": 300.0}, "142": {"x": 425.0, "y": 300.0}, "141": {"x": 375.0, "y": 300.0}, "132": {"x": 325.0, "y": 275.0}, "140": {"x": 325.0, "y": 300.0}, "114": {"x": 325.0, "y": 225.0}, "113": {"x": 275.0, "y": 225.0}, "156": {"x": 325.0, "y": 325.0}, "155": {"x": 300.0, "y": 325.0}, "154": {"x": 275.0, "y": 325.0}, "112": {"x": 250.0, "y": 225.0}, "125": {"x": 250.0, "y": 250.0}, "131": {"x": 275.0, "y": 275.0}, "130": {"x": 225.0, "y": 275.0}, "139": {"x": 225.0, "y": 300.0}, "111": {"x": 225.0, "y": 225.0}, "110": {"x": 200.0, "y": 225.0}, "109": {"x": 175.0, "y": 225.0}, "124": {"x": 175.0, "y": 250.0}, "138": {"x": 200.0, "y": 300.0}, "152": {"x": 225.0, "y": 325.0}, "153": {"x": 250.0, "y": 325.0}, "150": {"x": 175.0, "y": 325.0}, "151": {"x": 200.0, "y": 325.0}, "169": {"x": 325.0, "y": 350.0}, "157": {"x": 375.0, "y": 325.0}, "170": {"x": 375.0, "y": 350.0}, "158": {"x": 400.0, "y": 325.0}, "171": {"x": 400.0, "y": 350.0}, "159": {"x": 450.0, "y": 325.0}, "172": {"x": 450.0, "y": 350.0}, "160": {"x": 500.0, "y": 325.0}, "173": {"x": 500.0, "y": 350.0}, "161": {"x": 525.0, "y": 325.0}, "162": {"x": 575.0, "y": 325.0}, "174": {"x": 550.0, "y": 350.0}, "175": {"x": 575.0, "y": 350.0}, "187": {"x": 425.0, "y": 375.0}, "188": {"x": 475.0, "y": 375.0}, "199": {"x": 475.0, "y": 400.0}, "200": {"x": 500.0, "y": 400.0}, "198": {"x": 400.0, "y": 400.0}, "185": {"x": 375.0, "y": 375.0}, "186": {"x": 400.0, "y": 375.0}, "184": {"x": 300.0, "y": 375.0}, "168": {"x": 300.0, "y": 350.0}, "167": {"x": 275.0, "y": 350.0}, "183": {"x": 275.0, "y": 375.0}, "196": {"x": 275.0, "y": 400.0}, "197": {"x": 300.0, "y": 400.0}, "182": {"x": 250.0, "y": 375.0}, "166": {"x": 250.0, "y": 350.0}, "181": {"x": 225.0, "y": 375.0}, "194": {"x": 225.0, "y": 400.0}, "195": {"x": 250.0, "y": 400.0}, "193": {"x": 200.0, "y": 400.0}, "122": {"x": 100.0, "y": 250.0}, "123": {"x": 125.0, "y": 250.0}, "149": {"x": 150.0, "y": 325.0}, "148": {"x": 125.0, "y": 325.0}, "147": {"x": 100.0, "y": 325.0}, "146": {"x": 75.0, "y": 325.0}, "145": {"x": 50.0, "y": 325.0}, "144": {"x": 25.0, "y": 325.0}, "120": {"x": 25.0, "y": 250.0}, "121": {"x": 50.0, "y": 250.0}, "163": {"x": 75.0, "y": 350.0}, "177": {"x": 50.0, "y": 375.0}, "176": {"x": 25.0, "y": 375.0}, "164": {"x": 100.0, "y": 350.0}, "165": {"x": 150.0, "y": 350.0}, "180": {"x": 175.0, "y": 375.0}, "178": {"x": 100.0, "y": 375.0}, "179": {"x": 150.0, "y": 375.0}, "190": {"x": 75.0, "y": 400.0}, "191": {"x": 100.0, "y": 400.0}, "192": {"x": 125.0, "y": 400.0}, "189": {"x": 50.0, "y": 400.0}, "137": {"x": 125.0, "y": 300.0}, "6": {"x": 500.0, "y": 25.0}};
+const ADJACENCY = {"1": [8, 9, 46, 58], "2": [10, 20], "3": [4, 11, 12, 22, 23], "4": [3, 13], "5": [15, 16], "6": [7, 29], "7": [6, 17, 42], "8": [1, 18, 19], "9": [1, 19, 20], "10": [2, 11, 21, 34], "11": [3, 10, 22], "12": [3, 23], "13": [4, 14, 23, 24, 46, 52, 67, 89], "14": [13, 15, 25], "15": [5, 14, 16, 26, 29, 41], "16": [5, 15, 28, 29], "17": [7, 30], "18": [8, 31, 43], "19": [8, 9, 32], "20": [2, 9, 33], "21": [10, 33], "22": [3, 11, 23, 34, 35, 65], "23": [3, 12, 13, 22, 37, 67], "24": [13, 37, 38], "25": [14, 38, 39], "26": [15, 27, 39], "27": [26, 28, 40], "28": [16, 27, 41], "29": [6, 15, 16, 41, 42, 55], "30": [17, 42], "31": [18, 43, 44], "32": [19, 33, 44, 45], "33": [20, 21, 32, 46], "34": [10, 22, 46, 47, 48, 63], "35": [22, 36, 48, 65], "36": [35, 37, 49], "37": [23, 24, 36, 50], "38": [24, 25, 50, 51], "39": [25, 26, 51, 52], "40": [27, 41, 52, 53], "41": [15, 28, 29, 40, 52, 54, 87], "42": [7, 29, 30, 56, 72], "43": [18, 31, 57], "44": [31, 32, 58], "45": [32, 46, 58, 59, 60], "46": [1, 13, 33, 34, 45, 47, 58, 61, 74, 78, 79], "47": [34, 46, 62], "48": [34, 35, 62, 63], "49": [36, 50, 66], "50": [37, 38, 49], "51": [38, 39, 52, 67, 68], "52": [13, 39, 40, 51, 67, 69, 86], "53": [40, 54, 69], "54": [41, 53, 55, 70], "55": [29, 54, 71, 89], "56": [42, 91], "57": [43, 58, 73], "58": [1, 44, 45, 46, 57, 59, 74, 75, 77], "59": [45, 58, 75, 76], "60": [45, 61, 76], "61": [46, 60, 62, 76, 78], "62": [47, 48, 61, 79], "63": [34, 48, 64, 65, 79, 80, 100], "64": [63, 65, 81], "65": [22, 35, 63, 64, 66, 67, 82], "66": [49, 65, 67, 82], "67": [13, 23, 51, 52, 65, 66, 68, 79, 82, 84, 89, 102, 111], "68": [51, 67, 69, 85], "69": [52, 53, 68, 86], "70": [54, 71, 87], "71": [55, 70, 72, 89], "72": [42, 71, 90, 91, 105, 107], "73": [57, 74, 92], "74": [46, 58, 73, 75, 92, 94], "75": [58, 59, 74, 94], "76": [59, 60, 61, 77], "77": [58, 76, 78, 94, 95, 96, 124], "78": [46, 61, 77, 79, 97], "79": [46, 62, 63, 67, 78, 93, 98, 111], "80": [63, 99, 100], "81": [64, 82, 100], "82": [65, 66, 67, 81, 100, 101, 140], "83": [101, 102], "84": [67, 85], "85": [68, 84, 103], "86": [52, 69, 87, 102, 103, 104, 116], "87": [70, 86, 88, 105], "88": [87, 89, 104, 105, 117], "89": [13, 55, 67, 71, 88, 105, 140, 159], "90": [72, 91, 105], "91": [56, 72, 90, 105, 107], "92": [73, 74, 93], "93": [79, 92, 94], "94": [74, 75, 77, 93, 95], "95": [77, 94, 122], "96": [77, 97, 109], "97": [78, 96, 98, 109], "98": [79, 97, 99, 110], "99": [80, 98, 110], "100": [63, 80, 81, 82, 101, 111, 112, 113], "101": [82, 83, 100, 114], "102": [67, 83, 86, 103, 115, 127], "103": [85, 86, 102], "104": [86, 88, 116], "105": [72, 87, 88, 89, 90, 91, 106, 118], "106": [105, 107], "107": [72, 91, 106, 119, 161], "109": [96, 97, 110, 124], "110": [98, 99, 109, 111], "111": [67, 79, 100, 110, 112, 124, 153, 163], "112": [100, 111, 125], "113": [100, 114, 125], "114": [101, 113, 115, 126, 131, 132], "115": [102, 114, 118, 126, 127, 157], "116": [86, 104, 117, 118, 127, 128, 142], "117": [88, 116, 118, 129], "118": [105, 115, 116, 117, 119, 135], "119": [107, 118, 136], "120": [121, 144], "121": [120, 122, 145], "122": [95, 121, 123, 144, 146], "123": [122, 124, 137, 144, 148, 149, 165], "124": [77, 109, 111, 123, 130, 138, 153], "125": [112, 113, 131], "126": [114, 115, 140], "127": [102, 115, 116, 133, 134], "128": [116, 129, 134, 142], "129": [117, 128, 135, 142, 143], "130": [124, 131, 139], "131": [114, 125, 130], "132": [114, 140], "133": [127, 140, 141, 157], "134": [127, 128, 141, 142], "135": [118, 129, 136, 143, 159, 160, 161], "136": [119, 135, 162], "137": [123, 147], "138": [124, 150, 152], "139": [130, 140, 153, 154], "140": [82, 89, 126, 132, 133, 139, 153, 154, 156, 159], "141": [133, 134, 142, 158], "142": [116, 128, 129, 134, 141, 143, 157, 158, 159], "143": [129, 135, 142, 159, 160], "144": [120, 122, 123, 145, 163, 177], "145": [121, 144, 146], "146": [122, 145, 147, 163], "147": [137, 146, 164], "148": [123, 149, 164], "149": [123, 148, 150, 165], "150": [138, 149, 151], "151": [150, 152, 165, 166], "152": [138, 151, 153], "153": [111, 124, 139, 140, 152, 154, 163, 166, 167, 180, 184, 185], "154": [139, 140, 153, 155, 156], "155": [154, 156, 167, 168], "156": [140, 154, 155, 157, 169, 184], "157": [115, 133, 142, 156, 158, 170, 185, 194], "158": [141, 142, 157, 171], "159": [89, 135, 140, 142, 143, 160, 161, 172, 185, 187, 188, 199], "160": [143, 159, 161, 173], "161": [107, 135, 159, 160, 174, 199], "162": [136, 175], "163": [111, 144, 146, 153, 164, 176, 177, 191], "164": [147, 148, 163, 178, 179], "165": [123, 149, 151, 179, 180, 191], "166": [151, 153, 181, 183], "167": [153, 155, 168, 183], "168": [155, 167, 184], "169": [156, 184], "170": [157, 171, 185], "171": [158, 170, 172, 186], "172": [159, 171, 187], "173": [160, 174, 188, 200], "174": [161, 173, 175], "175": [162, 174, 200], "176": [163, 177, 189, 190], "177": [144, 163, 176], "178": [164, 189, 191], "179": [164, 165, 191], "180": [153, 165, 181, 184, 190, 193], "181": [166, 180, 182, 193], "182": [181, 183, 195], "183": [166, 167, 182, 184, 196], "184": [153, 156, 168, 169, 180, 183, 185, 196, 197], "185": [153, 157, 159, 170, 184, 186, 187, 199], "186": [171, 185, 198], "187": [159, 172, 185, 188, 198, 199], "188": [159, 173, 187, 199], "189": [176, 178, 190], "190": [176, 180, 189, 191], "191": [163, 165, 178, 179, 190, 192], "192": [191, 194], "193": [180, 181, 194], "194": [157, 192, 193, 195], "195": [182, 194, 197], "196": [183, 184, 197], "197": [184, 195, 196], "198": [186, 187], "199": [159, 161, 185, 187, 188, 200], "200": [173, 175, 199]};
+const BOARD_SVG_MARKUP = `<?xml version="1.0" encoding="UTF-8"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+<svg width="600" height="450" version="1.1" viewBox="0 0 600 450" xmlns="http://www.w3.org/2000/svg" xmlns:cc="http://creativecommons.org/ns#" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+ <metadata>
+  <rdf:RDF>
+   <cc:Work rdf:about="">
+    <dc:format>image/svg+xml</dc:format>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:title/>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <g transform="translate(0 -582.42)">
+  <rect x="6.25" y="588.67" width="587.5" height="437.5" rx="25" ry="25" fill="#aaa" stroke="#000" stroke-linecap="round" stroke-linejoin="bevel" stroke-width="12.5"/>
+  <g fill="none">
+   <path d="m587.5 794.92-143.75-1.1e-4s-15.007 0-28.871 5.7429-24.476 16.354-24.476 16.354l-18.306 18.306s-10.611 10.611-16.354 24.476-5.7429 28.871-5.7429 28.871v93.75s0 10.355-7.3223 17.678c-7.3223 7.3223-17.678 7.3223-17.678 7.3223l-237.5 1e-4s-5.1777 0-8.8388 3.6611-3.6612 8.8389-3.6612 8.8389" stroke="#08f" stroke-width="12.5"/>
+   <g stroke="#aaa">
+    <path d="m325 957.42h50" stroke-width="14"/>
+    <g stroke-width="8">
+     <path d="m325 907.42h50"/>
+     <path d="m375 807.42 25 25"/>
+     <path d="m425 782.42v25"/>
+     <path d="m475 782.42v25"/>
+    </g>
+    <g stroke-width="14">
+     <path d="m500 782.42v25"/>
+     <path d="m575 782.42v25"/>
+     <path d="m325 882.42 50-25"/>
+    </g>
+    <path d="m325 882.42h25l25-25" stroke-width="8"/>
+   </g>
+  </g>
+ </g>
+ <g transform="translate(0,-550)" fill="none" stroke="#d00" stroke-dasharray="5, 5" stroke-width="10">
+  <path d="m75 900h150l25-25 25 25h25v25l75-1.1e-4 25 25 50-50v-25l50-50v-200l-25-25h-150l-25 25h-50l-50 50h-75l-50 50" stroke-linejoin="bevel"/>
+  <g>
+   <path d="m50 750h50l50-25h50l25-25h175l25 12.5h50l25 12.5h-25l-100 50-25 25-25 50-50 25h-25l-25-25v-75h-25v-75h-25v-25l-100-100"/>
+   <path d="m325 600 12.5 25v25l12.5 25 25 25-50 50h-75v25h-25l-25 25-25-1.1e-4h-50v50l-50 50"/>
+   <path d="m450 875-25-25h-50v-25l-50 25"/>
+  </g>
+ </g>
+ <g>
+  <path d="m225 400 25 25h75s10.355 0 17.678-7.3223 7.3223-17.678 7.3223-17.678v-50l25-25-25-25s0-8.7568 5.7429-22.621 16.354-24.476 16.354-24.476l2.9029-2.9028v-25l25 1e-5s1.0142-1.0142 14.879-6.7571 28.871-5.7429 28.871-5.7429l43.75 1e-5 12.5 12.5" fill="none" stroke="#222" stroke-dasharray="12, 6" stroke-opacity=".86667" stroke-width="6"/>
+ </g>
+ <g transform="translate(0,-550)" fill="none">
+  <g stroke="#080" stroke-width="6">
+   <path d="m400 950-25-25-75 1.1e-4v-25h-25l-25-25h-25l-50-50v-25h-50l25 25v100h-25l-25 25v-25l-25-25-25 25h-25l25 25h25l12.5 12.5h25l12.5-12.5 25 1.1e-4 25-25 50-1.1e-4 25-25v-25l150-1.1e-4 25-25 25 25h75l25 25 25 1.1e-4 -50 50h-50"/>
+   <path d="m75 900h-25l-25-25h75l25-25-12.5-12.5v-25l12.5-12.5h-100v75"/>
+   <path d="m100 950h-25"/>
+   <path d="m150 900 50 50h50l25 1.1e-4 50-50v-150l-25-25v-25l-50-50v-75l125 125v-25h25l25-25h25l25-25h50l25 25v50l-50 50v25h-75l-75 75h-50l-25 25"/>
+   <path d="m425 850v-150l-25-25v-25l-37.5-37.5-25-1.1e-4 -12.5-12.5"/>
+   <path d="m400 800-25-25v-25l12.5-12.5v-25l-12.5-12.5h-150l-25 25h-50l-25 25h-75"/>
+   <path d="m75 750v-25l50-50h75l50-50h50l25-25h150l25 25v200l-50 50v25l-50 50"/>
+   <path d="m475 950v-50l-25-25"/>
+   <path d="m375 750h25l25-25h50l25 25"/>
+   <path d="m550 700 25 25v100l-50 50"/>
+   <path d="m550 650v-75"/>
+   <path d="m375 700h-25l-25 25h-50l-25 25-25-25v-25l12.5-12.5v-25l-12.5-12.5"/>
+   <path d="m375 825 12.5 12.5v25l-12.5 12.5v50"/>
+   <path d="m75 575-50 50 75 75h25v25h50v-50z"/>
+   <path d="m150 725v25l25 25v25"/>
+   <path d="m175 800h25l25-25h25v-25"/>
+   <path d="m400 600 12.5 12.5h25l12.5 12.5v100"/>
+  </g>
+  <path d="m250 750 25 25h50l25 25" stroke="#ff0" stroke-width="2.5"/>
+  <path d="m275 775-25 25" stroke="#ff0" stroke-width="2.5"/>
+  <path d="m500 825 25 25v25" stroke="#080" stroke-width="6"/>
+  <path d="m475 950h-75" stroke="#080" stroke-width="6"/>
+ </g>
+ <g transform="translate(0,-550)" fill="none" stroke="#ff0" stroke-width="2.5">
+  <path d="m75 575-50 50v50l25 25v25l-25 25h75v50h-75v100l25 25h-25l25 25h75l12.5 12.5 75 1.1e-4 12.5-12.5h25l12.5 12.5h25l12.5-12.5v-25l75-1.1e-4h25v25l25-25h50v25h25l25 1.1e-4 50-50v-225l-25-25 25-25-25-25v-25h-50v50l-50-50h-25l-25 25h-75l-25-25h-50v25h-25l-25-25-50 50h-25z"/>
+  <path d="m50 600 100 100-25 25h25v25l25 25v50l50 50h25l25 25h25v25"/>
+  <path d="m475 600-25 25h-25v25l-25 25h-25v25h-150l-25 25h-50l-25 25h-25"/>
+  <path d="m575 900-25-1.1e-4 -25-25v-25l-50-50h-50l-25 25v-25l-25-25v-25l-25-25-25 25-25-25v-25l-50-50v-50"/>
+  <path d="m50 925 25-25v-25h25l25-25-12.5-12.5v-25l12.5-12.5 50 1.1e-4 25 25 25-1.1e-4h50l50-50h50"/>
+  <path d="m100 800h25l25 25v50h-25l-25 25h-25"/>
+  <path d="m75 875h-50"/>
+  <path d="m50 950 25-25h25v-25"/>
+  <path d="m100 925v25l25-25h25l-25-25h-25v-25"/>
+  <path d="m150 925v-50"/>
+  <path d="m150 900h25l25-25h-50"/>
+  <path d="m150 900 25 25h100v-25l25-25v25"/>
+  <path d="m175 925 25 25h25"/>
+  <path d="m275 925v25h25"/>
+  <path d="m300 925 25-25v-150"/>
+  <path d="m200 950 50-50v-25"/>
+  <path d="m250 925v25"/>
+  <path d="m25 625 75 75h25v25"/>
+  <path d="m100 600-25 25"/>
+  <path d="m50 650-25 25"/>
+  <path d="m50 700h50l25-25h75l50-50h50l25-25"/>
+  <path d="m75 675 25-25h75l50-50"/>
+  <path d="m150 625 25 25"/>
+  <path d="m175 650v125"/>
+  <path d="m150 750h75l-25 25h-25"/>
+  <path d="m200 775v-100"/>
+  <path d="m225 600v150"/>
+  <path d="m200 775h50v-25l-25-25"/>
+  <path d="m250 775v25l25 25"/>
+  <path d="m225 825v25l25 25"/>
+  <path d="m300 925-25 1.1e-4 -25-25h-25l-25-25h25"/>
+  <path d="m200 850-25 25"/>
+  <path d="m100 700-25 25h-25"/>
+  <path d="m75 750 50-50v-25"/>
+  <path d="m225 775-25 25-25 1.1e-4"/>
+  <path d="m250 750 25-25-25-25"/>
+  <path d="m275 725h25l25-25v-25l-25-25h-50l-25 25"/>
+  <path d="m250 575 100 100"/>
+  <path d="m375 600v25l25 25-25 25"/>
+  <path d="m325 600 25 25v50h-25"/>
+  <path d="m375 675-25-25 25-25"/>
+  <path d="m350 625-25 25h-25"/>
+  <path d="m400 650v25l25 25v150l-25 25h-150"/>
+  <path d="m275 875 25-25h50l75-75h150"/>
+  <path d="m425 750h25l25-25 25 25h75"/>
+  <path d="m500 625h-25l-25 25h-25v50h-50"/>
+  <path d="m425 675h75v100"/>
+  <path d="m400 650v-25h25"/>
+  <path d="m450 625v100"/>
+  <path d="m500 725h-50"/>
+  <path d="m375 675 25 25v25"/>
+  <path d="m400 600h75l25 25h25l25 25v50l-50 50"/>
+  <path d="m450 700h100l25 25"/>
+  <path d="m525 625 25 25"/>
+  <path d="m475 850 25 25v75"/>
+  <path d="m550 900h-50l-25 25v-25l-50-50"/>
+  <path d="m450 875h75"/>
+  <path d="m400 925v-25h-25v25"/>
+  <path d="m450 900h-50v-25"/>
+  <path d="m375 825v25l25 25"/>
+  <path d="m375 850 25-25"/>
+  <path d="m375 875v25"/>
+  <path d="m300 925-25 25"/>
+  <path d="m225 675-25 25h-50"/>
+  <path d="m137.5 712.5h25l12.5-12.5"/>
+  <path d="m400 600v25"/>
+  <path d="m375 750h25v-25h-25v-25"/>
+  <path d="m75 725h25v-25"/>
+  <path d="m75 725-12.5 12.5h-25"/>
+  <path d="m425 725-25 25"/>
+  <path d="m525 725h50l-12.5 12.5h-50l-12.5 12.5"/>
+  <path d="m250 750h75"/>
+  <path d="m375 775-25 25v25l-25 25"/>
+  <path d="m475 725v75"/>
+  <path d="m50 800v75h25v-50l25-25"/>
+  <path d="m125 800v25l12.5 12.5v25l-12.5 12.5"/>
+  <path d="m500 825-50 50v25l-25 25"/>
+  <path d="m475 850h-100"/>
+  <path d="m450 850v-25l25-25"/>
+  <path d="m425 850-25-25"/>
+  <path d="m500 825h75"/>
+  <path d="m225 850h75"/>
+  <path d="m250 850 25 25"/>
+ </g>
+ <g transform="translate(0,25)" fill="#d00">
+  <circle cx="75" cy="325" r="12.5"/>
+  <circle cx="250" cy="300" r="12.5"/>
+  <circle cx="325" cy="275" r="12.5"/>
+  <circle cx="375" cy="350" r="12.5"/>
+  <circle cx="450" cy="300" r="12.5"/>
+  <circle cx="500" cy="150" r="12.5"/>
+  <circle cx="375" cy="125" r="12.5"/>
+  <circle cx="225" cy="200" r="12.5"/>
+  <circle cx="325" cy="25" r="12.5"/>
+  <circle cx="200" cy="150" r="12.5"/>
+  <circle cx="175" cy="100" r="12.5"/>
+  <circle cx="75" cy="-.00010678" r="12.5"/>
+  <circle cx="75" cy="150" r="12.5"/>
+  <circle cx="50" cy="175" r="12.5"/>
+ </g>
+ <g transform="translate(0,25)" fill="#080">
+  <circle cx="75" cy="325" r="10.5"/>
+  <circle cx="250" cy="300" r="10.5"/>
+  <circle cx="325" cy="275" r="10.5"/>
+  <circle cx="375" cy="350" r="10.5"/>
+  <circle cx="450" cy="300" r="10.5"/>
+  <circle cx="500" cy="150" r="10.5"/>
+  <circle cx="375" cy="125" r="10.5"/>
+  <circle cx="225" cy="200" r="10.5"/>
+  <circle cx="325" cy="25" r="10.5"/>
+  <circle cx="200" cy="150" r="10.5"/>
+  <circle cx="175" cy="100" r="10.5"/>
+  <circle cx="75" cy="-.00010678" r="10.5"/>
+  <circle cx="75" cy="150" r="10.5"/>
+  <circle cx="550" cy="-.00010678" r="10.5"/>
+  <circle cx="550" cy="75" r="10.5"/>
+  <circle cx="500" cy="50" r="10.5"/>
+  <circle cx="375" cy="25" r="10.5"/>
+  <circle cx="450" cy="75" r="10.5"/>
+  <circle cx="400" cy="100" r="10.5"/>
+  <circle cx="500" cy="100" r="10.5"/>
+  <circle cx="550" cy="125" r="10.5"/>
+  <circle cx="500" cy="175" r="10.5"/>
+  <circle cx="500" cy="200" r="10.5"/>
+  <circle cx="575" cy="175" r="10.5"/>
+  <circle cx="425" cy="200" r="10.5"/>
+  <circle cx="400" cy="225" r="10.5"/>
+  <circle cx="375" cy="250" r="10.5"/>
+  <circle cx="425" cy="275" r="10.5"/>
+  <circle cx="500" cy="250" r="10.5"/>
+  <circle cx="475" cy="375" r="10.5"/>
+  <circle cx="525" cy="300" r="10.5"/>
+  <circle cx="375" cy="300" r="10.5"/>
+  <circle cx="325" cy="300" r="10.5"/>
+  <circle cx="275" cy="300" r="10.5"/>
+  <circle cx="300" cy="350" r="10.5"/>
+  <circle cx="175" cy="350" r="10.5"/>
+  <circle cx="150" cy="325" r="10.5"/>
+  <circle cx="75" cy="375" r="10.5"/>
+  <circle cx="100" cy="375" r="10.5"/>
+  <circle cx="25" cy="350" r="10.5"/>
+  <circle cx="25" cy="300" r="10.5"/>
+  <circle cx="100" cy="225" r="10.5"/>
+  <circle cx="125" cy="225" r="10.5"/>
+  <circle cx="175" cy="225" r="10.5"/>
+  <circle cx="150" cy="150" r="10.5"/>
+  <circle cx="175" cy="150" r="10.5"/>
+  <circle cx="100" cy="125" r="10.5"/>
+  <circle cx="225" cy="75" r="10.5"/>
+  <circle cx="250" cy="50" r="10.5"/>
+  <circle cx="300" cy="50" r="10.5"/>
+  <circle cx="250" cy="-.00010678" r="10.5"/>
+  <circle cx="450" cy="150" r="10.5"/>
+  <circle cx="75" cy="175" r="10.5"/>
+  <circle cx="50" cy="175" r="10.5"/>
+  <circle cx="225" cy="125" r="10.5"/>
+  <circle cx="300" cy="150" r="10.5"/>
+  <circle cx="300" cy="125" r="10.5"/>
+  <circle cx="250" cy="175" r="10.5"/>
+  <circle cx="400" cy="25" r="10.5"/>
+  <circle cx="425" cy="150" r="10.5"/>
+  <circle cx="375" cy="175" r="10.5"/>
+  <circle cx="425" cy="350" r="10.5"/>
+ </g>
+ <g transform="translate(0,-550)" stroke="#000" stroke-linecap="round" stroke-linejoin="round" stroke-width="2">
+  <g fill="#fff">
+   <circle cx="75" cy="575" r="7.5"/>
+   <circle cx="50" cy="600" r="7.5"/>
+   <circle cx="25" cy="625" r="7.5"/>
+   <circle cx="75" cy="625" r="7.5"/>
+   <circle cx="50" cy="650" r="7.5"/>
+   <circle cx="100" cy="600" r="7.5"/>
+   <circle cx="25" cy="675" r="7.5"/>
+   <circle cx="50" cy="700" r="7.5"/>
+   <circle cx="150" cy="625" r="7.5"/>
+   <circle cx="75" cy="675" r="7.5"/>
+   <circle cx="100" cy="650" r="7.5"/>
+   <circle cx="175" cy="650" r="7.5"/>
+   <circle cx="100" cy="700" r="7.5"/>
+   <circle cx="125" cy="675" r="7.5"/>
+   <circle cx="175" cy="675" r="7.5"/>
+   <circle cx="200" cy="625" r="7.5"/>
+   <circle cx="200.5" cy="575" r="7.5"/>
+   <circle cx="225" cy="600" r="7.5"/>
+   <circle cx="225" cy="650" r="7.5"/>
+   <circle cx="200" cy="675" r="7.5"/>
+   <circle cx="250" cy="625" r="7.5"/>
+   <circle cx="250" cy="600" r="7.5"/>
+   <circle cx="250" cy="575" r="7.5"/>
+   <circle cx="275" cy="600" r="7.5"/>
+   <circle cx="300" cy="625" r="7.5"/>
+   <circle cx="300.5" cy="575" r="7.5"/>
+   <circle cx="325" cy="600" r="7.5"/>
+   <circle cx="225" cy="675" r="7.5"/>
+   <circle cx="250" cy="650" r="7.5"/>
+   <circle cx="300" cy="650" r="7.5"/>
+   <circle cx="325" cy="675" r="7.5"/>
+   <circle cx="350" cy="675" r="7.5"/>
+   <circle cx="325" cy="650" r="7.5"/>
+   <circle cx="350" cy="625" r="7.5"/>
+   <circle cx="125" cy="700" r="7.5"/>
+   <circle cx="50" cy="725" r="7.5"/>
+   <circle cx="75" cy="725" r="7.5"/>
+   <circle cx="25" cy="750" r="7.5"/>
+   <circle cx="125" cy="725" r="7.5"/>
+   <circle cx="75" cy="750" r="7.5"/>
+   <circle cx="150" cy="725" r="7.5"/>
+   <circle cx="50" cy="750" r="7.5"/>
+   <circle cx="100" cy="750" r="7.5"/>
+   <circle cx="100" cy="725" r="7.5"/>
+   <circle cx="200" cy="750" r="7.5"/>
+   <circle cx="150" cy="700" r="7.5"/>
+   <circle cx="175" cy="700" r="7.5"/>
+   <circle cx="200" cy="700" r="7.5"/>
+   <circle cx="175" cy="725" r="7.5"/>
+   <circle cx="200" cy="725" r="7.5"/>
+   <circle cx="175" cy="750" r="7.5"/>
+   <circle cx="150" cy="750" r="7.5"/>
+   <circle cx="225" cy="700" r="7.5"/>
+   <circle cx="225" cy="725" r="7.5"/>
+   <circle cx="225" cy="750" r="7.5"/>
+   <circle cx="250" cy="750" r="7.5"/>
+   <circle cx="275" cy="725" r="7.5"/>
+   <circle cx="250" cy="700" r="7.5"/>
+   <circle cx="300" cy="700" r="7.5"/>
+   <circle cx="300" cy="725" r="7.5"/>
+   <circle cx="325" cy="700" r="7.5"/>
+   <circle cx="375" cy="700" r="7.5"/>
+   <circle cx="350" cy="725" r="7.5"/>
+   <circle cx="325" cy="750" r="7.5"/>
+   <circle cx="375" cy="600" r="7.5"/>
+   <circle cx="375" cy="625" r="7.5"/>
+   <circle cx="350" cy="650" r="7.5"/>
+   <circle cx="400" cy="650" r="7.5"/>
+   <circle cx="375" cy="675" r="7.5"/>
+   <circle cx="400" cy="700" r="7.5"/>
+   <circle cx="375" cy="725" r="7.5"/>
+   <circle cx="400" cy="725" r="7.5"/>
+   <circle cx="400" cy="750" r="7.5"/>
+   <circle cx="375" cy="750" r="7.5"/>
+   <circle cx="400" cy="600" r="7.5"/>
+   <circle cx="400" cy="625" r="7.5"/>
+   <circle cx="425" cy="625" r="7.5"/>
+   <circle cx="450" cy="625" r="7.5"/>
+   <circle cx="475" cy="600" r="7.5"/>
+   <circle cx="425" cy="650" r="7.5"/>
+   <circle cx="450" cy="650" r="7.5"/>
+   <circle cx="450" cy="575" r="7.5"/>
+   <circle cx="500" cy="625" r="7.5"/>
+   <circle cx="400" cy="675" r="7.5"/>
+   <circle cx="425" cy="675" r="7.5"/>
+   <circle cx="450" cy="675" r="7.5"/>
+   <circle cx="425" cy="700" r="7.5"/>
+   <circle cx="450" cy="700" r="7.5"/>
+   <circle cx="500" cy="700" r="7.5"/>
+   <circle cx="500" cy="675" r="7.5"/>
+   <circle cx="425" cy="725" r="7.5"/>
+   <circle cx="450" cy="725" r="7.5"/>
+   <circle cx="475" cy="725" r="7.5"/>
+   <circle cx="500" cy="725" r="7.5"/>
+   <circle cx="425" cy="750" r="7.5"/>
+   <circle cx="500" cy="750" r="7.5"/>
+   <circle cx="525" cy="725" r="7.5"/>
+   <circle cx="550" cy="700" r="7.5"/>
+   <circle cx="550" cy="650" r="7.5"/>
+   <circle cx="575" cy="675" r="7.5"/>
+   <circle cx="550" cy="600" r="7.5"/>
+   <circle cx="550" cy="575" r="7.5"/>
+   <circle cx="575" cy="625" r="7.5"/>
+   <circle cx="575" cy="725" r="7.5"/>
+   <circle cx="550" cy="750" r="7.5"/>
+   <circle cx="575" cy="750" r="7.5"/>
+  </g>
+  <circle cx="500" cy="775" r="7.5" fill="#ddd" stroke-dasharray="2, 4"/>
+  <g fill="#fff">
+   <circle cx="575" cy="775" r="7.5"/>
+   <circle cx="475" cy="775" r="7.5"/>
+   <circle cx="425" cy="775" r="7.5"/>
+  </g>
+  <circle cx="375" cy="775" r="7.5" fill="#ddd" stroke-dasharray="2, 4"/>
+  <g fill="#fff">
+   <circle cx="400" cy="800" r="7.5"/>
+   <circle cx="350" cy="800" r="7.5"/>
+   <circle cx="425" cy="800" r="7.5"/>
+   <circle cx="475" cy="800" r="7.5"/>
+   <circle cx="375" cy="825" r="7.5"/>
+   <circle cx="400" cy="825" r="7.5"/>
+   <circle cx="500" cy="825" r="7.5"/>
+   <circle cx="575" cy="825" r="7.5"/>
+   <circle cx="475" cy="850" r="7.5"/>
+   <circle cx="425" cy="850" r="7.5"/>
+   <circle cx="375" cy="850" r="7.5"/>
+   <circle cx="325" cy="825" r="7.5"/>
+   <circle cx="325" cy="850" r="7.5"/>
+   <circle cx="325" cy="775" r="7.5"/>
+   <circle cx="275" cy="775" r="7.5"/>
+   <circle cx="325" cy="875" r="7.5"/>
+   <circle cx="300" cy="875" r="7.5"/>
+   <circle cx="275" cy="875" r="7.5"/>
+   <circle cx="250" cy="775" r="7.5"/>
+   <circle cx="250" cy="800" r="7.5"/>
+   <circle cx="275" cy="825" r="7.5"/>
+   <circle cx="225" cy="825" r="7.5"/>
+   <circle cx="225" cy="850" r="7.5"/>
+   <circle cx="225" cy="775" r="7.5"/>
+   <circle cx="200" cy="775" r="7.5"/>
+   <circle cx="175" cy="775" r="7.5"/>
+   <circle cx="175" cy="800" r="7.5"/>
+   <circle cx="200" cy="850" r="7.5"/>
+   <circle cx="225" cy="875" r="7.5"/>
+   <circle cx="250" cy="875" r="7.5"/>
+   <circle cx="175" cy="875" r="7.5"/>
+   <circle cx="200" cy="875" r="7.5"/>
+   <circle cx="325" cy="900" r="7.5"/>
+  </g>
+  <circle cx="375" cy="875" r="7.5" fill="#ddd" stroke-dasharray="2, 4"/>
+  <g fill="#fff">
+   <circle cx="375" cy="900" r="7.5"/>
+   <circle cx="400" cy="875" r="7.5"/>
+   <circle cx="400" cy="900" r="7.5"/>
+   <circle cx="450" cy="875" r="7.5"/>
+   <circle cx="450" cy="900" r="7.5"/>
+   <circle cx="500" cy="875" r="7.5"/>
+   <circle cx="500" cy="900" r="7.5"/>
+   <circle cx="525" cy="875" r="7.5"/>
+   <circle cx="575" cy="875" r="7.5"/>
+   <circle cx="550" cy="900" r="7.5"/>
+   <circle cx="575" cy="900" r="7.5"/>
+   <circle cx="425" cy="925" r="7.5"/>
+   <circle cx="475" cy="925" r="7.5"/>
+   <circle cx="475" cy="950" r="7.5"/>
+   <circle cx="500" cy="950" r="7.5"/>
+   <circle cx="400" cy="950" r="7.5"/>
+   <circle cx="375" cy="925" r="7.5"/>
+   <circle cx="400" cy="925" r="7.5"/>
+   <circle cx="300" cy="925" r="7.5"/>
+   <circle cx="300" cy="900" r="7.5"/>
+   <circle cx="275" cy="900" r="7.5"/>
+   <circle cx="275" cy="925" r="7.5"/>
+   <circle cx="275" cy="950" r="7.5"/>
+   <circle cx="300" cy="950" r="7.5"/>
+   <circle cx="250" cy="925" r="7.5"/>
+   <circle cx="250" cy="900" r="7.5"/>
+   <circle cx="225" cy="925" r="7.5"/>
+  </g>
+  <circle cx="225" cy="950" r="7.5" fill="#ddd" stroke-dasharray="2, 4"/>
+  <g fill="#fff">
+   <circle cx="250" cy="950" r="7.5"/>
+   <circle cx="200" cy="950" r="7.5"/>
+   <circle cx="100" cy="800" r="7.5"/>
+   <circle cx="125" cy="800" r="7.5"/>
+   <circle cx="150" cy="875" r="7.5"/>
+   <circle cx="125" cy="875" r="7.5"/>
+   <circle cx="100" cy="875" r="7.5"/>
+   <circle cx="75" cy="875" r="7.5"/>
+   <circle cx="50" cy="875" r="7.5"/>
+   <circle cx="25" cy="875" r="7.5"/>
+   <circle cx="25" cy="800" r="7.5"/>
+   <circle cx="50" cy="800" r="7.5"/>
+   <circle cx="75" cy="900" r="7.5"/>
+   <circle cx="50" cy="925" r="7.5"/>
+   <circle cx="25" cy="925" r="7.5"/>
+   <circle cx="100" cy="900" r="7.5"/>
+   <circle cx="150" cy="900" r="7.5"/>
+   <circle cx="175" cy="925" r="7.5"/>
+   <circle cx="100" cy="925" r="7.5"/>
+   <circle cx="150" cy="925" r="7.5"/>
+   <circle cx="75" cy="950" r="7.5"/>
+   <circle cx="100" cy="950" r="7.5"/>
+   <circle cx="125" cy="950" r="7.5"/>
+   <circle cx="50" cy="950" r="7.5"/>
+   <circle cx="125" cy="850" r="7.5"/>
+   <circle cx="500" cy="575" r="7.5"/>
+  </g>
+ </g>
+ <g transform="translate(0,-550)" fill="#000000" font-family="sans-serif" font-size="6.6667px" letter-spacing="-.5px" text-anchor="middle" word-spacing="0px">
+  <text x="75" y="577.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="74.75" y="577.50018" font-size="6.6667px" letter-spacing="-.5px">1</tspan></text>
+  <text x="50" y="602.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="49.75" y="602.50018" font-size="6.6667px" letter-spacing="-.5px">8</tspan></text>
+  <text x="25" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="24.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">18</tspan></text>
+  <text x="25" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="24.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">43</tspan></text>
+  <text x="50" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="49.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">31</tspan></text>
+  <text x="75" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="74.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">19</tspan></text>
+  <text x="100" y="602.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="99.75" y="602.50018" font-size="6.6667px" letter-spacing="-.5px">9</tspan></text>
+  <text x="150" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="149.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">20</tspan></text>
+  <text x="100" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="99.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">32</tspan></text>
+  <text x="175" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="174.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">33</tspan></text>
+  <text x="75" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="74.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">44</tspan></text>
+  <text x="50" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="49.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">57</tspan></text>
+  <text x="100" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="99.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">58</tspan></text>
+  <text x="125" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="124.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">45</tspan></text>
+  <text x="175" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="174.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">46</tspan></text>
+  <text x="200" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="199.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">21</tspan></text>
+  <text x="200.5" y="577.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="200.25" y="577.50018" font-size="6.6667px" letter-spacing="-.5px">2</tspan></text>
+  <text x="225" y="602.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="602.50018" font-size="6.6667px" letter-spacing="-.5px">10</tspan></text>
+  <text x="225" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">34</tspan></text>
+  <text x="200" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="199.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">47</tspan></text>
+  <text x="250" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">22</tspan></text>
+  <text x="250" y="602.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="602.50018" font-size="6.6667px" letter-spacing="-.5px">11</tspan></text>
+  <text x="250" y="577.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="577.50018" font-size="6.6667px" letter-spacing="-.5px">3</tspan></text>
+  <text x="275" y="602.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="274.75" y="602.50018" font-size="6.6667px" letter-spacing="-.5px">12</tspan></text>
+  <text x="300" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="299.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">23</tspan></text>
+  <text x="300.5" y="577.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="300.25" y="577.50018" font-size="6.6667px" letter-spacing="-.5px">4</tspan></text>
+  <text x="325" y="602.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="324.75" y="602.50018" font-size="6.6667px" letter-spacing="-.5px">13</tspan></text>
+  <text x="225" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">48</tspan></text>
+  <text x="250" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">35</tspan></text>
+  <text x="300" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="299.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">36</tspan></text>
+  <text x="325" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="324.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">49</tspan></text>
+  <text x="350" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="349.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">50</tspan></text>
+  <text x="325" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="324.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">37</tspan></text>
+  <text x="350" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="349.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">24</tspan></text>
+  <text x="125" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="124.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">59</tspan></text>
+  <text x="50" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="49.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">73</tspan></text>
+  <text x="75" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="74.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">74</tspan></text>
+  <text x="25" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="24.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">92</tspan></text>
+  <text x="125" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="124.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">76</tspan></text>
+  <text x="75" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="74.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">94</tspan></text>
+  <text x="150" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="149.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">77</tspan></text>
+  <text x="50" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="49.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">93</tspan></text>
+  <text x="100" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="99.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">95</tspan></text>
+  <text x="100" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="99.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">75</tspan></text>
+  <text x="200" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="199.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">98</tspan></text>
+  <text x="150" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="149.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">60</tspan></text>
+  <text x="175" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="174.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">61</tspan></text>
+  <text x="200" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="199.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">62</tspan></text>
+  <text x="175" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="174.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">78</tspan></text>
+  <text x="200" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="199.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">79</tspan></text>
+  <text x="175" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="174.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">97</tspan></text>
+  <text x="150" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="149.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">96</tspan></text>
+  <text x="225" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">63</tspan></text>
+  <text x="225" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">80</tspan></text>
+  <text x="225" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">99</tspan></text>
+  <text x="250" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">100</tspan></text>
+  <text x="275" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="274.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">81</tspan></text>
+  <text x="250" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">64</tspan></text>
+  <text x="300" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="299.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">65</tspan></text>
+  <text x="300" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="299.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">82</tspan></text>
+  <text x="325" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="324.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">66</tspan></text>
+  <text x="375" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">67</tspan></text>
+  <text x="350" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="349.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">83</tspan></text>
+  <text x="325" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="324.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">101</tspan></text>
+  <text x="375" y="602.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="602.50018" font-size="6.6667px" letter-spacing="-.5px">14</tspan></text>
+  <text x="375" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">25</tspan></text>
+  <text x="350" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="349.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">38</tspan></text>
+  <text x="400" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">39</tspan></text>
+  <text x="375" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">51</tspan></text>
+  <text x="400" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">68</tspan></text>
+  <text x="375" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">84</tspan></text>
+  <text x="400" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">85</tspan></text>
+  <text x="400" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">103</tspan></text>
+  <text x="375" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">102</tspan></text>
+  <text x="400" y="602.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="602.50018" font-size="6.6667px" letter-spacing="-.5px">15</tspan></text>
+  <text x="400" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">26</tspan></text>
+  <text x="425" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="424.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">27</tspan></text>
+  <text x="450" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="449.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">28</tspan></text>
+  <text x="475" y="602.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="474.75" y="602.50018" font-size="6.6667px" letter-spacing="-.5px">16</tspan></text>
+  <text x="425" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="424.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">40</tspan></text>
+  <text x="450" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="449.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">41</tspan></text>
+  <text x="450" y="577.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="449.75" y="577.50018" font-size="6.6667px" letter-spacing="-.5px">5</tspan></text>
+  <text x="500" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">29</tspan></text>
+  <text x="400" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">52</tspan></text>
+  <text x="425" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="424.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">53</tspan></text>
+  <text x="450" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="449.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">54</tspan></text>
+  <text x="425" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="424.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">69</tspan></text>
+  <text x="450" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="449.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">70</tspan></text>
+  <text x="500" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">71</tspan></text>
+  <text x="500" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">55</tspan></text>
+  <text x="425" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="424.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">86</tspan></text>
+  <text x="450" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="449.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">87</tspan></text>
+  <text x="475" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="474.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">88</tspan></text>
+  <text x="500" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">89</tspan></text>
+  <text x="425" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="424.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">104</tspan></text>
+  <text x="500" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">105</tspan></text>
+  <text x="525" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="524.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">90</tspan></text>
+  <text x="550" y="702.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="549.75" y="702.50018" font-size="6.6667px" letter-spacing="-.5px">72</tspan></text>
+  <text x="550" y="652.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="549.75" y="652.50018" font-size="6.6667px" letter-spacing="-.5px">42</tspan></text>
+  <text x="575" y="677.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="574.75" y="677.50018" font-size="6.6667px" letter-spacing="-.5px">56</tspan></text>
+  <text x="550" y="602.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="549.75" y="602.50018" font-size="6.6667px" letter-spacing="-.5px">17</tspan></text>
+  <text x="550" y="577.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="549.75" y="577.50018" font-size="6.6667px" letter-spacing="-.5px">7</tspan></text>
+  <text x="575" y="627.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="574.75" y="627.50018" font-size="6.6667px" letter-spacing="-.5px">30</tspan></text>
+  <text x="575" y="727.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="574.75" y="727.50018" font-size="6.6667px" letter-spacing="-.5px">91</tspan></text>
+  <text x="550" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="549.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">106</tspan></text>
+  <text x="575" y="752.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="574.75" y="752.50018" font-size="6.6667px" letter-spacing="-.5px">107</tspan></text>
+  <text x="500" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">118</tspan></text>
+  <text x="575" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="574.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">119</tspan></text>
+  <text x="475" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="474.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">117</tspan></text>
+  <text x="425" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="424.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">116</tspan></text>
+  <text x="375" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">115</tspan></text>
+  <text x="400" y="802.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="802.50018" font-size="6.6667px" letter-spacing="-.5px">127</tspan></text>
+  <text x="350" y="802.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="349.75" y="802.50018" font-size="6.6667px" letter-spacing="-.5px">126</tspan></text>
+  <text x="425" y="802.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="424.75" y="802.50018" font-size="6.6667px" letter-spacing="-.5px">128</tspan></text>
+  <text x="475" y="802.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="474.75" y="802.50018" font-size="6.6667px" letter-spacing="-.5px">129</tspan></text>
+  <text x="375" y="827.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="827.50018" font-size="6.6667px" letter-spacing="-.5px">133</tspan></text>
+  <text x="400" y="827.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="827.50018" font-size="6.6667px" letter-spacing="-.5px">134</tspan></text>
+  <text x="500" y="827.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="827.50018" font-size="6.6667px" letter-spacing="-.5px">135</tspan></text>
+  <text x="575" y="827.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="574.75" y="827.50018" font-size="6.6667px" letter-spacing="-.5px">136</tspan></text>
+  <text x="475" y="852.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="474.75" y="852.50018" font-size="6.6667px" letter-spacing="-.5px">143</tspan></text>
+  <text x="425" y="852.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="424.75" y="852.50018" font-size="6.6667px" letter-spacing="-.5px">142</tspan></text>
+  <text x="375" y="852.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="852.50018" font-size="6.6667px" letter-spacing="-.5px">141</tspan></text>
+  <text x="325" y="827.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="324.75" y="827.50018" font-size="6.6667px" letter-spacing="-.5px">132</tspan></text>
+  <text x="325" y="852.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="324.75" y="852.50018" font-size="6.6667px" letter-spacing="-.5px">140</tspan></text>
+  <text x="325" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="324.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">114</tspan></text>
+  <text x="275" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="274.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">113</tspan></text>
+  <text x="325" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="324.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">156</tspan></text>
+  <text x="300" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="299.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">155</tspan></text>
+  <text x="275" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="274.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">154</tspan></text>
+  <text x="250" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">112</tspan></text>
+  <text x="250" y="802.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="802.50018" font-size="6.6667px" letter-spacing="-.5px">125</tspan></text>
+  <text x="275" y="827.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="274.75" y="827.50018" font-size="6.6667px" letter-spacing="-.5px">131</tspan></text>
+  <text x="225" y="827.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="827.50018" font-size="6.6667px" letter-spacing="-.5px">130</tspan></text>
+  <text x="225" y="852.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="852.50018" font-size="6.6667px" letter-spacing="-.5px">139</tspan></text>
+  <text x="225" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">111</tspan></text>
+  <text x="200" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="199.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">110</tspan></text>
+  <text x="175" y="777.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="174.75" y="777.50018" font-size="6.6667px" letter-spacing="-.5px">109</tspan></text>
+  <text x="175" y="802.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="174.75" y="802.50018" font-size="6.6667px" letter-spacing="-.5px">124</tspan></text>
+  <text x="200" y="852.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="199.75" y="852.50018" font-size="6.6667px" letter-spacing="-.5px">138</tspan></text>
+  <text x="225" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">152</tspan></text>
+  <text x="250" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">153</tspan></text>
+  <text x="175" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="174.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">150</tspan></text>
+  <text x="200" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="199.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">151</tspan></text>
+  <text x="325" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="324.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">169</tspan></text>
+  <text x="375" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">157</tspan></text>
+  <text x="375" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">170</tspan></text>
+  <text x="400" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">158</tspan></text>
+  <text x="400" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">171</tspan></text>
+  <text x="450" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="449.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">159</tspan></text>
+  <text x="450" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="449.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">172</tspan></text>
+  <text x="500" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">160</tspan></text>
+  <text x="500" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">173</tspan></text>
+  <text x="525" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="524.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">161</tspan></text>
+  <text x="575" y="877.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="574.75" y="877.50031" font-size="6.6667px" letter-spacing="-.5px">162</tspan></text>
+  <text x="550" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="549.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">174</tspan></text>
+  <text x="575" y="902.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="574.75" y="902.50031" font-size="6.6667px" letter-spacing="-.5px">175</tspan></text>
+  <text x="425" y="927.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="424.75" y="927.50018" font-size="6.6667px" letter-spacing="-.5px">187</tspan></text>
+  <text x="475" y="927.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="474.75" y="927.50018" font-size="6.6667px" letter-spacing="-.5px">188</tspan></text>
+  <text x="475" y="952.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="474.75" y="952.50018" font-size="6.6667px" letter-spacing="-.5px">199</tspan></text>
+  <text x="500" y="952.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="952.50018" font-size="6.6667px" letter-spacing="-.5px">200</tspan></text>
+  <text x="400" y="952.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="952.50018" font-size="6.6667px" letter-spacing="-.5px">198</tspan></text>
+  <text x="375" y="927.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="374.75" y="927.50018" font-size="6.6667px" letter-spacing="-.5px">185</tspan></text>
+  <text x="400" y="927.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="399.75" y="927.50018" font-size="6.6667px" letter-spacing="-.5px">186</tspan></text>
+  <text x="300" y="927.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="299.75" y="927.50031" font-size="6.6667px" letter-spacing="-.5px">184</tspan></text>
+  <text x="300" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="299.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">168</tspan></text>
+  <text x="275" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="274.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">167</tspan></text>
+  <text x="275" y="927.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="274.75" y="927.50031" font-size="6.6667px" letter-spacing="-.5px">183</tspan></text>
+  <text x="275" y="952.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="274.75" y="952.50031" font-size="6.6667px" letter-spacing="-.5px">196</tspan></text>
+  <text x="300" y="952.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="299.75" y="952.50031" font-size="6.6667px" letter-spacing="-.5px">197</tspan></text>
+  <text x="250" y="927.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="927.50031" font-size="6.6667px" letter-spacing="-.5px">182</tspan></text>
+  <text x="250" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">166</tspan></text>
+  <text x="225" y="927.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="927.50031" font-size="6.6667px" letter-spacing="-.5px">181</tspan></text>
+  <text x="225" y="952.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="224.75" y="952.50031" font-size="6.6667px" letter-spacing="-.5px">194</tspan></text>
+  <text x="250" y="952.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="249.75" y="952.50031" font-size="6.6667px" letter-spacing="-.5px">195</tspan></text>
+  <text x="200" y="952.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="199.75" y="952.50031" font-size="6.6667px" letter-spacing="-.5px">193</tspan></text>
+  <text x="100" y="802.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="99.75" y="802.50018" font-size="6.6667px" letter-spacing="-.5px">122</tspan></text>
+  <text x="125" y="802.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="124.75" y="802.50018" font-size="6.6667px" letter-spacing="-.5px">123</tspan></text>
+  <text x="150" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="149.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">149</tspan></text>
+  <text x="125" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="124.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">148</tspan></text>
+  <text x="100" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="99.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">147</tspan></text>
+  <text x="75" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="74.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">146</tspan></text>
+  <text x="50" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="49.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">145</tspan></text>
+  <text x="25" y="877.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="24.75" y="877.50018" font-size="6.6667px" letter-spacing="-.5px">144</tspan></text>
+  <text x="25" y="802.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="24.75" y="802.50018" font-size="6.6667px" letter-spacing="-.5px">120</tspan></text>
+  <text x="50" y="802.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="49.75" y="802.50018" font-size="6.6667px" letter-spacing="-.5px">121</tspan></text>
+  <text x="75" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="74.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">163</tspan></text>
+  <text x="50" y="927.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="49.75" y="927.50018" font-size="6.6667px" letter-spacing="-.5px">177</tspan></text>
+  <text x="25" y="927.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="24.75" y="927.50018" font-size="6.6667px" letter-spacing="-.5px">176</tspan></text>
+  <text x="100" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="99.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">164</tspan></text>
+  <text x="150" y="902.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="149.75" y="902.50018" font-size="6.6667px" letter-spacing="-.5px">165</tspan></text>
+  <text x="175" y="927.50031" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="174.75" y="927.50031" font-size="6.6667px" letter-spacing="-.5px">180</tspan></text>
+  <text x="100" y="927.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="99.75" y="927.50018" font-size="6.6667px" letter-spacing="-.5px">178</tspan></text>
+  <text x="150" y="927.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="149.75" y="927.50018" font-size="6.6667px" letter-spacing="-.5px">179</tspan></text>
+  <text x="75" y="952.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="74.75" y="952.50018" font-size="6.6667px" letter-spacing="-.5px">190</tspan></text>
+  <text x="100" y="952.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="99.75" y="952.50018" font-size="6.6667px" letter-spacing="-.5px">191</tspan></text>
+  <text x="125" y="952.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="124.75" y="952.50018" font-size="6.6667px" letter-spacing="-.5px">192</tspan></text>
+  <text x="50" y="952.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="49.75" y="952.50018" font-size="6.6667px" letter-spacing="-.5px">189</tspan></text>
+  <text x="125" y="852.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="124.75" y="852.50018" font-size="6.6667px" letter-spacing="-.5px">137</tspan></text>
+  <text x="500" y="577.50018" text-align="center" style="line-height:1.25" xml:space="preserve"><tspan x="499.75" y="577.50018" font-size="6.6667px" letter-spacing="-.5px">6</tspan></text>
+ </g>
+</svg>
+`;
+
+const svgRoot = document.getElementById('board-root');
+
+// 1. Inject the actual board artwork as the base layer.
+const boardGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+boardGroup.innerHTML = BOARD_SVG_MARKUP.replace(/^<\?xml[^>]*>/, '').match(/<svg[^>]*>([\s\S]*)<\/svg>/)[1];
+svgRoot.appendChild(boardGroup);
+
+// 2. Draw connection lines for visual sanity-checking.
+const edgeGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+svgRoot.appendChild(edgeGroup);
+for (const [id, dests] of Object.entries(ADJACENCY)) {
+  const p1 = NODE_POSITIONS[id];
+  if (!p1) continue;
+  for (const destId of dests) {
+    const p2 = NODE_POSITIONS[String(destId)];
+    if (!p2) continue;
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', p1.x); line.setAttribute('y1', p1.y);
+    line.setAttribute('x2', p2.x); line.setAttribute('y2', p2.y);
+    line.setAttribute('class', 'edge-line');
+    edgeGroup.appendChild(line);
+  }
+}
+
+// 3. Draw a draggable marker + label per node.
+const markerGroup = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+svgRoot.appendChild(markerGroup);
+const markerElems = {};
+
+function makeMarker(id, pos) {
+  const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+  const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+  circle.setAttribute('cx', pos.x); circle.setAttribute('cy', pos.y);
+  circle.setAttribute('r', 4.5);
+  circle.setAttribute('class', 'node-marker');
+  circle.dataset.nodeId = id;
+  const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+  label.setAttribute('x', pos.x); label.setAttribute('y', pos.y - 6);
+  label.setAttribute('class', 'node-label');
+  label.textContent = id;
+  g.appendChild(circle); g.appendChild(label);
+  markerGroup.appendChild(g);
+  return { g, circle, label };
+}
+
+for (const [id, pos] of Object.entries(NODE_POSITIONS)) {
+  markerElems[id] = makeMarker(id, pos);
+}
+
+// 4. Drag-to-correct.
+let dragging = null;
+svgRoot.addEventListener('pointerdown', (e) => {
+  if (!e.target.classList.contains('node-marker')) return;
+  dragging = e.target.dataset.nodeId;
+  e.target.classList.add('selected');
+});
+svgRoot.addEventListener('pointermove', (e) => {
+  if (!dragging) return;
+  const pt = svgRoot.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  const local = pt.matrixTransform(svgRoot.getScreenCTM().inverse());
+  const x = Math.round(local.x * 100) / 100;
+  const y = Math.round(local.y * 100) / 100;
+  NODE_POSITIONS[dragging] = { x, y };
+  const { circle, label } = markerElems[dragging];
+  circle.setAttribute('cx', x); circle.setAttribute('cy', y);
+  label.setAttribute('x', x); label.setAttribute('y', y - 6);
+  refreshEdgesFor(dragging);
+  updatePreview();
+});
+window.addEventListener('pointerup', () => {
+  if (dragging) markerElems[dragging].circle.classList.remove('selected');
+  dragging = null;
+});
+
+function refreshEdgesFor(nodeId) {
+  // Cheap correctness over cheap performance: redraw all edges after any drag - 199 nodes is small.
+  while (edgeGroup.firstChild) edgeGroup.removeChild(edgeGroup.firstChild);
+  for (const [id, dests] of Object.entries(ADJACENCY)) {
+    const p1 = NODE_POSITIONS[id];
+    if (!p1) continue;
+    for (const destId of dests) {
+      const p2 = NODE_POSITIONS[String(destId)];
+      if (!p2) continue;
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+      line.setAttribute('x1', p1.x); line.setAttribute('y1', p1.y);
+      line.setAttribute('x2', p2.x); line.setAttribute('y2', p2.y);
+      line.setAttribute('class', 'edge-line');
+      edgeGroup.appendChild(line);
+    }
+  }
+}
+
+function updatePreview() {
+  const ordered = {};
+  Object.keys(NODE_POSITIONS).sort((a, b) => Number(a) - Number(b)).forEach(k => ordered[k] = NODE_POSITIONS[k]);
+  document.getElementById('json-preview').value = JSON.stringify(ordered, null, 2);
+}
+updatePreview();
+
+// 5. Jump-to-node: pans the marker to the front visually via a temporary highlight ring.
+document.getElementById('jump-btn').addEventListener('click', () => {
+  const id = document.getElementById('jump-input').value;
+  const entry = markerElems[id];
+  if (!entry) { document.getElementById('status').textContent = `Node ${id} not found.`; return; }
+  entry.circle.setAttribute('r', 9);
+  entry.circle.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+  setTimeout(() => entry.circle.setAttribute('r', 4.5), 1200);
+});
+
+// 6. Export corrected positions as a real file download (works in a normal browser tab).
+document.getElementById('export-btn').addEventListener('click', () => {
+  const ordered = {};
+  Object.keys(NODE_POSITIONS).sort((a, b) => Number(a) - Number(b)).forEach(k => ordered[k] = NODE_POSITIONS[k]);
+  const blob = new Blob([JSON.stringify(ordered, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'node_positions.json';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  document.getElementById('status').textContent = 'Exported node_positions.json - replace docs/map/node_positions.json with the downloaded file if you made corrections.';
+});
+</script>
+</body>
+</html>
