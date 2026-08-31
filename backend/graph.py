@@ -85,3 +85,32 @@ builder.add_edge("finalize", END)
 
 # 5. Compile into a runnable executable
 detective_graph = builder.compile()
+
+
+def build_next_round_state(previous_state: ScotlandYardState) -> ScotlandYardState:
+    """
+    Builds the initial state for the NEXT round from a completed round's final state.
+
+    locked_moves, proposed_strategies, and debate_loop_count all accumulate WITHIN a single
+    round on purpose - that's how the 3-loop consensus tracks who's already locked in. But
+    detective_graph has no memory between separate invocations, so if a caller just fed a
+    round's raw output straight back in as the next round's initial_state, those fields would
+    still show every previously-locked detective as "locked" forever: propose_node and
+    vote_node would silently stop running for them starting round 2, and finalize_round_node
+    would keep replaying their old locked node as every future round's move. This resets the
+    per-round-only fields so every detective starts each new round fully unlocked.
+
+    NOTE: This does not apply final_moves to detective positions or deduct tickets - the
+    caller is expected to have already updated state["detectives"] / state["mr_x"] to reflect
+    the previous round's outcome before calling this.
+    """
+    return {
+        "round_number": previous_state["round_number"] + 1,
+        "debate_loop_count": 0,
+        "mr_x": previous_state["mr_x"],
+        "detectives": previous_state["detectives"],
+        "messages": [],
+        "proposed_strategies": {},
+        "locked_moves": {},
+        "final_moves": {},
+    }
