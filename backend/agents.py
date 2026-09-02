@@ -2,7 +2,7 @@ import asyncio
 import json
 from collections import defaultdict
 from pydantic import BaseModel, Field, create_model
-from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from state import ScotlandYardState, DetectiveStrategy
 from mcp_client import get_detective_llm
 
@@ -27,6 +27,20 @@ def build_ballot_schema(pending_targets: list) -> type[BaseModel]:
         for det_id in pending_targets
     }
     return create_model("VotingBallot", **fields)
+
+# --- MCP TOOL RESULT UNWRAPPING ---
+def parse_valid_moves(raw_result) -> list[dict]:
+    """
+    BaseTool.ainvoke() on an MCP tool never hands back the server's raw Python return
+    value - MCP results travel as content blocks, so a tool that returns a JSON-able
+    list comes back as [{"type": "text", "text": "<json-encoded list>", "id": ...}].
+    The actual move dicts (with "target_node"/"transport_used") are JSON-encoded inside
+    that text field and must be unpacked before use.
+    """
+    if isinstance(raw_result, list) and raw_result and isinstance(raw_result[0], dict) \
+            and raw_result[0].get("type") == "text":
+        return json.loads(raw_result[0]["text"])
+    return raw_result
 
 # --- PROPOSAL CONFLICT DETECTION (used to decide whether to retry a proposer) ---
 def find_proposal_conflicts(strategy_obj, pending_targets: list, legal_move_sets: dict) -> list[str]:
@@ -122,7 +136,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
                 "metro_tickets": d_info["metro_tickets"],
                 "occupied_nodes": occupied
             })
-            return d_id, moves
+            return d_id, parse_valid_moves(moves)
 
         fetch_results = await asyncio.gather(*[fetch_moves(d_id) for d_id in pending_targets])
         for d_id, moves in fetch_results:
@@ -178,7 +192,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
         the same node.
         """
         try:
-            strategy_obj = await structured_llm.ainvoke([SystemMessage(content=prompt)])
+            strategy_obj = await structured_llm.ainvoke([HumanMessage(content=prompt)])
         except Exception as e:
             return det_id, None, e
 
@@ -198,7 +212,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
         earlier, with no two detectives sharing a destination.
         """
             try:
-                strategy_obj = await structured_llm.ainvoke([SystemMessage(content=retry_prompt)])
+                strategy_obj = await structured_llm.ainvoke([HumanMessage(content=retry_prompt)])
             except Exception:
                 pass  # Keep the pre-retry proposal; deterministic backup will fix what's left.
 
@@ -288,7 +302,7 @@ async def debate_node(state: ScotlandYardState) -> dict:
         Keep it to 2-3 sentences.
         """
         
-        response = await llm.ainvoke([SystemMessage(content=prompt)])
+        response = await llm.ainvoke([HumanMessage(content=prompt)])
         print(f"[{det_id.upper()}]: {response.content}")
         transcript.append(f"[{det_id}]: {response.content}")
         
@@ -329,7 +343,7 @@ async def vote_node(state: ScotlandYardState) -> dict:
                 "metro_tickets": d_info["metro_tickets"],
                 "occupied_nodes": occupied
             })
-            return d_id, moves
+            return d_id, parse_valid_moves(moves)
 
         fetch_results = await asyncio.gather(*[fetch_moves(d_id) for d_id in pending_targets])
         for d_id, moves in fetch_results:
@@ -360,7 +374,7 @@ async def vote_node(state: ScotlandYardState) -> dict:
         - If HIGH: Compromise. Vote for the plan with the most momentum in the debate to ensure a move passes.
         """
         try:
-            ballot = await structured_llm.ainvoke([SystemMessage(content=prompt)])
+            ballot = await structured_llm.ainvoke([HumanMessage(content=prompt)])
             votes = {target_id: getattr(ballot, f"{target_id}_vote") for target_id in pending_targets}
             return det_id, votes, None
         except Exception as e:

@@ -1,2 +1,4 @@
 .env
 backend/.env
+backend/llm_io_log*.txt
+backend/run_output*.log

@@ -1,5 +1,12 @@
 # Scotland Yard: AI Game Master Rules
 
+## Purpose
+
+The immutable source of truth for what the game rules *allow* — not how the code implements
+them (see `docs/mechanics/game_mechanics.md` for that) and not a bug/limitation log (see
+`docs/issues/known_issues.md` for that). Per `.cursorrules`, this file may be read but must not
+be altered to invent new mechanics.
+
 ## 1. Initial State & Setup
 
 - **Players:** There are 6 Players in the Game: 1 Mr. X and 5 Detectives.

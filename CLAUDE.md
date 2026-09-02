@@ -1,5 +1,24 @@
 # Project: Scotland Yard Multi-Agent System
 
+## Purpose
+
+This file is Claude Code's auto-loaded project context — high-level project status and
+architecture rationale: what phase the project is in, the major components and why they're
+built the way they are. It sits one level above `docs/mechanics/game_mechanics.md`'s
+implementation-level detail. It is not the place for game rules, mechanic-by-mechanic
+implementation detail, or a bug/limitation log — those live in the docs below.
+
+## Documentation Map
+
+| File | Purpose |
+|---|---|
+| `README.md` | GitHub-facing landing page — what the project is, links into the docs below. |
+| `CLAUDE.md` (this file) | Project status and architecture rationale, for Claude Code sessions. |
+| `docs/rules/rules.md` | Immutable source of truth for what the game rules *allow* — not how the code implements them. |
+| `docs/mechanics/game_mechanics.md` | How the system *implements* each mechanic — algorithms, state transitions, LLM orchestration. |
+| `docs/issues/known_issues.md` | The running log of known bugs, gaps, and non-goals — check here before investigating a weird behavior, and log new ones here once confirmed. |
+| `frontend/README.md` | Generic Vite/React tooling reference for the frontend dev environment — not project-specific documentation. |
+
 ## Overview
 
 A digital adaptation of the board game Scotland Yard. The backend uses a multi-agent LangGraph system featuring 5 AI-driven detectives. The game implements game-theoretic behavior (selfish goals vs. team goals) via sequential debate and structured voting. The system uses the Model Context Protocol (MCP) to strictly enforce game rules and prevent LLM hallucination.
@@ -50,6 +69,10 @@ The AI agents cannot simply guess their moves. They must query a local Game Mast
 
 ## LLM Configuration
 
-- **Model:** `openai/gpt-oss-20b` (via Groq API).
+- **Model:** `deepseek/deepseek-v4-flash-0731`, served via OpenRouter (an OpenAI-API-compatible
+  aggregator), configured in `backend/mcp_client.py`. Previously Gemini's free tier - switched
+  after its 15 requests/minute cap turned out too low to sustain a single propose/debate/vote
+  loop (~15 calls), which meant votes could never actually pass.
 
-- **Env:** API keys are managed via `.env` files (excluded via `.gitignore`).
+- **Env:** API keys are managed via `.env` files (excluded via `.gitignore`). Requires
+  `OPENROUTER_API_KEY` in `backend/.env`.

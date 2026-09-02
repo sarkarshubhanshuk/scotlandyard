@@ -1,3 +1,6 @@
+> Generic Vite/React tooling reference only — not project-specific documentation. For this
+> project's planned frontend architecture (Phase 4, not yet started), see `CLAUDE.md`.
+
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
