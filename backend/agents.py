@@ -1,10 +1,12 @@
 import asyncio
 import json
 from collections import defaultdict
+from typing import Optional
 from pydantic import BaseModel, Field, create_model
 from langchain_core.messages import AIMessage, HumanMessage
 from state import ScotlandYardState, DetectiveStrategy
 from mcp_client import get_detective_llm
+from game_master import compute_mrx_zone, compute_distances_to_zone
 
 DETECTIVE_NAMES = ["detective_1", "detective_2", "detective_3", "detective_4", "detective_5"]
 MAX_ROUNDS = 24
@@ -41,6 +43,70 @@ def parse_valid_moves(raw_result) -> list[dict]:
             and raw_result[0].get("type") == "text":
         return json.loads(raw_result[0]["text"])
     return raw_result
+
+# --- MR. X POSSIBLE-ZONE CONTEXT (docs/issues/known_issues.md ISSUE-005) ---
+# Server-side board-topology computation injected directly as prompt text - no extra
+# LLM/tool round-trip, which is what keeps this from compounding the latency issues already
+# logged for propose/vote (ISSUE-006/007/009).
+MRX_ZONE_LIST_THRESHOLD = 20  # show the literal node list only up to this many possible nodes
+
+def compute_mrx_zone_context(state: ScotlandYardState) -> Optional[dict]:
+    """
+    Everywhere Mr. X could plausibly be standing right now, and the hop-distance from every
+    board node to the nearest such node. Returns None during rounds 1-2, before he has ever
+    surfaced (no last-known node to search from).
+
+    turns_since_surfacing is capped at 4 regardless of the raw round gap - even that cap
+    already covers up to ~84% of the 199-node board (empirically checked against
+    docs/map/map.json), so a larger cap would add cost without adding useful information. This
+    also cleanly absorbs the one asymmetric surfacing gap (round 18 -> round 24 is 6 rounds,
+    not 5): the rounds that would otherwise compute 5 hops are already "saturated" at 4 anyway.
+    """
+    mr_x = state["mr_x"]
+    last_known_node = mr_x.get("last_known_node")
+    last_known_round = mr_x.get("last_known_round")
+    if last_known_node is None:
+        return None
+
+    turns_since_surfacing = min(state["round_number"] - last_known_round, 4)
+    occupied = {d["node_id"] for d in state["detectives"].values()}
+    zone = compute_mrx_zone(last_known_node, turns_since_surfacing, occupied_nodes=occupied)
+    return {
+        "last_known_node": last_known_node,
+        "last_known_round": last_known_round,
+        "turns_since_surfacing": turns_since_surfacing,
+        "zone_nodes": sorted(zone.keys()),
+        "distances_to_zone": compute_distances_to_zone(zone.keys()),
+    }
+
+def format_mrx_zone_block(zone_context: Optional[dict]) -> str:
+    """
+    Renders compute_mrx_zone_context()'s result into the fixed prompt block shared by
+    propose_node/debate_node/vote_node. Below MRX_ZONE_LIST_THRESHOLD nodes, the zone is small
+    enough to be a useful, specific hint, so it's listed outright; above it, only the count is
+    shown - past that size the zone covers most of the board anyway, and enumerating it would
+    just be token cost with no real narrowing-down value.
+    """
+    if zone_context is None:
+        return "Mr. X has not surfaced yet this game - no location data is available yet."
+
+    zone_nodes = zone_context["zone_nodes"]
+    if len(zone_nodes) <= MRX_ZONE_LIST_THRESHOLD:
+        location_line = f"Possible locations right now ({len(zone_nodes)} nodes): {zone_nodes}"
+    else:
+        location_line = (
+            f"Possible locations right now: {len(zone_nodes)} nodes (too many to list - his "
+            "position is broadly uncertain right now)"
+        )
+    return (
+        f"Last seen: Node {zone_context['last_known_node']} (Round {zone_context['last_known_round']}). "
+        f"Turns elapsed since then: {zone_context['turns_since_surfacing']}.\n"
+        f"        {location_line}"
+    )
+
+def zone_distances_for_moves(moves_by_detective: dict, distances_to_zone: dict) -> dict:
+    """{detective_id: hops_to_nearest_possible_mr_x_location} for a {detective_id: node_id} map."""
+    return {det_id: distances_to_zone.get(node_id) for det_id, node_id in moves_by_detective.items()}
 
 # --- PROPOSAL CONFLICT DETECTION (used to decide whether to retry a proposer) ---
 def find_proposal_conflicts(strategy_obj, pending_targets: list, legal_move_sets: dict) -> list[str]:
@@ -91,6 +157,11 @@ def get_psychology_prompt(round_number: int, det_id: str) -> str:
     
     STRICT RULE: NO TWO DETECTIVES CAN OCCUPY THE SAME NODE. Never propose or vote for a node
     another detective is already using or already locked into this round.
+
+    STRICT RULE: Use ONLY the data given to you in this prompt (board state, legal moves, Mr.
+    X's possible zone, distances). Do not attempt to call any tool, browse, or otherwise seek
+    outside information about Scotland Yard, the board, or Mr. X - everything you need has
+    already been provided.
     """
 
 # --- AGENT NODES ---
@@ -143,6 +214,20 @@ async def propose_node(state: ScotlandYardState) -> dict:
             legal_moves_context[d_id] = moves
             legal_move_sets[d_id] = {m["target_node"] for m in moves if "target_node" in m}
 
+    # Mr. X possible-zone context (ISSUE-005): annotate each legal-move candidate with its own
+    # hop-distance to the nearest node he could plausibly be standing on, and give each
+    # still-undecided detective's CURRENT position the same, as a baseline for comparison.
+    zone_context = compute_mrx_zone_context(state)
+    zone_block = format_mrx_zone_block(zone_context)
+    distances_to_zone = zone_context["distances_to_zone"] if zone_context else {}
+    for moves in legal_moves_context.values():
+        for move in moves:
+            move["distance_to_mrx_zone"] = distances_to_zone.get(move["target_node"])
+    current_distances_to_zone = {
+        d_id: distances_to_zone.get(state["detectives"][d_id]["node_id"])
+        for d_id in pending_targets
+    }
+
     # (c) Proactive collision hint: nodes reachable by more than one still-undecided
     # detective this turn. Naming these explicitly to the proposer is far more effective
     # at preventing duplicates up front than a generic "don't duplicate" instruction.
@@ -175,7 +260,12 @@ async def propose_node(state: ScotlandYardState) -> dict:
         {get_psychology_prompt(state['round_number'], det_id)}
 
         Board State: {board_state}
-        Mr X Last Known: Node {state['mr_x']['last_known_node']}, History: {state['mr_x']['transport_history']}
+        Mr. X's Ticket Log (transport types used so far - NOT his location): {state['mr_x']['transport_history']}
+
+        Mr. X's Possible Zone:
+        {zone_block}
+        Each still-undecided detective's CURRENT distance (in hops) to the nearest node in that
+        zone, for comparison: {json.dumps(current_distances_to_zone)}
 
         Already Locked Moves This Round (FINAL - these detectives are done, do not send anyone
         else to their nodes): {json.dumps(locked, indent=2)}
@@ -183,7 +273,11 @@ async def propose_node(state: ScotlandYardState) -> dict:
         The only detectives who still need a move decided this round are: {pending_targets}.
         CRITICAL: Here are the ONLY legal target nodes each of them can reach this turn (already
         excludes nodes currently occupied by other detectives and nodes already locked as
-        someone else's destination this round): {json.dumps(legal_moves_context, indent=2)}{contested_note}
+        someone else's destination this round). Each option's "distance_to_mrx_zone" is its own
+        hop-distance to the nearest node in Mr. X's possible zone above - 0 means that
+        destination IS one of his possible current locations; lower is generally better if you
+        want the team closing in on him, compare it against the CURRENT distances above to see
+        whether a move is actually progress: {json.dumps(legal_moves_context, indent=2)}{contested_note}
 
         Task: Propose a target node ONLY for the still-undecided detectives listed above
         ({', '.join(pending_targets)}). YOU MUST ONLY SELECT FROM THE LEGAL MOVES PROVIDED ABOVE.
@@ -279,21 +373,49 @@ async def propose_node(state: ScotlandYardState) -> dict:
 async def debate_node(state: ScotlandYardState) -> dict:
     print("\n--- SEQUENTIAL DEBATE ---")
     llm, _ = await get_detective_llm()
-    
+
     transcript = []
-    proposals_context = json.dumps(state["proposed_strategies"], indent=2)
     locked = state.get("locked_moves", {})
-    
+
+    # Mr. X possible-zone context (ISSUE-005): annotate each proposer's already-proposed
+    # destinations with their hop-distance to Mr. X's possible zone, so debaters can argue
+    # about whether a plan actually closes in on him, not just where it sends people.
+    zone_context = compute_mrx_zone_context(state)
+    zone_block = format_mrx_zone_block(zone_context)
+    distances_to_zone = zone_context["distances_to_zone"] if zone_context else {}
+    current_distances_to_zone = {
+        d_id: distances_to_zone.get(d_info["node_id"])
+        for d_id, d_info in state["detectives"].items()
+    }
+    annotated_proposals = {
+        proposer_id: {
+            "proposed_board_moves": strategy.get("proposed_board_moves", {}),
+            "distance_to_mrx_zone_per_move": zone_distances_for_moves(
+                strategy.get("proposed_board_moves", {}), distances_to_zone
+            ),
+            "rationale": strategy.get("rationale"),
+        }
+        for proposer_id, strategy in state["proposed_strategies"].items()
+    }
+    proposals_context = json.dumps(annotated_proposals, indent=2)
+
     for det_id in DETECTIVE_NAMES:
         transcript_history = "\n".join(transcript) if transcript else "No one has spoken yet."
-        
+
         prompt = f"""
         You are {det_id}.
         {get_psychology_prompt(state['round_number'], det_id)}
-        
-        Initial Proposals: {proposals_context}
+
+        Mr. X's Possible Zone:
+        {zone_block}
+        Each detective's CURRENT distance (in hops) to the nearest node in that zone, for
+        comparison: {json.dumps(current_distances_to_zone)}
+
+        Initial Proposals (each move's "distance_to_mrx_zone_per_move" is that destination's
+        hop-distance to the nearest node in Mr. X's possible zone above - 0 means it IS one of
+        his possible current locations): {proposals_context}
         Already Locked Moves: {locked}
-        
+
         Debate Transcript so far:
         {transcript_history}
         
@@ -325,8 +447,12 @@ async def vote_node(state: ScotlandYardState) -> dict:
     structured_llm = llm.with_structured_output(build_ballot_schema(pending_targets))
 
     # Recompute legal targets (with occupancy) for still-undecided detectives so we can
-    # discard any illegal vote before it reaches the tally, mirroring propose_node.
+    # discard any illegal vote before it reaches the tally, mirroring propose_node. Also build
+    # a displayable version (legal_moves_context) so voters can see the actual candidates and
+    # their distance to Mr. X's possible zone - propose_node already shows this; ballots did
+    # not until now.
     valid_moves_tool = next((t for t in tools if t.name == "get_valid_moves"), None)
+    legal_moves_context = {}
     legal_move_sets = {}
     all_detective_nodes = {d["node_id"] for d in state["detectives"].values()}
 
@@ -347,7 +473,20 @@ async def vote_node(state: ScotlandYardState) -> dict:
 
         fetch_results = await asyncio.gather(*[fetch_moves(d_id) for d_id in pending_targets])
         for d_id, moves in fetch_results:
+            legal_moves_context[d_id] = moves
             legal_move_sets[d_id] = {m["target_node"] for m in moves if "target_node" in m}
+
+    # Mr. X possible-zone context (ISSUE-005): same annotation propose_node applies.
+    zone_context = compute_mrx_zone_context(state)
+    zone_block = format_mrx_zone_block(zone_context)
+    distances_to_zone = zone_context["distances_to_zone"] if zone_context else {}
+    for moves in legal_moves_context.values():
+        for move in moves:
+            move["distance_to_mrx_zone"] = distances_to_zone.get(move["target_node"])
+    current_distances_to_zone = {
+        d_id: distances_to_zone.get(state["detectives"][d_id]["node_id"])
+        for d_id in pending_targets
+    }
 
     debate_transcript = state["messages"][-1].content if state["messages"] else ""
 
@@ -366,7 +505,16 @@ async def vote_node(state: ScotlandYardState) -> dict:
         Based on the debate:
         {debate_transcript}
 
+        Mr. X's Possible Zone:
+        {zone_block}
+        Each still-undecided detective's CURRENT distance (in hops) to the nearest node in that
+        zone, for comparison: {json.dumps(current_distances_to_zone)}
+
         The only detectives who still need a vote this round are: {pending_targets}.
+        Each candidate's legal target nodes, with "distance_to_mrx_zone" (0 means that node IS
+        one of Mr. X's possible current locations; lower is generally better if you want the
+        team closing in on him): {json.dumps(legal_moves_context, indent=2)}
+
         Task: Cast your final vote ONLY for the exact node each of those still-undecided
         detectives should move to.
         Apply your current Desperation Level to your voting strategy:

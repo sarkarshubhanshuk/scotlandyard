@@ -100,6 +100,12 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   specifically — so it's forced to answer in prose. `get_detective_llm()` currently hands the
   same tool-bound instance to all three nodes; only `propose_node`/`vote_node` actually need
   tools.
+- **Update (2026-09-03)**: `get_psychology_prompt` now includes an explicit "use only the data
+  given to you in this prompt, do not seek outside information" instruction (added as part of
+  the ISSUE-005 fix), which should reduce how often the model reaches for `get_node_info` in the
+  first place — but it's a prompt-level mitigation, not a structural fix; the LLM is still
+  tool-bound for this call and `debate_node` still can't handle a tool-call response if one
+  happens anyway. Status stays Open.
 
 ### ISSUE-004 — Vote prompts never include the structured proposals, only the (currently broken) debate transcript
 
@@ -118,27 +124,64 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   in `backend/agents.py`.
 - **Proposed Fix**: Include `json.dumps(state["proposed_strategies"], indent=2)` in the vote
   prompt alongside the debate transcript, the same way `debate_node` already does.
+- **Update (2026-09-03)**: As part of the ISSUE-005 fix, `vote_node` now also builds and shows
+  `legal_moves_context` (the candidate nodes each still-undecided detective could move to, same
+  as `propose_node` already displayed) — so ballots are no longer *purely* dependent on the
+  debate transcript. Still missing: the actual `proposed_strategies` rationale/reasoning behind
+  each proposal. Status stays Open for that gap.
 
 ### ISSUE-005 — No board-topology/connectivity context is ever given to the LLM
 
-- **Status**: Open
-- **Area**: `backend/agents.py:propose_node`, `debate_node`, `vote_node`
+- **Status**: Fixed
+- **Area**: `backend/agents.py:propose_node`, `debate_node`, `vote_node`, `backend/game_master.py`
 - **Logged**: 2026-09-02
-- **Description**: Every prompt (propose/debate/vote) only ever shows a flat list of *this
+- **Description**: Every prompt (propose/debate/vote) only ever showed a flat list of *this
   turn's* legal target nodes as bare node IDs — no adjacency, no geography, no sense of which
-  nodes are near Mr. X's last-known location beyond the number itself. The model has no way to
+  nodes are near Mr. X's last-known location beyond the number itself. The model had no way to
   reason spatially about "cutting off routes" the game's own psychology prompts ask it to reason
   about.
-- **Evidence**: `llm_io_log_full_round_e2e.txt` CALL #3 OUTPUT explicitly surfaces the gap ("we
-  don't have full map... Need know Scotland Yard board? Node numbers and connections") and is
+- **Evidence**: `llm_io_log_full_round_e2e.txt` CALL #3 OUTPUT explicitly surfaced the gap ("we
+  don't have full map... Need know Scotland Yard board? Node numbers and connections") and was
   the likely trigger for ISSUE-003's `get_node_info` tool-call attempts.
-- **Proposed Fix**: Two options with a real tradeoff — (1) implement a proper multi-turn tool
-  loop so a bound `get_node_info`/`read_rules` call actually gets executed and fed back before
-  the final answer (most flexible, but adds round-trips on top of an already slow model — see
-  ISSUE-006); or (2) precompute a compact board excerpt server-side (e.g. neighbors of Mr. X's
-  last-known node a few hops out, plus neighbors of each detective's legal-move candidates) and
-  inject it as prompt text — no extra LLM round-trip, deterministic. (2) is the more practical
-  fix given the latency issues below.
+- **Fix**: Went with option (2) from the original analysis (server-side precompute, no extra LLM
+  round-trip), refined after a scale check against `docs/map/map.json` showed the naive version
+  would have been counterproductive: at 4 hops, Mr. X's "possible zone" can cover up to 84% of
+  the 199-node board, and a full candidate-move × zone-node distance matrix would have run to
+  ~7,500 numbers in the worst case — exactly the kind of prompt bloat likely to make ISSUE-002/
+  006/007 worse, not better. Implemented instead as:
+  - `game_master.py:compute_mrx_zone` — BFS from Mr. X's last-known node, hop-capped at
+    `min(turns_since_surfacing, 4)`, blocked through currently-occupied detective nodes per
+    rules.md. Ticket-blind by deliberate choice — see ISSUE-015.
+  - `game_master.py:compute_distances_to_zone` — one multi-source BFS from the whole zone,
+    giving every board node's hop-distance to the nearest zone node in a single pass instead of
+    one BFS per candidate.
+  - `agents.py:compute_mrx_zone_context`/`format_mrx_zone_block` — renders the zone as a
+    literal node list only when it's ≤20 nodes (`MRX_ZONE_LIST_THRESHOLD`); above that, a count
+    only, since a huge list carries essentially no narrowing-down value. Returns `None` (handled
+    explicitly) during rounds 1-2, before Mr. X has ever surfaced.
+  - Every legal-move candidate in `propose_node`/`vote_node`, every already-proposed destination
+    in `debate_node`, and each detective's own current position now carry a single
+    `distance_to_mrx_zone` integer — not a full matrix. Measured real-data cost: ~304 tokens
+    added per propose/vote call in a typical (count-only zone) case.
+  - `get_psychology_prompt` (shared by all three nodes) also gained an explicit "use only the
+    data given to you in this prompt, do not seek outside information" instruction, which
+    doubles as a partial mitigation for ISSUE-003 (still open — see that entry).
+
+### ISSUE-015 — Mr. X's possible-zone computation is ticket-blind
+
+- **Status**: Won't Fix (deliberate, confirmed decision)
+- **Area**: `backend/game_master.py:compute_mrx_zone`
+- **Logged**: 2026-09-03
+- **Description**: `compute_mrx_zone`'s BFS treats every board edge as traversable regardless of
+  Mr. X's actual remaining ticket inventory — e.g. it won't prune a metro-only path 3 hops away
+  even if he's already spent his last metro and black tickets. This means the "possible zone"
+  shown to detectives is a strict superset of his true reachable set; it can never wrongly
+  exclude his real location, but it can include nodes he genuinely couldn't reach.
+- **Fix**: Not planned — explicitly decided against during the ISSUE-005 design discussion, to
+  avoid modeling hypothetical multi-hop ticket-spending paths (materially more complex, and the
+  set of tickets that could validly reach a given node only grows harder to reason about as Mr.
+  X's inventory shrinks over the game). Revisit only if the zone's accuracy becomes a real
+  gameplay problem in practice.
 
 ---
 

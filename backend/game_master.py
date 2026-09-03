@@ -1,7 +1,7 @@
 import sys
 import json
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, Iterable, List, Optional
 from fastmcp import FastMCP
 
 # Initialize the MCP Server
@@ -78,6 +78,56 @@ def compute_valid_moves(
             })
 
     return valid_moves
+
+def _bfs_from(start_nodes: set, max_hops: Optional[int] = None, blocked_nodes: Optional[set] = None) -> Dict[int, int]:
+    """
+    Multi-source, unweighted BFS over the board graph (any connection type, ignoring ticket
+    availability - a plain hop-count distance, not a ticket-constrained one). Returns
+    {node_id: hop_distance}, seeded at distance 0 for every node in start_nodes. blocked_nodes
+    are never added to the frontier, so they're excluded as both a destination and a
+    pass-through point. Stops expanding past max_hops if given; runs to exhaustion if None.
+    """
+    blocked = blocked_nodes or set()
+    visited = {n: 0 for n in start_nodes if n not in blocked}
+    frontier = list(visited.keys())
+    hop = 0
+    while frontier and (max_hops is None or hop < max_hops):
+        hop += 1
+        next_frontier = []
+        for node in frontier:
+            node_info = get_node_info(node)
+            if "error" in node_info:
+                continue
+            for connection in node_info["connections"]:
+                dest = connection["destination"]
+                if dest in blocked or dest in visited:
+                    continue
+                visited[dest] = hop
+                next_frontier.append(dest)
+        frontier = next_frontier
+    return visited
+
+def compute_mrx_zone(last_known_node: int, max_hops: int, occupied_nodes: Optional[List[int]] = None) -> Dict[int, int]:
+    """
+    Every node Mr. X could plausibly be standing on right now: everything reachable from his
+    last-known node within max_hops (== turns elapsed since he last surfaced, capped by the
+    caller), via any connection type. Ticket-blind - does not check whether Mr. X's actual
+    remaining ticket inventory could really pay for a given path (documented simplification;
+    see docs/issues/known_issues.md). Blocks through currently-occupied detective nodes, per
+    rules.md: "Mr. X cannot move to, or pass through, a Node occupied by a Detective."
+    """
+    return _bfs_from({last_known_node}, max_hops=max_hops, blocked_nodes=set(occupied_nodes or []))
+
+def compute_distances_to_zone(zone_nodes: Iterable[int]) -> Dict[int, int]:
+    """
+    {node_id: hops_to_nearest_zone_node} for every node on the board, computed as a single
+    multi-source BFS seeded from every node in zone_nodes at once (distance 0) - far cheaper
+    than running a separate BFS per node that needs a distance looked up. Not occupancy-
+    blocked: this projects several ROUNDS into the future (how many moves it would take a
+    detective to eventually reach this area), by which point current occupancy will already
+    have changed, so blocking on today's board state would just be misleading.
+    """
+    return _bfs_from(set(zone_nodes), max_hops=None, blocked_nodes=None)
 
 @mcp.tool()
 def get_valid_moves(

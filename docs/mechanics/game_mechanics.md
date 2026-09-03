@@ -116,18 +116,47 @@ START -> propose -> debate -> vote -> [router] -> propose (loop) OR finalize -> 
 - The 5 proposals (and their conflict-triggered retries) run concurrently (`asyncio.gather`),
   since they're blind/independent of each other — no detective sees another's proposal before
   making their own.
+- Every legal-move candidate is also annotated with `distance_to_mrx_zone` — see "Mr. X
+  Possible-Zone Context" below.
+
+**Mr. X Possible-Zone Context** (shared by all three phases — `agents.py:compute_mrx_zone_context`)
+- Computed once per node invocation (not per detective) from `mr_x.last_known_node`/
+  `last_known_round` and the board graph, then injected as prompt text into every propose,
+  debate, and vote call. Gives detectives spatial grounding they otherwise have none of — see
+  `docs/issues/known_issues.md` ISSUE-005.
+- **The zone**: every node reachable from Mr. X's last-known node within
+  `min(round_number - last_known_round, 4)` hops, blocked through currently-occupied detective
+  nodes (per rules.md's "Mr. X cannot move to, or pass through, a Node occupied by a
+  Detective"), ticket-blind (documented tradeoff — `known_issues.md` ISSUE-015). Shown as a
+  literal node list when ≤20 nodes; above that, only the count — a larger list would cover most
+  of the 199-node board and add prompt cost without adding real narrowing-down value. `None`
+  (handled explicitly, with a "hasn't surfaced yet" message) during rounds 1-2.
+- **The distance signal**: one multi-source BFS from the whole zone gives every board node's
+  hop-distance to the nearest zone node. Rather than a full candidate-move × zone-node matrix
+  (which would run to thousands of numbers at wide hop counts), each candidate move, each
+  already-proposed destination (in debate), and each detective's own current position gets a
+  single `distance_to_mrx_zone` integer — 0 means that node IS a possible current location.
+- All three prompts also gained a "use only the data given to you in this prompt, do not seek
+  outside information" instruction (`get_psychology_prompt`), added alongside this context.
 
 **Phase 2 — Debate** (`debate_node`)
 - Strictly sequential: Detective 1 speaks first, then Detective 2 (who sees D1's remark),
   through Detective 5 (who sees the full transcript so far). This is the one phase that cannot
   be parallelized, by design — each speaker is meant to react to what was already said.
 - All 5 detectives speak every loop, including already-locked ones.
+- Each proposer's already-proposed destinations are annotated with `distance_to_mrx_zone_per_move`
+  (see "Mr. X Possible-Zone Context" above), so debaters can argue about whether a plan actually
+  closes in on him.
 
 **Phase 3 — Vote** (`vote_node`)
 - Every detective casts one ballot, voting on a target node for every *still-undecided*
   detective only (same dynamic-schema shrinking as the propose phase, via
   `build_ballot_schema`). Ballots are simultaneous/independent (no voter sees another's
   ballot), so the 5 calls run concurrently.
+- The prompt also shows each still-undecided detective's legal-move candidates (mirroring
+  `propose_node`'s display) annotated with `distance_to_mrx_zone` — voters are no longer voting
+  blind on distance/positioning, though they still don't see the proposers' own rationale text
+  (`known_issues.md` ISSUE-004, still open).
 - Votes are validated against the same legal-move set computed for this phase; an illegal vote
   is discarded before tallying, never counted.
 - Within one voter's own ballot, a vote is also discarded if it duplicates a node the same
@@ -186,15 +215,19 @@ state and returns a fresh `initial_state` for the next round: `round_number` inc
 - `backend/graph.py:check_vote_status`, `finalize_round_node`, `build_next_round_state`
 - `backend/game_master.py:get_valid_moves` — ticket + occupancy legality, server-side
 - `backend/mcp_client.py:get_detective_llm` — cached LLM/tool binding shared across all nodes
+- `backend/game_master.py:compute_mrx_zone`, `compute_distances_to_zone` — the board-topology
+  BFS behind the Mr. X Possible-Zone Context described above
+- `backend/agents.py:compute_mrx_zone_context`, `format_mrx_zone_block`, `zone_distances_for_moves`
+  — builds and renders that context into each of the three prompts
 
 ### Design Rationale
 
 - **3-vote majority threshold**: matches "most of the team agrees" without requiring full
   unanimity, which would make consensus nearly impossible with 5 independently-motivated agents.
-- **Server-side legality (MCP)**: the LLM (`openai/gpt-oss-20b`, a small model) cannot be
-  trusted to reliably honor prompt-only constraints, so both ticket legality and node-occupancy
-  are computed by `get_valid_moves` and re-validated in code after every LLM response, rather
-  than relied upon as prompted behavior.
+- **Server-side legality (MCP)**: the LLM cannot be trusted to reliably honor prompt-only
+  constraints, so both ticket legality and node-occupancy are computed by `get_valid_moves` and
+  re-validated in code after every LLM response, rather than relied upon as prompted behavior.
+  (Current model: `deepseek/deepseek-v4-flash-0731` via OpenRouter — see `CLAUDE.md`.)
 - **Dynamic schemas that shrink each loop**: once a detective locks, neither proposers nor
   voters are ever asked about them again — this is a direct token/latency saving, not just a
   correctness nicety.
@@ -205,13 +238,25 @@ state and returns a fresh `initial_state` for the next round: `round_number` inc
   independent decisions by nature (sealed proposals, secret-ish ballots), so parallelizing them
   only changes latency, not outcome. Debate is deliberately sequential — the whole point is
   that each speaker reacts to what was already said.
-- **Prompt-level conflict hints + one retry, backed by deterministic code enforcement**: a
-  small model (today's `openai/gpt-oss-20b`) can't be trusted to reliably self-enforce
-  "propose distinct nodes," but a stronger production model shouldn't need to pay for the
+- **Prompt-level conflict hints + one retry, backed by deterministic code enforcement**: the
+  LLM can't be trusted to reliably self-enforce "propose distinct nodes" on prompt instructions
+  alone (see `known_issues.md` ISSUE-002), but a stronger model shouldn't need to pay for the
   same heavy-handed correction every time either. Naming contested nodes up front and
   allowing one feedback-guided retry reduces how often the deterministic reconciliation pass
   has to intervene, but that pass — not the prompt or the retry — is what actually guarantees
   rules (a)-(d) hold, independent of which LLM is behind `get_detective_llm`.
+- **One scalar per move, not a full distance matrix, for the Mr. X zone context**: an earlier
+  design pass considered giving every candidate move its distance to *every* node Mr. X could
+  possibly be at, but a real check against `docs/map/map.json` showed the zone can cover up to
+  ~84% of the board at 4 hops — a full matrix would run to thousands of numbers per call in the
+  worst case, adding real cost and complexity right on top of already-logged latency/reliability
+  issues (`known_issues.md` ISSUE-006/007/009). A single "distance to the *nearest* possible
+  node" per candidate keeps the added cost to a measured ~304 tokens per call while still
+  answering the actual decision-relevant question ("does this move get me closer"). The
+  tradeoff, accepted deliberately: this scalar alone can't support true multi-detective
+  triangulation (knowing several detectives' distances to *some* plausible node doesn't reveal
+  whether they're all closing in on the same spot or covering different ones) — it's a
+  "getting warmer/colder" signal per detective, not a coordinated-encirclement one.
 
 ---
 

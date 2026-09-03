@@ -53,9 +53,11 @@ The AI agents cannot simply guess their moves. They must query a local Game Mast
 
   - Voting requires a 3/5 threshold to lock a move.
 
+  - All three nodes inject a "Mr. X Possible-Zone Context" — a server-side board-topology BFS (`game_master.py:compute_mrx_zone`/`compute_distances_to_zone`, called in-process, not via MCP) giving detectives spatial grounding: where Mr. X could plausibly be, and each candidate move's hop-distance to that zone. See `docs/mechanics/game_mechanics.md` §1 for the full design (and why it's a single per-move number, not a full distance matrix).
+
 - `backend/graph.py`: The State Machine router. It loops the propose/debate/vote cycle up to a maximum of 3 times per round. If consensus fails after 3 loops, it triggers a fallback where agents execute their self-proposed moves.
 
-- `backend/test_phase3.py`: The async testing script used to verify round execution.
+- `backend/test_phase3.py` / `backend/test_full_round_e2e.py`: async testing scripts that drive `detective_graph` end-to-end via real LLM calls; both log every LLM call's full input/output to a transcript file for debugging agent behavior.
 
 ### 3. Phase 4 Target Architecture (Hybrid Frontend)
 
