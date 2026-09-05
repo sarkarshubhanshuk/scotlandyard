@@ -47,8 +47,15 @@ class ScotlandYardState(TypedDict):
     round_number: int
 
     # Tracks the 1-3 voting loops
-    debate_loop_count: int  
-    
+    debate_loop_count: int
+
+    # Per-round memoization of agents.py:compute_mrx_zone_context() - identical inputs across
+    # propose/debate/vote and every debate-loop iteration within one round, so it's computed
+    # once (by whichever of those nodes runs first) and reused for the rest of the round. Key
+    # absence (not just None, which is a legitimate pre-reveal value) means "not yet computed
+    # this round" - build_next_round_state omits this field so each new round starts fresh.
+    mrx_zone_context: Optional[dict]
+
     # Mr. X Status & Travel Log
     mr_x: MrXState
     

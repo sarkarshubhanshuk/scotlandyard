@@ -79,6 +79,25 @@ def compute_mrx_zone_context(state: ScotlandYardState) -> Optional[dict]:
         "distances_to_zone": compute_distances_to_zone(zone.keys()),
     }
 
+def get_mrx_zone_context(state: ScotlandYardState) -> tuple[Optional[dict], dict]:
+    """
+    Memoizes compute_mrx_zone_context() for the current round. Its inputs (last_known_node/
+    round, round_number, detectives' occupied nodes) are identical across propose/debate/vote
+    and every debate-loop iteration within one round - graph.py loops up to 3 times, so calling
+    it fresh from each of the 3 nodes meant up to 9 redundant BFS runs per round. Presence of
+    "mrx_zone_context" on state (not just truthiness - it's legitimately None pre-reveal) is
+    what marks it as already computed this round; build_next_round_state omits the key so each
+    new round starts with a cache miss.
+
+    Returns (zone_context, state_update): callers must merge state_update into their own
+    returned dict so later nodes/loops in the same round see the cached value instead of
+    recomputing it.
+    """
+    if "mrx_zone_context" in state:
+        return state["mrx_zone_context"], {}
+    zone_context = compute_mrx_zone_context(state)
+    return zone_context, {"mrx_zone_context": zone_context}
+
 def format_mrx_zone_block(zone_context: Optional[dict]) -> str:
     """
     Renders compute_mrx_zone_context()'s result into the fixed prompt block shared by
@@ -217,7 +236,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
     # Mr. X possible-zone context (ISSUE-005): annotate each legal-move candidate with its own
     # hop-distance to the nearest node he could plausibly be standing on, and give each
     # still-undecided detective's CURRENT position the same, as a baseline for comparison.
-    zone_context = compute_mrx_zone_context(state)
+    zone_context, zone_state_update = get_mrx_zone_context(state)
     zone_block = format_mrx_zone_block(zone_context)
     distances_to_zone = zone_context["distances_to_zone"] if zone_context else {}
     for moves in legal_moves_context.values():
@@ -367,7 +386,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
         print(f"\n[{det_id.upper()} PROPOSAL]: {strategy_obj.rationale}")
         print(f"Moves: {strategies[det_id]['proposed_board_moves']}")
 
-    return {"proposed_strategies": strategies, "messages": []}
+    return {"proposed_strategies": strategies, "messages": [], **zone_state_update}
 
 
 async def debate_node(state: ScotlandYardState) -> dict:
@@ -380,7 +399,7 @@ async def debate_node(state: ScotlandYardState) -> dict:
     # Mr. X possible-zone context (ISSUE-005): annotate each proposer's already-proposed
     # destinations with their hop-distance to Mr. X's possible zone, so debaters can argue
     # about whether a plan actually closes in on him, not just where it sends people.
-    zone_context = compute_mrx_zone_context(state)
+    zone_context, zone_state_update = get_mrx_zone_context(state)
     zone_block = format_mrx_zone_block(zone_context)
     distances_to_zone = zone_context["distances_to_zone"] if zone_context else {}
     current_distances_to_zone = {
@@ -428,7 +447,7 @@ async def debate_node(state: ScotlandYardState) -> dict:
         print(f"[{det_id.upper()}]: {response.content}")
         transcript.append(f"[{det_id}]: {response.content}")
         
-    return {"messages": [AIMessage(content="\n".join(transcript))]}
+    return {"messages": [AIMessage(content="\n".join(transcript))], **zone_state_update}
 
 async def vote_node(state: ScotlandYardState) -> dict:
     print("\n--- VOTING PHASE ---")
@@ -477,7 +496,7 @@ async def vote_node(state: ScotlandYardState) -> dict:
             legal_move_sets[d_id] = {m["target_node"] for m in moves if "target_node" in m}
 
     # Mr. X possible-zone context (ISSUE-005): same annotation propose_node applies.
-    zone_context = compute_mrx_zone_context(state)
+    zone_context, zone_state_update = get_mrx_zone_context(state)
     zone_block = format_mrx_zone_block(zone_context)
     distances_to_zone = zone_context["distances_to_zone"] if zone_context else {}
     for moves in legal_moves_context.values():
@@ -591,4 +610,4 @@ async def vote_node(state: ScotlandYardState) -> dict:
             print(f"{det_id.upper()}: No valid votes received.")
 
     current_loop = state.get("debate_loop_count", 0) + 1
-    return {"locked_moves": newly_locked, "debate_loop_count": current_loop}
+    return {"locked_moves": newly_locked, "debate_loop_count": current_loop, **zone_state_update}

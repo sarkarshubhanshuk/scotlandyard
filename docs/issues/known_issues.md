@@ -166,6 +166,15 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   - `get_psychology_prompt` (shared by all three nodes) also gained an explicit "use only the
     data given to you in this prompt, do not seek outside information" instruction, which
     doubles as a partial mitigation for ISSUE-003 (still open — see that entry).
+- **Update (2026-09-05)**: `compute_mrx_zone_context` was being called fresh from each of
+  propose/debate/vote on every debate-loop iteration - up to 9 redundant BFS runs per round,
+  since its inputs (`last_known_node`/`last_known_round`, `round_number`, occupied detective
+  nodes) are identical across all of them within one round. Added
+  `agents.py:get_mrx_zone_context`, which memoizes the result on a new `state["mrx_zone_context"]`
+  field (key presence, not truthiness, marks it computed - `None` is a legitimate pre-reveal
+  value) so it's computed once per round instead of up to 9 times. `game_master.py:get_node_info`
+  was also switched from an O(n) linear scan of `map_data` to an O(1) dict lookup
+  (`node_index`), which this BFS calls once per node expanded.
 
 ### ISSUE-015 — Mr. X's possible-zone computation is ticket-blind
 

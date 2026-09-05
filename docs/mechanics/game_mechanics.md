@@ -120,10 +120,17 @@ START -> propose -> debate -> vote -> [router] -> propose (loop) OR finalize -> 
   Possible-Zone Context" below.
 
 **Mr. X Possible-Zone Context** (shared by all three phases — `agents.py:compute_mrx_zone_context`)
-- Computed once per node invocation (not per detective) from `mr_x.last_known_node`/
-  `last_known_round` and the board graph, then injected as prompt text into every propose,
-  debate, and vote call. Gives detectives spatial grounding they otherwise have none of — see
-  `docs/issues/known_issues.md` ISSUE-005.
+- Computed from `mr_x.last_known_node`/`last_known_round` and the board graph, then injected as
+  prompt text into every propose, debate, and vote call. Gives detectives spatial grounding they
+  otherwise have none of — see `docs/issues/known_issues.md` ISSUE-005.
+- **Memoized once per round** via `agents.py:get_mrx_zone_context`, not recomputed per node
+  call: its inputs (`last_known_node`/`last_known_round`, `round_number`, and the detectives'
+  occupied nodes) are identical across propose/debate/vote and every debate-loop iteration
+  within one round, so the first of those calls computes it and stashes it on
+  `state["mrx_zone_context"]`; the rest read the cached value. Cuts the BFS work from up to 9
+  calls/round (3 phases × up to 3 loops) down to 1. Key *presence* on state (not truthiness)
+  marks it as already computed this round, since `None` is itself a legitimate pre-reveal value
+  — `build_next_round_state` omits the key entirely so each new round starts with a cache miss.
 - **The zone**: every node reachable from Mr. X's last-known node within
   `min(round_number - last_known_round, 4)` hops, blocked through currently-occupied detective
   nodes (per rules.md's "Mr. X cannot move to, or pass through, a Node occupied by a
@@ -189,8 +196,10 @@ themselves — `detective_graph` has no cross-invocation memory, so resetting is
 responsibility. `build_next_round_state()` (`backend/graph.py`) takes a completed round's final
 state and returns a fresh `initial_state` for the next round: `round_number` incremented,
 `debate_loop_count: 0`, `locked_moves: {}`, `proposed_strategies: {}`, `final_moves: {}`,
-`messages: []`, while carrying `detectives` and `mr_x` forward unchanged. It does **not** apply
-`final_moves` to positions or deduct tickets — see Known Limitations.
+`messages: []`, while carrying `detectives` and `mr_x` forward unchanged. `mrx_zone_context` is
+deliberately omitted (not set to `None`) so the per-round memoization described above starts
+each new round with a cache miss. It does **not** apply `final_moves` to positions or deduct
+tickets — see Known Limitations.
 
 ### State Involved
 
@@ -203,6 +212,7 @@ state and returns a fresh `initial_state` for the next round: `round_number` inc
 | `final_moves` | `Dict[str, int]` | Output of `finalize_round_node`; the round's resolved moves |
 | `messages` | `List[BaseMessage]` | Debate transcript (one `AIMessage` per loop) |
 | `detectives` | `Dict[str, Detective]` | Current positions/tickets; read-only input to this cycle |
+| `mrx_zone_context` | `Optional[dict]` | Per-round memoized Mr. X possible-zone context (see above); key absent = not yet computed this round |
 
 ### Implementation References
 
@@ -219,6 +229,8 @@ state and returns a fresh `initial_state` for the next round: `round_number` inc
   BFS behind the Mr. X Possible-Zone Context described above
 - `backend/agents.py:compute_mrx_zone_context`, `format_mrx_zone_block`, `zone_distances_for_moves`
   — builds and renders that context into each of the three prompts
+- `backend/agents.py:get_mrx_zone_context` — per-round memoization wrapper around
+  `compute_mrx_zone_context`; all three nodes call this instead of the raw function
 
 ### Design Rationale
 
