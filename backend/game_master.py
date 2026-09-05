@@ -18,6 +18,7 @@ def load_map():
         return json.load(f)["nodes"]
 
 map_data = load_map()
+node_index: Dict[int, dict] = {node["id"]: node for node in map_data}
 
 @mcp.tool()
 def get_node_info(node_id: int) -> dict:
@@ -25,10 +26,10 @@ def get_node_info(node_id: int) -> dict:
     Returns the allowed transport modes and all valid connections for a specific node.
     Use this to inspect the board.
     """
-    for node in map_data:
-        if node["id"] == node_id:
-            return node
-    return {"error": f"Node {node_id} does not exist on the board."}
+    node = node_index.get(node_id)
+    if node is None:
+        return {"error": f"Node {node_id} does not exist on the board."}
+    return node
 
 def compute_valid_moves(
     node_id: int,
