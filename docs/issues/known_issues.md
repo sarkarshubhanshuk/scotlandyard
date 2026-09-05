@@ -261,8 +261,8 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
 
 ### ISSUE-006 — Uncontrolled reasoning-token budget causes high, highly variable latency and outright failures
 
-- **Status**: Open
-- **Area**: `backend/mcp_client.py:get_detective_llm`, `get_debate_llm` (model config)
+- **Status**: Mitigated (static cap applied 2026-09-05, not yet empirically validated against live traffic)
+- **Area**: `backend/mcp_client.py:_build_chat_llm` (shared by `get_detective_llm`, `get_debate_llm`)
 - **Logged**: 2026-09-02
 - **Update (2026-09-05)**: As part of the ISSUE-004 fix, `debate_node`'s per-speaker call is now
   a `with_structured_output` call too (previously plain text) — it's exposed to this same
@@ -280,11 +280,30 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
 - **Proposed Fix**: Cap or disable the reasoning budget via OpenRouter's unified `reasoning`
   request parameter (effort level or explicit token cap, or `exclude: true`), or switch to a
   non-reasoning route/model — see ISSUE-008 for candidates.
+- **Fix (2026-09-05)**: `_build_chat_llm()` now sets `max_tokens=4000` (native `ChatOpenAI`
+  field) and `extra_body={"reasoning": {"max_tokens": 2000}}` (OpenRouter's extension, passed
+  via `extra_body` since it isn't part of the standard OpenAI schema — a typed field wouldn't
+  carry it). Both getters build on this helper, so the cap applies uniformly.
+  - **Derivation**: `CALL #13`'s failure (see Evidence below) gives an empirical throughput of
+    ~80 tokens/sec for this route (32768 completion tokens / 416s). `reasoning.max_tokens=2000`
+    = a 45s latency target (matching the `timeout=45` above) × 80 tok/s, minus a ~1000-token
+    reserve for the actual structured answer, rounded down for margin — about 15x below the
+    33,933 reasoning tokens that call actually consumed, so that specific failure becomes
+    structurally impossible rather than just less likely. `max_tokens=4000` is a second,
+    independent guard (reasoning cap + answer reserve + margin) so the total completion ceiling
+    itself can't be fully consumed by reasoning even if the reasoning cap is ever ignored.
+  - **Not done**: the adaptive-retry option discussed alongside this (retry once with
+    `reasoning: {exclude: true}` if the static cap still isn't enough) was deliberately deferred
+    — static cap only, for now. Revisit if live traffic still shows failures/high variance at
+    this cap.
+  - **Not yet done**: empirical validation against real game traffic (confirm no
+    truncation/parse failures and actual p95 latency lands near the 45s target). Status will
+    move to Fixed once that's checked; if the cap proves insufficient, see ISSUE-008.
 
 ### ISSUE-007 — `LengthFinishReasonError`: model exhausts its token budget on reasoning and never answers
 
-- **Status**: Open
-- **Area**: `backend/agents.py:vote_node` (`cast_ballot`), model config
+- **Status**: Mitigated (same fix as ISSUE-006, applied 2026-09-05 — see that entry for derivation)
+- **Area**: `backend/agents.py:vote_node` (`cast_ballot`), `backend/mcp_client.py:_build_chat_llm`
 - **Logged**: 2026-09-02
 - **Description**: A vote call failed outright with `LengthFinishReasonError`:
   `completion_tokens=32768`, `reasoning_tokens=33933` — the model burned its whole completion
@@ -297,6 +316,11 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   outright; independently, consider whether a dropped ballot from this failure mode should be
   retried once rather than silently discarded, the way `propose_node` already retries once on a
   conflict.
+- **Fix (2026-09-05)**: Applied via ISSUE-006's `reasoning.max_tokens=2000`/`max_tokens=4000`
+  cap — see that entry for the derivation. The independent "retry a dropped ballot once" idea
+  was deliberately not implemented alongside it (static cap only, for now); `cast_ballot` still
+  silently drops a ballot that fails this way. Status will move to Fixed once the cap is
+  validated against real traffic with no recurrence.
 
 ### ISSUE-008 — Candidate models to evaluate if reasoning-budget control on DeepSeek v4 isn't enough
 

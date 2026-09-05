@@ -268,6 +268,14 @@ does **not** apply `final_moves` to positions or deduct tickets — see Known Li
   constraints, so both ticket legality and node-occupancy are computed by `get_valid_moves` and
   re-validated in code after every LLM response, rather than relied upon as prompted behavior.
   (Current model: `deepseek/deepseek-v4-flash-0731` via OpenRouter — see `CLAUDE.md`.)
+- **Reasoning-token cap on every detective-facing LLM instance**: `mcp_client.py:_build_chat_llm`
+  sets `max_tokens=4000` and `extra_body={"reasoning": {"max_tokens": 2000}}` (OpenRouter's
+  reasoning-budget extension — not part of the standard OpenAI schema, hence `extra_body` rather
+  than a typed field), shared by both `get_detective_llm()` and `get_debate_llm()`. Derived from
+  an empirically measured ~80 tokens/sec throughput for this route and a 45s latency target
+  (matching the existing `timeout=45`), minus a reserve for the actual structured answer —
+  roughly 15x below the reasoning-token count that caused a real hard failure. See
+  `known_issues.md` ISSUE-006/007 for the full derivation and evidence.
 - **Dynamic schemas that shrink each loop**: once a detective locks, neither proposers nor
   voters are ever asked about them again — this is a direct token/latency saving, not just a
   correctness nicety.

@@ -63,6 +63,20 @@ def _build_chat_llm() -> ChatOpenAI:
     gets a chance to run - the coroutine just blocks forever. 45s comfortably clears every
     observed successful call's latency while still failing fast enough that one stuck call
     can't stall an entire loop.
+
+    max_tokens/reasoning cap (ISSUE-006/007): deepseek-v4-flash-0731's reasoning budget was
+    previously uncapped, and a real failure (llm_io_log_full_round_e2e.txt CALL #13) showed it
+    can burn the model's entire ~32768-token output ceiling on hidden reasoning and never emit
+    the structured answer at all (LengthFinishReasonError). That same call's timestamps give an
+    empirical throughput of ~80 tokens/sec for this route. reasoning.max_tokens=2000 is derived
+    from a 45s latency target (matching the timeout above) minus a ~1000-token reserve for the
+    actual answer: 45 * 80 - 1000 ~= 2600, rounded down for margin - about 15x below the
+    33,933 reasoning tokens the observed failure consumed, so that exact failure mode is
+    structurally impossible, not just less likely. max_tokens=4000 is a second, independent
+    guard (reasoning cap + answer reserve + margin) so the total completion ceiling itself
+    can't be fully consumed by reasoning even if the reasoning cap were ever ignored. `reasoning`
+    is an OpenRouter-specific extension, not part of the standard OpenAI schema, so it's passed
+    via extra_body rather than a typed ChatOpenAI field.
     """
     return ChatOpenAI(
         model=OPENROUTER_MODEL,
@@ -70,6 +84,10 @@ def _build_chat_llm() -> ChatOpenAI:
         api_key=os.getenv("OPENROUTER_API_KEY"),
         temperature=0.2, # Low temperature for logical deduction
         timeout=45,
+        max_tokens=4000,
+        extra_body={
+            "reasoning": {"max_tokens": 2000}
+        },
         default_headers={
             "HTTP-Referer": "https://github.com/sarkarshubhanshuk/scotlandyard",
             "X-Title": "Scotland Yard AI",
