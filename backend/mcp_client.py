@@ -64,19 +64,30 @@ def _build_chat_llm() -> ChatOpenAI:
     observed successful call's latency while still failing fast enough that one stuck call
     can't stall an entire loop.
 
-    max_tokens/reasoning cap (ISSUE-006/007): deepseek-v4-flash-0731's reasoning budget was
-    previously uncapped, and a real failure (llm_io_log_full_round_e2e.txt CALL #13) showed it
-    can burn the model's entire ~32768-token output ceiling on hidden reasoning and never emit
-    the structured answer at all (LengthFinishReasonError). That same call's timestamps give an
-    empirical throughput of ~80 tokens/sec for this route. reasoning.max_tokens=2000 is derived
-    from a 45s latency target (matching the timeout above) minus a ~1000-token reserve for the
-    actual answer: 45 * 80 - 1000 ~= 2600, rounded down for margin - about 15x below the
-    33,933 reasoning tokens the observed failure consumed, so that exact failure mode is
-    structurally impossible, not just less likely. max_tokens=4000 is a second, independent
-    guard (reasoning cap + answer reserve + margin) so the total completion ceiling itself
-    can't be fully consumed by reasoning even if the reasoning cap were ever ignored. `reasoning`
-    is an OpenRouter-specific extension, not part of the standard OpenAI schema, so it's passed
-    via extra_body rather than a typed ChatOpenAI field.
+    max_tokens/reasoning cap (ISSUE-006/007, resolved): deepseek-v4-flash-0731's reasoning
+    budget was previously uncapped, and a real failure (llm_io_log_full_round_e2e.txt CALL #13)
+    showed it can burn the model's entire ~32768-token output ceiling on hidden reasoning and
+    never emit the structured answer at all (LengthFinishReasonError). Four configurations were
+    tested on real traffic (one full propose/debate/vote loop each, 15 calls/run) before landing
+    here - every attempt to BOUND the reasoning budget failed identically, only fully disabling
+    it worked:
+      - reasoning.max_tokens=2000: 10/30 calls failed (33%), reasoning_tokens 3355-4000 - cap
+        ignored entirely by this route's self-hosted vLLM backends (system_fingerprints
+        vllm-dev-ep-4997cd02, vllm-0.26.0-dp4-ep-86dc62bb observed).
+      - reasoning.effort="low": 3/15 failed (20%), reasoning_tokens 3996-4000 on every failure -
+        cap ignored the same way; ~361s total loop latency (12x slower than the fix below).
+      - reasoning.effort="minimal" (not an OpenRouter-documented value for this route): 2/15
+        failed (13%), reasoning_tokens 4000 on every failure - ~557s total loop latency, the
+        slowest of all four configurations tested.
+      - reasoning.enabled=False: 0/15 failed (0%), reasoning_tokens confirmed 0, ~30s total loop
+        latency. The only configuration that actually disables the reasoning phase rather than
+        trying to cap it - this is what's set below.
+    Conclusion: this OpenRouter route does not honor any budget-shaped reasoning parameter
+    (exact token cap or qualitative effort level) - only the boolean enabled=False actually
+    takes effect, presumably because it skips the reasoning code path entirely rather than
+    trying to constrain it. max_tokens=4000 is kept as an independent guard regardless.
+    `reasoning` is an OpenRouter-specific extension, not part of the standard OpenAI schema, so
+    it's passed via extra_body rather than a typed ChatOpenAI field.
     """
     return ChatOpenAI(
         model=OPENROUTER_MODEL,
@@ -86,7 +97,7 @@ def _build_chat_llm() -> ChatOpenAI:
         timeout=45,
         max_tokens=4000,
         extra_body={
-            "reasoning": {"max_tokens": 2000}
+            "reasoning": {"enabled": False}
         },
         default_headers={
             "HTTP-Referer": "https://github.com/sarkarshubhanshuk/scotlandyard",

@@ -261,7 +261,7 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
 
 ### ISSUE-006 — Uncontrolled reasoning-token budget causes high, highly variable latency and outright failures
 
-- **Status**: Mitigated (static cap applied 2026-09-05, not yet empirically validated against live traffic)
+- **Status**: Fixed (2026-09-05) — `reasoning.enabled=False`, validated against real traffic across 4 configurations; see final Fix entry below
 - **Area**: `backend/mcp_client.py:_build_chat_llm` (shared by `get_detective_llm`, `get_debate_llm`)
 - **Logged**: 2026-09-02
 - **Update (2026-09-05)**: As part of the ISSUE-004 fix, `debate_node`'s per-speaker call is now
@@ -299,10 +299,66 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   - **Not yet done**: empirical validation against real game traffic (confirm no
     truncation/parse failures and actual p95 latency lands near the 45s target). Status will
     move to Fixed once that's checked; if the cap proves insufficient, see ISSUE-008.
+- **Root Cause Analysis (2026-09-05)**: The static cap above was validated against real traffic
+  (a partial `test_full_round_e2e.py` run) and found NOT to work — 10 of 30 calls
+  (~33%) failed with `LengthFinishReasonError`, up from one isolated failure across an entire
+  prior full-round run. Root-caused via raw, client-bypassing calls directly against the
+  OpenRouter API:
+  - The client-side mechanism is correct — `ChatOpenAI._default_params()` merges `extra_body`
+    into the request cleanly (no collision with the native, unset `reasoning` field), and the
+    actual bound runnable for `debate_node` was confirmed to send
+    `extra_body={"reasoning": {"max_tokens": 2000}}` exactly as configured.
+  - OpenRouter serves `deepseek/deepseek-v4-flash-0731` via **self-hosted vLLM backends**
+    (`system_fingerprint` values `vllm-dev-ep-4997cd02` and `vllm-0.26.0-dp4-ep-86dc62bb`
+    observed across 4 identical replayed requests). **Neither backend honors
+    `reasoning.max_tokens` at all** — reasoning ran to 2652/3618/4000/4000 tokens across those 4
+    runs, never once stopping near the requested 2000-token cap. It is a silently-accepted
+    no-op for this route, not a client bug.
+  - `max_tokens` (the native, standard field) generally IS enforced as a hard ceiling — 3 of
+    those 4 runs hit exactly `completion_tokens=4000` and failed; the 4th happened to finish
+    reasoning at 2652 tokens and had enough of the 4000 budget left to still succeed. One
+    earlier isolated replay of a real failing prompt even exceeded `max_tokens=4000` itself
+    (`completion_tokens=7059`, `finish_reason=stop`), suggesting at least one further backend
+    variant in the routing pool doesn't strictly enforce the outer ceiling either.
+  - **Why the fix made things worse**: previously `max_tokens` was unset (defaulting to
+    ~32768). Reasoning ran uncapped then too, but with that much headroom an overrun rarely
+    consumed the entire budget. Cutting the ceiling to 4000 without a working reasoning
+    sub-cap removed that headroom — any reasoning run past ~3500-4000 tokens (routine, per
+    every measurement here) now exhausts the whole budget. Whether a given call succeeds is
+    effectively down to which backend replica and how much it happens to reason that call.
+  - **Conclusion**: the `reasoning` request parameter is not a usable lever for this specific
+    OpenRouter-served model/route, for BOUNDING a budget. Options going forward: (a) raise
+    `max_tokens` back up substantially (or remove it) to restore headroom, accepting the
+    original latency variance over the new higher failure rate, or (b) treat ISSUE-008's
+    non-reasoning candidate models as the only lever that structurally removes this failure
+    class, since the budget-capping lever is now confirmed non-functional here rather than just
+    unvalidated. (c), tried next and confirmed the fix — see final Fix entry below.
+- **Fix (2026-09-05, final)**: Two further configurations were tested on real traffic (one full
+  propose/debate/vote loop each, 15 calls/run) after the Root Cause Analysis above, landing on
+  `reasoning.enabled=False`:
+  - `reasoning.effort="low"`: 3/15 calls failed (20%), `reasoning_tokens` pinned at 3996-4000 on
+    every failure — the ~800-token ("low" ≈ 20% of `max_tokens=4000`) target was ignored exactly
+    like the explicit cap. Total loop wall-clock ~361s.
+  - `reasoning.effort="minimal"` (not an OpenRouter-documented value for this route's effort
+    enum): 2/15 failed (13%), `reasoning_tokens=4000` on every failure — same ignored-cap
+    pattern, and the slowest run of all four (~557s total).
+  - `reasoning.enabled=False`: 0/15 failed (0%), `reasoning_tokens` confirmed 0 on every call,
+    ~30s total loop wall-clock — 12-19x faster than either effort-level attempt, and the only
+    configuration with zero failures.
+  - **Conclusion**: across four configurations (explicit token cap, `effort="low"`,
+    `effort="minimal"`, `enabled=False`), every attempt to BOUND the reasoning budget failed
+    identically — reasoning consistently ran to the full `max_tokens` ceiling regardless of the
+    requested cap or effort level. Only the boolean `enabled=False` actually took effect,
+    presumably because it skips the reasoning code path entirely rather than trying to constrain
+    it. `_build_chat_llm()` is now set to `reasoning.enabled=False` with `max_tokens=4000` kept
+    as an independent guard. Status: Fixed.
+  - **Not done**: the adaptive-retry option and the "retry a dropped ballot once" idea (see
+    ISSUE-007) remain unimplemented — `enabled=False`'s 0% failure rate across the tested traffic
+    made them unnecessary for now; revisit if failures reappear under broader/longer traffic.
 
 ### ISSUE-007 — `LengthFinishReasonError`: model exhausts its token budget on reasoning and never answers
 
-- **Status**: Mitigated (same fix as ISSUE-006, applied 2026-09-05 — see that entry for derivation)
+- **Status**: Fixed (2026-09-05) — via ISSUE-006's final fix (`reasoning.enabled=False`); see that entry
 - **Area**: `backend/agents.py:vote_node` (`cast_ballot`), `backend/mcp_client.py:_build_chat_llm`
 - **Logged**: 2026-09-02
 - **Description**: A vote call failed outright with `LengthFinishReasonError`:
@@ -316,11 +372,23 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   outright; independently, consider whether a dropped ballot from this failure mode should be
   retried once rather than silently discarded, the way `propose_node` already retries once on a
   conflict.
-- **Fix (2026-09-05)**: Applied via ISSUE-006's `reasoning.max_tokens=2000`/`max_tokens=4000`
-  cap — see that entry for the derivation. The independent "retry a dropped ballot once" idea
-  was deliberately not implemented alongside it (static cap only, for now); `cast_ballot` still
-  silently drops a ballot that fails this way. Status will move to Fixed once the cap is
-  validated against real traffic with no recurrence.
+- **Fix attempted (2026-09-05)**: Applied via ISSUE-006's `reasoning.max_tokens=2000`/
+  `max_tokens=4000` cap. The independent "retry a dropped ballot once" idea was deliberately
+  not implemented alongside it (static cap only); `cast_ballot` still silently drops a ballot
+  that fails this way.
+- **Root Cause Analysis (2026-09-05)**: The cap does not work — see ISSUE-006's Root Cause
+  Analysis entry for the full investigation. Root cause is provider-side: OpenRouter's
+  self-hosted vLLM backends for `deepseek/deepseek-v4-flash-0731` don't honor
+  `reasoning.max_tokens` at all, so this exact failure (reasoning consuming the whole
+  completion budget) remains possible — this issue's failure mode is not resolved. Reopened to
+  Open; the "retry a dropped ballot once" idea from the original Proposed Fix is now the more
+  relevant near-term mitigation, independent of whichever ISSUE-006 direction is chosen.
+- **Fix (2026-09-05, final)**: ISSUE-006's final fix (`reasoning.enabled=False`, confirmed
+  across a 15-call real-traffic run with 0 reasoning tokens and 0 failures) removes this
+  failure's root cause directly — with reasoning disabled, `LengthFinishReasonError` from
+  reasoning exhaustion cannot occur. The "retry a dropped ballot once" idea remains
+  unimplemented (not needed given the 0% observed failure rate); `cast_ballot` still has no
+  retry path if this or any other cause produces a dropped ballot in the future.
 
 ### ISSUE-008 — Candidate models to evaluate if reasoning-budget control on DeepSeek v4 isn't enough
 
@@ -336,6 +404,13 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   chat models — most predictable latency of the group).
 - **Note**: This list reflects model knowledge current to ~January 2026; verify current OpenRouter
   pricing/availability before acting on it, since the field moves quickly.
+- **Update (2026-09-05)**: ISSUE-006/007 are now Fixed via `reasoning.enabled=False` (fully
+  disabling reasoning, not capping it) — confirmed 0% failures and ~30s loop latency on real
+  traffic, after `reasoning.max_tokens`, `effort="low"`, and `effort="minimal"` all failed
+  identically. This list is no longer an urgent fallback, but stays relevant as a possible
+  further improvement: DeepSeek v4 flash with reasoning *disabled* is not the same as a model
+  that was never a hybrid-reasoning model to begin with, and the candidates here may still offer
+  better non-reasoning quality/latency/cost than DeepSeek v4 flash running reasoning-off.
 
 ### ISSUE-009 — `timeout=45` in `mcp_client.py` does not bound observed call latency; its own comment is stale
 
@@ -405,6 +480,27 @@ subsection.
   work, and refreshing it was a prerequisite. Note: the project has since moved to OpenRouter/
   DeepSeek as the configured LLM provider (see `CLAUDE.md`), so this note may now be
   stale as written — re-check which key/provider this test actually needs before acting on it.
+
+### ISSUE-017 — `test_full_round_e2e.py` crashed on a `UnicodeEncodeError` printing a detective's LLM output
+
+- **Status**: Fixed
+- **Area**: `backend/test_full_round_e2e.py`
+- **Logged**: 2026-09-05
+- **Description**: `debate_node`'s own console output (`print(f"[{det_id.upper()}]: {pitch}")`,
+  `agents.py:515`) crashed the entire test process with `UnicodeEncodeError: 'charmap' codec
+  can't encode characters...` when a detective's LLM-generated pitch contained a character
+  outside Windows' default console codepage (`cp1252`) — an em-dash or curly quote is enough to
+  trigger it. One earlier print in the same run partially garbled a character into `�` without
+  crashing; a later one raised outright and killed the process before any assertion ran,
+  discovered while comparing `reasoning.effort="low"` against `reasoning.enabled=False` (see
+  ISSUE-006) on real traffic.
+- **Fix (2026-09-05)**: Added `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` near
+  the top of `test_full_round_e2e.py`, so any character outside stdout's default codepage is
+  replaced rather than crashing the run, regardless of which model/content produced it.
+- **Note**: This is a test-harness fix only. `agents.py`'s own `print()` calls (used by every
+  node for console visibility during a real game run, not just this test) have the same latent
+  exposure if ever run under a non-UTF-8 console — not fixed here, since this fix was scoped to
+  unblocking the reasoning-comparison test specifically.
 
 ### ISSUE-014 — No defensive check in `resolve_round` for two detectives' final moves colliding
 

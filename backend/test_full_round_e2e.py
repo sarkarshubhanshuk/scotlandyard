@@ -20,6 +20,7 @@ detectives x up to 3 calls per loop x up to 3 loops). Run standalone:
 """
 import asyncio
 import re
+import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,14 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from game_master import compute_valid_moves
 from graph import detective_graph
 from agents import DETECTIVE_NAMES
+
+# agents.py's own print() calls (propose/debate/vote node console output) share this
+# process's stdout, whose default encoding on Windows is the system codepage (e.g.
+# cp1252) - not UTF-8. A detective's LLM-generated text routinely contains characters
+# outside that codepage (em-dashes, curly quotes), which crashes the whole test with an
+# unrelated UnicodeEncodeError before it ever reaches an assertion. Reconfiguring stdout
+# to UTF-8 with a replace fallback keeps the run alive regardless of what the model says.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 LOG_PATH = Path(__file__).resolve().parent / "llm_io_log_full_round_e2e.txt"
 
