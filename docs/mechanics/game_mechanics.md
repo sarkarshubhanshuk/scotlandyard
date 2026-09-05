@@ -154,6 +154,11 @@ START -> propose -> debate -> vote -> [router] -> propose (loop) OR finalize -> 
 - Each proposer's already-proposed destinations are annotated with `distance_to_mrx_zone_per_move`
   (see "Mr. X Possible-Zone Context" above), so debaters can argue about whether a plan actually
   closes in on him.
+- Uses `mcp_client.py:get_debate_llm()` — a dedicated `ChatOpenAI` instance with **no** MCP
+  tools bound, separate from the tool-bound instance `propose_node`/`vote_node` share via
+  `get_detective_llm()`. This is a text-only 2-3 sentence pitch task with no tool-execution loop
+  to handle a tool-call response, so it must never be able to emit one — see
+  `docs/issues/known_issues.md` ISSUE-003 (Fixed).
 
 **Phase 3 — Vote** (`vote_node`)
 - Every detective casts one ballot, voting on a target node for every *still-undecided*
@@ -224,7 +229,11 @@ tickets — see Known Limitations.
 - `backend/agents.py:propose_node`, `debate_node`, `vote_node`
 - `backend/graph.py:check_vote_status`, `finalize_round_node`, `build_next_round_state`
 - `backend/game_master.py:get_valid_moves` — ticket + occupancy legality, server-side
-- `backend/mcp_client.py:get_detective_llm` — cached LLM/tool binding shared across all nodes
+- `backend/mcp_client.py:get_detective_llm` — cached, tool-bound LLM used by `propose_node`/
+  `vote_node`
+- `backend/mcp_client.py:get_debate_llm`, `_build_chat_llm` — `debate_node`'s cached, non-tool-
+  bound LLM instance (see ISSUE-003) and the shared OpenRouter config helper both LLM getters
+  build on
 - `backend/game_master.py:compute_mrx_zone`, `compute_distances_to_zone` — the board-topology
   BFS behind the Mr. X Possible-Zone Context described above
 - `backend/agents.py:compute_mrx_zone_context`, `format_mrx_zone_block`, `zone_distances_for_moves`
@@ -250,6 +259,11 @@ tickets — see Known Limitations.
   independent decisions by nature (sealed proposals, secret-ish ballots), so parallelizing them
   only changes latency, not outcome. Debate is deliberately sequential — the whole point is
   that each speaker reacts to what was already said.
+- **`debate_node` gets its own non-tool-bound LLM instance**: `propose_node`/`vote_node`
+  genuinely need `get_valid_moves` etc. and can execute a tool-call response; `debate_node`
+  can't (no tool-execution loop) and doesn't need to (it's a free-text pitch). Binding tools to
+  an LLM that can never use them safely just gives the model an option it shouldn't have — see
+  `known_issues.md` ISSUE-003.
 - **Prompt-level conflict hints + one retry, backed by deterministic code enforcement**: the
   LLM can't be trusted to reliably self-enforce "propose distinct nodes" on prompt instructions
   alone (see `known_issues.md` ISSUE-002), but a stronger model shouldn't need to pay for the

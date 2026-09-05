@@ -37,11 +37,53 @@ _cached_llm_with_tools = None
 _cached_tools = None
 _cache_lock = asyncio.Lock()
 
+# Separate cache for debate_node's LLM (see ISSUE-003 in known_issues.md): a text-only pitch
+# task has no business being tool-bound, and being bound to get_valid_moves/get_node_info/
+# read_rules let the model call get_node_info instead of answering in prose when a prompt was
+# short on board context - debate_node has no tool-execution loop, so that call's content came
+# back empty and was silently appended to the transcript. Kept as its own cache/lock (not
+# reusing _cached_llm_with_tools's) since it's a differently-configured client (no bound tools).
+_cached_debate_llm = None
+_debate_cache_lock = asyncio.Lock()
+
+def _build_chat_llm() -> ChatOpenAI:
+    """
+    Shared OpenRouter client config for every detective-facing LLM instance (tool-bound or
+    not) - get_detective_llm() and get_debate_llm() both build on this rather than duplicating
+    the constructor call.
+
+    The optional headers just identify this app on OpenRouter's dashboard/leaderboards -
+    harmless to omit, but recommended by their docs.
+
+    timeout is NOT optional: under this app's concurrent asyncio.gather load (5 detectives
+    firing at once), OpenRouter has been observed to leave one request in a batch hanging
+    indefinitely (confirmed empirically - 4/5 concurrent calls returned in 3-36s, the 5th never
+    returned even after 75+s). With no client-side timeout, that hang never raises an error, so
+    neither the SDK's own retry nor this app's per-call try/except fallback (agents.py) ever
+    gets a chance to run - the coroutine just blocks forever. 45s comfortably clears every
+    observed successful call's latency while still failing fast enough that one stuck call
+    can't stall an entire loop.
+    """
+    return ChatOpenAI(
+        model=OPENROUTER_MODEL,
+        base_url=OPENROUTER_BASE_URL,
+        api_key=os.getenv("OPENROUTER_API_KEY"),
+        temperature=0.2, # Low temperature for logical deduction
+        timeout=45,
+        default_headers={
+            "HTTP-Referer": "https://github.com/sarkarshubhanshuk/scotlandyard",
+            "X-Title": "Scotland Yard AI",
+        }
+    )
+
 async def get_detective_llm():
     """
     Retrieves the tools from the Game Master and binds them to the detective LLM (served via
     OpenRouter). Returns the configured LLM and the tools for LangGraph execution. Result is
     cached after the first call.
+
+    Used by propose_node/vote_node, which actually execute tool calls. debate_node deliberately
+    does NOT use this - see get_debate_llm().
     """
     global _cached_llm_with_tools, _cached_tools
 
@@ -56,35 +98,33 @@ async def get_detective_llm():
         # Load tools dynamically from the client
         tools = await mcp_client.get_tools()
 
-        # Initialize the LLM via OpenRouter (OpenAI-compatible endpoint). The optional
-        # headers just identify this app on OpenRouter's dashboard/leaderboards - harmless
-        # to omit, but recommended by their docs.
-        #
-        # timeout is NOT optional: under this app's concurrent asyncio.gather load (5
-        # detectives firing at once), OpenRouter has been observed to leave one request in
-        # a batch hanging indefinitely (confirmed empirically - 4/5 concurrent calls
-        # returned in 3-36s, the 5th never returned even after 75+s). With no client-side
-        # timeout, that hang never raises an error, so neither the SDK's own retry nor this
-        # app's per-call try/except fallback (agents.py) ever gets a chance to run - the
-        # coroutine just blocks forever. 45s comfortably clears every observed successful
-        # call's latency while still failing fast enough that one stuck call can't stall an
-        # entire loop.
-        llm = ChatOpenAI(
-            model=OPENROUTER_MODEL,
-            base_url=OPENROUTER_BASE_URL,
-            api_key=os.getenv("OPENROUTER_API_KEY"),
-            temperature=0.2, # Low temperature for logical deduction
-            timeout=45,
-            default_headers={
-                "HTTP-Referer": "https://github.com/sarkarshubhanshuk/scotlandyard",
-                "X-Title": "Scotland Yard AI",
-            }
-        )
-
         # Bind the MCP tools to the LLM
         _cached_tools = tools
-        _cached_llm_with_tools = llm.bind_tools(tools)
+        _cached_llm_with_tools = _build_chat_llm().bind_tools(tools)
         return _cached_llm_with_tools, _cached_tools
+
+async def get_debate_llm() -> ChatOpenAI:
+    """
+    debate_node's dedicated LLM instance - same OpenRouter config as get_detective_llm(), but
+    with NO tools bound (see ISSUE-003 in known_issues.md). debate_node's task is a 2-3 sentence
+    text pitch, and it has no tool-execution loop to handle a tool_calls response - previously,
+    reusing the tool-bound instance let the model call get_node_info instead of answering in
+    prose (e.g. when a prompt was short on board context), and that response's empty `.content`
+    was silently appended to the debate transcript as a blank pitch. With no tools bound here,
+    the model has nothing to call, so `.content` is guaranteed to be real prose. Cached the same
+    way get_detective_llm() is, so it's built once and reused across every node call/loop/round.
+    """
+    global _cached_debate_llm
+
+    if _cached_debate_llm is not None:
+        return _cached_debate_llm
+
+    async with _debate_cache_lock:
+        if _cached_debate_llm is not None:
+            return _cached_debate_llm
+
+        _cached_debate_llm = _build_chat_llm()
+        return _cached_debate_llm
 
 if __name__ == "__main__":
     async def test_connection():

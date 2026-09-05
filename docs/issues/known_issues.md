@@ -81,8 +81,8 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
 
 ### ISSUE-003 — `debate_node` uses a tool-bound LLM for a text-only task, sometimes producing empty pitches
 
-- **Status**: Open
-- **Area**: `backend/agents.py:debate_node`, `backend/mcp_client.py:get_detective_llm`
+- **Status**: Fixed
+- **Area**: `backend/agents.py:debate_node`, `backend/mcp_client.py:get_detective_llm`, `get_debate_llm`
 - **Logged**: 2026-09-02
 - **Description**: `debate_node` calls `llm.ainvoke(...)` using the same shared LLM instance
   `get_detective_llm()` returns to every node — bound with `get_valid_moves`, `get_node_info`,
@@ -106,6 +106,15 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   first place — but it's a prompt-level mitigation, not a structural fix; the LLM is still
   tool-bound for this call and `debate_node` still can't handle a tool-call response if one
   happens anyway. Status stays Open.
+- **Fix (2026-09-05)**: Went with the first proposed option — `mcp_client.py` gained
+  `get_debate_llm()`, a separately cached `ChatOpenAI` instance sharing `get_detective_llm()`'s
+  OpenRouter config (via the new `_build_chat_llm()` helper both now call) but with **no**
+  `bind_tools()` call. `debate_node` now calls `get_debate_llm()` instead of
+  `get_detective_llm()`. With no tool schemas bound to the request at all, the model has nothing
+  to call, so `response.content` is guaranteed to be real prose — this removes the root cause
+  structurally rather than relying on prompt instructions the model might not follow. As a side
+  effect, debate calls no longer pay the token cost of the unused tool schemas either. Status
+  now Fixed.
 
 ### ISSUE-004 — Vote prompts never include the structured proposals, only the (currently broken) debate transcript
 
@@ -129,6 +138,10 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   as `propose_node` already displayed) — so ballots are no longer *purely* dependent on the
   debate transcript. Still missing: the actual `proposed_strategies` rationale/reasoning behind
   each proposal. Status stays Open for that gap.
+- **Update (2026-09-05)**: ISSUE-003 (the "currently broken" debate transcript this issue's
+  title refers to) is now Fixed, so the transcript `cast_ballot` reads is no longer at risk of
+  silently blank pitches. This issue's own gap is unrelated and still open: ballots still never
+  see `state["proposed_strategies"]` directly, only its lossy prose summary.
 
 ### ISSUE-005 — No board-topology/connectivity context is ever given to the LLM
 

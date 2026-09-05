@@ -5,7 +5,7 @@ from typing import Optional
 from pydantic import BaseModel, Field, create_model
 from langchain_core.messages import AIMessage, HumanMessage
 from state import ScotlandYardState, DetectiveStrategy
-from mcp_client import get_detective_llm
+from mcp_client import get_detective_llm, get_debate_llm
 from game_master import compute_mrx_zone, compute_distances_to_zone
 
 DETECTIVE_NAMES = ["detective_1", "detective_2", "detective_3", "detective_4", "detective_5"]
@@ -391,7 +391,10 @@ async def propose_node(state: ScotlandYardState) -> dict:
 
 async def debate_node(state: ScotlandYardState) -> dict:
     print("\n--- SEQUENTIAL DEBATE ---")
-    llm, _ = await get_detective_llm()
+    # No tools bound here (ISSUE-003, fixed): this is a text-only pitch task with no tool-
+    # execution loop, so a tool-bound LLM could return an empty .content when it chose to call
+    # a tool instead of answering in prose.
+    llm = await get_debate_llm()
 
     transcript = []
     locked = state.get("locked_moves", {})
