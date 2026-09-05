@@ -461,7 +461,7 @@ subsection.
 
 ### ISSUE-012 — `docs/map/node_positions.json` has never been visually spot-checked
 
-- **Status**: Open
+- **Status**: Fixed/Verified
 - **Area**: `docs/map/node_positions.json`, `tools/extract_node_positions.py`,
   `tools/node_coordinate_picker.html`
 - **Logged**: 2026-09-02 (migrated from `game_mechanics.md` §2)
@@ -469,10 +469,13 @@ subsection.
   frontend's board rendering) was generated programmatically from `board.svg`'s circle-marker +
   text-label geometry. `tools/node_coordinate_picker.html` exists to visually spot-check / hand-
   correct it, but no human has actually run that verification pass yet.
+- **Verified (2026-09-05)**: Human visual spot-check performed via `tools/node_coordinate_picker.html`
+  (all 199 markers + adjacency lines overlaid on `board.svg`) ahead of Phase 4 frontend work. No
+  misplaced nodes found; no corrections needed to `node_positions.json`.
 
 ### ISSUE-013 — `test_full_round_stream_manual` has never actually been run
 
-- **Status**: Open
+- **Status**: Fixed/Verified
 - **Area**: `backend/test_api_smoke.py`
 - **Logged**: 2026-09-02 (migrated from `game_mechanics.md` §2)
 - **Description**: The one test that exercises a real, full `run_detective_loop` through the API
@@ -480,6 +483,14 @@ subsection.
   work, and refreshing it was a prerequisite. Note: the project has since moved to OpenRouter/
   DeepSeek as the configured LLM provider (see `CLAUDE.md`), so this note may now be
   stale as written — re-check which key/provider this test actually needs before acting on it.
+- **Verified (2026-09-05)**: Confirmed the stale-key note — `round_resolver.py:run_detective_loop`
+  calls `detective_graph` (`graph.py`), which is entirely `mcp_client.py`/OpenRouter-based; no
+  Groq dependency exists anywhere in the current codebase. Corrected the docstring/comments in
+  `test_api_smoke.py` from `GROQ_API_KEY` to `OPENROUTER_API_KEY`. Ran
+  `test_full_round_stream_manual()` by hand ahead of Phase 4 frontend work: **PASSED**, event
+  sequence `['proposal', 'debate', 'vote_tally', 'proposal', 'debate', 'vote_tally',
+  'round_finalized', 'round_result']` (needed 2 loops to reach consensus - normal game flow, not
+  a failure).
 
 ### ISSUE-017 — `test_full_round_e2e.py` crashed on a `UnicodeEncodeError` printing a detective's LLM output
 

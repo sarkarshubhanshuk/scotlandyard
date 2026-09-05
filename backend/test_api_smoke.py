@@ -8,8 +8,9 @@ shares ONE persistent event loop/portal - otherwise each call would spin up its 
 re-trigger mcp_client.py's module-level MCP-subprocess caching from scratch per request.
 
 The full round/stream event sequence (proposal/debate/vote_tally/round_finalized/round_result)
-requires a live GROQ_API_KEY and real LLM calls, so it is NOT exercised automatically here - see
-test_full_round_stream_manual() at the bottom, which is intentionally excluded from __main__.
+requires a live OPENROUTER_API_KEY and real LLM calls, so it is NOT exercised automatically here
+- see test_full_round_stream_manual() at the bottom, which is intentionally excluded from
+__main__.
 
 Run: python test_api_smoke.py
 """
@@ -101,7 +102,7 @@ def test_round_stream_guarded_before_mrx_moves():
 
 def test_full_round_stream_manual():
     """
-    NOT run automatically (excluded from __main__) - requires a valid GROQ_API_KEY, since
+    NOT run automatically (excluded from __main__) - requires a valid OPENROUTER_API_KEY, since
     opening this endpoint after a legal Mr. X move actually runs detective_graph for real.
     Run this function by hand once .env has a working key.
     """
@@ -136,4 +137,4 @@ if __name__ == "__main__":
     test_mrx_move_rejects_illegal_target()
     test_round_stream_guarded_before_mrx_moves()
     print("\n=== ALL API SMOKE TESTS PASSED ===")
-    print("(test_full_round_stream_manual() was NOT run - needs a live GROQ_API_KEY; run it by hand)")
+    print("(test_full_round_stream_manual() was NOT run - needs a live OPENROUTER_API_KEY; run it by hand)")
