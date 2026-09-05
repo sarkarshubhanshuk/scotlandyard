@@ -151,14 +151,23 @@ START -> propose -> debate -> vote -> [router] -> propose (loop) OR finalize -> 
   through Detective 5 (who sees the full transcript so far). This is the one phase that cannot
   be parallelized, by design — each speaker is meant to react to what was already said.
 - All 5 detectives speak every loop, including already-locked ones.
-- Each proposer's already-proposed destinations are annotated with `distance_to_mrx_zone_per_move`
-  (see "Mr. X Possible-Zone Context" above), so debaters can argue about whether a plan actually
-  closes in on him.
+- Each still-pending proposer's destinations are shown via `agents.py:build_annotated_proposals`
+  (scoped to `pending_targets` — already-locked targets are shown separately via "Already Locked
+  Moves", so including them again in every proposer's board would just be duplicated noise),
+  annotated with `distance_to_mrx_zone_per_move` (see "Mr. X Possible-Zone Context" above), so
+  debaters can argue about whether a plan actually closes in on him.
 - Uses `mcp_client.py:get_debate_llm()` — a dedicated `ChatOpenAI` instance with **no** MCP
   tools bound, separate from the tool-bound instance `propose_node`/`vote_node` share via
   `get_detective_llm()`. This is a text-only 2-3 sentence pitch task with no tool-execution loop
   to handle a tool-call response, so it must never be able to emit one — see
   `docs/issues/known_issues.md` ISSUE-003 (Fixed).
+- Each speaker's single call is structured (`agents.py:build_debate_position_schema`), yielding
+  both the free-text `pitch` shown in the transcript *and* an explicit `{target}_position` node
+  per still-undecided target — that speaker's own current preference, given the debate so far.
+  Same call count as a plain text call; no added latency. Collected into
+  `state["debate_positions"]` (`{speaker_id: {target_id: node_id}}`) for `vote_node` to read —
+  see ISSUE-004 below. A failed structured call (parse error, reasoning-budget exhaustion — see
+  `known_issues.md` ISSUE-006/007) drops that speaker's pitch/position rather than inventing one.
 
 **Phase 3 — Vote** (`vote_node`)
 - Every detective casts one ballot, voting on a target node for every *still-undecided*
@@ -167,8 +176,12 @@ START -> propose -> debate -> vote -> [router] -> propose (loop) OR finalize -> 
   ballot), so the 5 calls run concurrently.
 - The prompt also shows each still-undecided detective's legal-move candidates (mirroring
   `propose_node`'s display) annotated with `distance_to_mrx_zone` — voters are no longer voting
-  blind on distance/positioning, though they still don't see the proposers' own rationale text
-  (`known_issues.md` ISSUE-004, still open).
+  blind on distance/positioning.
+- The prompt also includes the same `build_annotated_proposals`-scoped structured proposals
+  `debate_node` sees, plus `state["debate_positions"]` (each debate speaker's structured
+  post-debate stance) — voters now see the actual pre-debate proposal data and each speaker's
+  stated post-debate position, not just the free-text transcript (`known_issues.md` ISSUE-004,
+  Fixed).
 - Votes are validated against the same legal-move set computed for this phase; an illegal vote
   is discarded before tallying, never counted.
 - Within one voter's own ballot, a vote is also discarded if it duplicates a node the same
@@ -203,8 +216,10 @@ state and returns a fresh `initial_state` for the next round: `round_number` inc
 `debate_loop_count: 0`, `locked_moves: {}`, `proposed_strategies: {}`, `final_moves: {}`,
 `messages: []`, while carrying `detectives` and `mr_x` forward unchanged. `mrx_zone_context` is
 deliberately omitted (not set to `None`) so the per-round memoization described above starts
-each new round with a cache miss. It does **not** apply `final_moves` to positions or deduct
-tickets — see Known Limitations.
+each new round with a cache miss. `debate_positions` needs no such handling — it's a plain
+overwrite field that `debate_node` always repopulates immediately before `vote_node` reads it,
+every loop and every round, so it's never stale regardless of what a prior round left behind. It
+does **not** apply `final_moves` to positions or deduct tickets — see Known Limitations.
 
 ### State Involved
 
@@ -218,12 +233,16 @@ tickets — see Known Limitations.
 | `messages` | `List[BaseMessage]` | Debate transcript (one `AIMessage` per loop) |
 | `detectives` | `Dict[str, Detective]` | Current positions/tickets; read-only input to this cycle |
 | `mrx_zone_context` | `Optional[dict]` | Per-round memoized Mr. X possible-zone context (see above); key absent = not yet computed this round |
+| `debate_positions` | `Optional[Dict[str, Dict[str, int]]]` | Each debate speaker's structured post-debate stance per pending target; overwritten fresh every `debate_node` call, read once by the following `vote_node` |
 
 ### Implementation References
 
 - `backend/agents.py:get_psychology_prompt` — round-based desperation curve (arrogant/selfish
   through round 12, compromising through round 18, panicked/consensus-seeking after)
-- `backend/agents.py:build_strategy_schema`, `build_ballot_schema` — dynamic per-loop schemas
+- `backend/agents.py:build_strategy_schema`, `build_ballot_schema`, `build_debate_position_schema`
+  — dynamic per-loop schemas
+- `backend/agents.py:build_annotated_proposals` — proposal-annotation logic shared by
+  `debate_node` and `vote_node` (ISSUE-004), optionally scoped to `pending_targets`
 - `backend/agents.py:find_proposal_conflicts` — detects (b)/(c) violations in a raw proposal,
   used to decide whether a proposer gets its one retry
 - `backend/agents.py:propose_node`, `debate_node`, `vote_node`
@@ -264,6 +283,18 @@ tickets — see Known Limitations.
   can't (no tool-execution loop) and doesn't need to (it's a free-text pitch). Binding tools to
   an LLM that can never use them safely just gives the model an option it shouldn't have — see
   `known_issues.md` ISSUE-003.
+- **Post-debate position piggybacks on the existing pitch call, not a second call**: capturing
+  each speaker's structured stance after debate needs *some* LLM signal beyond the frozen
+  pre-debate `proposed_strategies`, but a dedicated second call per speaker would double
+  `debate_node`'s call count for a task already sequential-by-design (5x the latency of an
+  already-slow phase — see ISSUE-006). Folding `{target}_position` fields into the same
+  `with_structured_output` call that produces the pitch gets both in one round-trip. Built on
+  `get_debate_llm()` (not `get_detective_llm()`) for the same ISSUE-003 reason as the pitch
+  itself — no unrelated tools for the model to reach for instead of answering.
+- **`build_annotated_proposals` shared between `debate_node` and `vote_node`, not duplicated**:
+  the original ISSUE-004 fix (independently rebuilding an equivalent structure in `vote_node`)
+  would leave two hand-maintained views of the same `proposed_strategies` data free to drift
+  apart. A single scoped helper guarantees voters see exactly what debaters saw.
 - **Prompt-level conflict hints + one retry, backed by deterministic code enforcement**: the
   LLM can't be trusted to reliably self-enforce "propose distinct nodes" on prompt instructions
   alone (see `known_issues.md` ISSUE-002), but a stronger model shouldn't need to pay for the

@@ -69,6 +69,12 @@ class ScotlandYardState(TypedDict):
     # Each detective proposes moves for ALL detectives
     proposed_strategies: Annotated[Dict[str, DetectiveStrategy], update_dict]
 
+    # Each debate speaker's structured post-debate stance (ISSUE-004):
+    # {speaker_id: {target_id: preferred_node}}, pending targets only. Plain overwrite field -
+    # no memoization needed like mrx_zone_context, since debate_node always runs immediately
+    # before vote_node reads it, every loop and every round, so it's never stale when read.
+    debate_positions: Optional[Dict[str, Dict[str, int]]]
+
     # Moves that have passed the 3-vote threshold
     locked_moves: Annotated[Dict[str, int], update_dict]
     

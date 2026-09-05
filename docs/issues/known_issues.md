@@ -118,8 +118,8 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
 
 ### ISSUE-004 — Vote prompts never include the structured proposals, only the (currently broken) debate transcript
 
-- **Status**: Open
-- **Area**: `backend/agents.py:vote_node` (`cast_ballot`)
+- **Status**: Fixed
+- **Area**: `backend/agents.py:vote_node` (`cast_ballot`), `debate_node`, `build_annotated_proposals`, `build_debate_position_schema`
 - **Logged**: 2026-09-02
 - **Description**: `cast_ballot`'s prompt includes only `debate_transcript` (free text) — never
   `state["proposed_strategies"]` (the structured `proposed_board_moves` + `rationale` JSON),
@@ -142,6 +142,26 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   title refers to) is now Fixed, so the transcript `cast_ballot` reads is no longer at risk of
   silently blank pitches. This issue's own gap is unrelated and still open: ballots still never
   see `state["proposed_strategies"]` directly, only its lossy prose summary.
+- **Fix (2026-09-05)**: Two changes, going beyond the originally proposed fix:
+  - `build_annotated_proposals(state, distances_to_zone, pending_targets)` extracts
+    `debate_node`'s existing proposal-annotation logic into a shared helper, now called by both
+    `debate_node` and `vote_node` so they see an identical projection of the same data. Scoped
+    to `pending_targets` when given (both callers now pass it) — a proposer's full 5-target
+    board would otherwise duplicate already-locked targets, which are shown separately via
+    "Already Locked Moves" wherever this appears.
+  - `cast_ballot`'s prompt now includes this scoped `proposals_context` (the structured
+    pre-debate proposals) alongside a new `debate_positions_context`: each debate speaker's own
+    structured post-debate stance per pending target, captured via a new
+    `build_debate_position_schema` field (`{target}_position: int`) added to `debate_node`'s
+    existing per-speaker structured call — same call count, no added latency. This closes the
+    deeper gap noted above: voters previously had only a frozen pre-debate proposal and a
+    lossy prose transcript, with no structured record of what anyone actually landed on *after*
+    debate. See `docs/mechanics/game_mechanics.md` Phase 2/3 for the full mechanism.
+  - Side effect: `debate_node`'s per-speaker call is now a structured-output call (previously
+    plain text), which exposes it to the same failure mode `ISSUE-006`/`007` already document
+    for `propose_node`/`vote_node` (reasoning-budget exhaustion, parse failure). Mitigated the
+    same way `cast_ballot` already handles it: a per-speaker try/except drops that speaker's
+    pitch/position on failure rather than inventing a fallback value — see `ISSUE-006`.
 
 ### ISSUE-005 — No board-topology/connectivity context is ever given to the LLM
 
@@ -205,6 +225,36 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   X's inventory shrinks over the game). Revisit only if the zone's accuracy becomes a real
   gameplay problem in practice.
 
+### ISSUE-016 — Nearest-zone-node-per-detective field considered, not implemented
+
+- **Status**: Won't Fix (deliberate, deferred decision)
+- **Area**: `backend/agents.py:compute_mrx_zone_context`, `get_mrx_zone_context`
+- **Logged**: 2026-09-05
+- **Description**: Proposal was to extend `current_distances_to_zone` (currently one hop-count
+  scalar per still-undecided detective) with the specific zone node ID that achieves that
+  minimum distance, on the theory that a concrete node reference would let detectives reason
+  more precisely and coordinate a triangulation strategy. Feasible cheaply: `_bfs_from` would
+  need one extra `nearest_source[node] = source_node_id` dict tracked alongside `visited`,
+  seeded per zone node, no added asymptotic cost.
+- **Decision**: Not implemented. Risks outweighed the unproven benefit:
+  - **Tie ambiguity**: multiple zone nodes frequently share the minimum distance; surfacing one
+    arbitrary winner (BFS visitation order) implies false precision.
+  - **Convergence, not triangulation**: each detective's own nearest zone node tends to be
+    whichever zone-boundary node faces the detectives' side of the board — several detectives
+    would likely compute the *same* nearest node, pulling them toward one point rather than
+    spreading coverage across the zone's different approach vectors, which is the opposite of
+    what triangulation needs.
+  - **Cost on an already-constrained model**: added prompt surface for a model already showing
+    reasoning-budget/latency problems (ISSUE-006/007), for a signal whose strategic value was
+    not empirically validated.
+- **Alternative on the table if revisited**: a nearest-*detective*-per-zone-node assignment
+  (Voronoi-style partition of the zone) instead of nearest-zone-node-per-detective — this
+  directly surfaces non-overlapping coverage ("detective_1 covers this side of the zone,
+  detective_2 covers that side") rather than pulling detectives toward a shared point. More
+  expensive to compute/render than the scalar-per-detective version, and only meaningful while
+  the zone-list-threshold path (`MRX_ZONE_LIST_THRESHOLD`, ≤20 nodes) is active, since the zone
+  itself isn't shown to the model above that size either.
+
 ---
 
 ## Group B: LLM Provider / Model Behavior (`deepseek/deepseek-v4-flash-0731` via OpenRouter)
@@ -212,8 +262,12 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
 ### ISSUE-006 — Uncontrolled reasoning-token budget causes high, highly variable latency and outright failures
 
 - **Status**: Open
-- **Area**: `backend/mcp_client.py:get_detective_llm` (model config)
+- **Area**: `backend/mcp_client.py:get_detective_llm`, `get_debate_llm` (model config)
 - **Logged**: 2026-09-02
+- **Update (2026-09-05)**: As part of the ISSUE-004 fix, `debate_node`'s per-speaker call is now
+  a `with_structured_output` call too (previously plain text) — it's exposed to this same
+  reasoning-budget failure mode going forward, mitigated the same way `cast_ballot` already
+  handles it (drop that speaker's contribution on failure, no fallback value invented).
 - **Description**: `deepseek/deepseek-v4-flash-0731` is a hybrid reasoning model, and nothing in
   `mcp_client.py`'s `ChatOpenAI(...)` config caps or disables its reasoning-token budget. Two
   observed consequences: (1) per-call latency for structurally identical propose calls ranged

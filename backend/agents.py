@@ -30,6 +30,25 @@ def build_ballot_schema(pending_targets: list) -> type[BaseModel]:
     }
     return create_model("VotingBallot", **fields)
 
+def build_debate_position_schema(pending_targets: list) -> type[BaseModel]:
+    """
+    ISSUE-004 fix: gives each debate speaker's single LLM call a structured stance alongside
+    its free-text pitch, at no extra call cost. Previously the only record of a speaker's
+    position was the pitch's prose, which vote_node's cast_ballot never even saw - voters had
+    to infer "what everyone landed on after debate" from a 2-3 sentence paraphrase (or nothing,
+    before ISSUE-003 was fixed). "{det_id}_position" is that speaker's own current preferred
+    node for det_id, given everything argued so far - not a proposal for the team, just their
+    stated stance, the same way build_ballot_schema's "{det_id}_vote" works for voting.
+    """
+    fields = {
+        "pitch": (str, Field(description="Your 2-3 sentence pitch/argument for this turn"))
+    }
+    for det_id in pending_targets:
+        fields[f"{det_id}_position"] = (
+            int, Field(description=f"Your current preferred node for {det_id}, given the debate so far")
+        )
+    return create_model("DebatePosition", **fields)
+
 # --- MCP TOOL RESULT UNWRAPPING ---
 def parse_valid_moves(raw_result) -> list[dict]:
     """
@@ -126,6 +145,32 @@ def format_mrx_zone_block(zone_context: Optional[dict]) -> str:
 def zone_distances_for_moves(moves_by_detective: dict, distances_to_zone: dict) -> dict:
     """{detective_id: hops_to_nearest_possible_mr_x_location} for a {detective_id: node_id} map."""
     return {det_id: distances_to_zone.get(node_id) for det_id, node_id in moves_by_detective.items()}
+
+def build_annotated_proposals(
+    state: ScotlandYardState, distances_to_zone: dict, pending_targets: Optional[list] = None
+) -> dict:
+    """
+    {proposer_id: {"proposed_board_moves", "distance_to_mrx_zone_per_move", "rationale"}} for
+    every proposer in state["proposed_strategies"]. Shared by debate_node and vote_node
+    (ISSUE-004) so both phases see an identical projection of the same underlying proposals,
+    rather than two independently hand-built views that can silently drift apart.
+
+    When pending_targets is given, each proposer's proposed_board_moves (and its distance
+    annotation) is filtered down to just those targets - locked targets are already shown
+    separately wherever this is used (the "Already Locked Moves" line), so including them here
+    too would just be duplicated noise scaled by every proposer's full 5-target board.
+    """
+    result = {}
+    for proposer_id, strategy in state["proposed_strategies"].items():
+        moves = strategy.get("proposed_board_moves", {})
+        if pending_targets is not None:
+            moves = {det_id: moves[det_id] for det_id in pending_targets if det_id in moves}
+        result[proposer_id] = {
+            "proposed_board_moves": moves,
+            "distance_to_mrx_zone_per_move": zone_distances_for_moves(moves, distances_to_zone),
+            "rationale": strategy.get("rationale"),
+        }
+    return result
 
 # --- PROPOSAL CONFLICT DETECTION (used to decide whether to retry a proposer) ---
 def find_proposal_conflicts(strategy_obj, pending_targets: list, legal_move_sets: dict) -> list[str]:
@@ -398,6 +443,7 @@ async def debate_node(state: ScotlandYardState) -> dict:
 
     transcript = []
     locked = state.get("locked_moves", {})
+    pending_targets = [d for d in DETECTIVE_NAMES if d not in locked]
 
     # Mr. X possible-zone context (ISSUE-005): annotate each proposer's already-proposed
     # destinations with their hop-distance to Mr. X's possible zone, so debaters can argue
@@ -409,17 +455,21 @@ async def debate_node(state: ScotlandYardState) -> dict:
         d_id: distances_to_zone.get(d_info["node_id"])
         for d_id, d_info in state["detectives"].items()
     }
-    annotated_proposals = {
-        proposer_id: {
-            "proposed_board_moves": strategy.get("proposed_board_moves", {}),
-            "distance_to_mrx_zone_per_move": zone_distances_for_moves(
-                strategy.get("proposed_board_moves", {}), distances_to_zone
-            ),
-            "rationale": strategy.get("rationale"),
-        }
-        for proposer_id, strategy in state["proposed_strategies"].items()
-    }
+    # ISSUE-004: scoped to pending_targets only - locked targets are already shown via
+    # "Already Locked Moves" below, so a proposer's full 5-target board would just duplicate them.
+    annotated_proposals = build_annotated_proposals(state, distances_to_zone, pending_targets)
     proposals_context = json.dumps(annotated_proposals, indent=2)
+
+    # ISSUE-004: every speaker's single call now also yields a structured "position" per
+    # pending target (their own current preferred node, given the debate so far) alongside the
+    # free-text pitch - no extra call cost, since with_structured_output still runs in one shot.
+    # This is the actual post-debate signal vote_node needs; the pitch alone is a lossy
+    # paraphrase of it. pending_targets is guaranteed non-empty here (the graph's router sends
+    # an all-locked round to "finalize", never back to "propose"/"debate") - the empty-list
+    # fallback below exists only for symmetry with vote_node's own such guard.
+    structured_llm = llm.with_structured_output(build_debate_position_schema(pending_targets)) \
+        if pending_targets else None
+    debate_positions = {}
 
     for det_id in DETECTIVE_NAMES:
         transcript_history = "\n".join(transcript) if transcript else "No one has spoken yet."
@@ -433,24 +483,43 @@ async def debate_node(state: ScotlandYardState) -> dict:
         Each detective's CURRENT distance (in hops) to the nearest node in that zone, for
         comparison: {json.dumps(current_distances_to_zone)}
 
-        Initial Proposals (each move's "distance_to_mrx_zone_per_move" is that destination's
-        hop-distance to the nearest node in Mr. X's possible zone above - 0 means it IS one of
-        his possible current locations): {proposals_context}
+        Initial Proposals (pending targets only - "distance_to_mrx_zone_per_move" is that
+        destination's hop-distance to the nearest node in Mr. X's possible zone above - 0 means
+        it IS one of his possible current locations): {proposals_context}
         Already Locked Moves: {locked}
 
         Debate Transcript so far:
         {transcript_history}
-        
-        Task: If you are D1, pitch your plan aggressively. If you are D2-D5, DO NOT just agree. 
+
+        Task: If you are D1, pitch your plan aggressively. If you are D2-D5, DO NOT just agree.
         Point out why the previous speakers' plans are bad for YOU. Counter-propose your own plan and demand votes.
-        Keep it to 2-3 sentences.
+        Keep your pitch to 2-3 sentences. Also state your current preferred node for each
+        still-undecided detective ({', '.join(pending_targets)}), given everything argued so far.
         """
-        
-        response = await llm.ainvoke([HumanMessage(content=prompt)])
-        print(f"[{det_id.upper()}]: {response.content}")
-        transcript.append(f"[{det_id}]: {response.content}")
-        
-    return {"messages": [AIMessage(content="\n".join(transcript))], **zone_state_update}
+
+        if structured_llm is not None:
+            try:
+                position_obj = await structured_llm.ainvoke([HumanMessage(content=prompt)])
+                pitch = position_obj.pitch
+                debate_positions[det_id] = {
+                    target_id: getattr(position_obj, f"{target_id}_position")
+                    for target_id in pending_targets
+                }
+            except Exception as e:
+                pitch = ""
+                print(f"[{det_id.upper()}] Failed to produce a structured debate turn: {e}")
+        else:
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            pitch = response.content
+
+        print(f"[{det_id.upper()}]: {pitch}")
+        transcript.append(f"[{det_id}]: {pitch}")
+
+    return {
+        "messages": [AIMessage(content="\n".join(transcript))],
+        "debate_positions": debate_positions,
+        **zone_state_update,
+    }
 
 async def vote_node(state: ScotlandYardState) -> dict:
     print("\n--- VOTING PHASE ---")
@@ -510,6 +579,16 @@ async def vote_node(state: ScotlandYardState) -> dict:
         for d_id in pending_targets
     }
 
+    # ISSUE-004: ballots previously only saw the (lossy, prose) debate transcript, never the
+    # structured proposal data propose_node's and debate_node's own prompts already include.
+    # Both pieces below are scoped to pending_targets, mirroring legal_moves_context above.
+    annotated_proposals = build_annotated_proposals(state, distances_to_zone, pending_targets)
+    proposals_context = json.dumps(annotated_proposals, indent=2)
+    # Each debate speaker's structured post-debate stance (agents.py:debate_node) - the actual
+    # "what did everyone land on after arguing" signal, distinct from their frozen pre-debate
+    # proposal above and from the free-text transcript below.
+    debate_positions_context = json.dumps(state.get("debate_positions", {}), indent=2)
+
     debate_transcript = state["messages"][-1].content if state["messages"] else ""
 
     # 1. Collect Votes - every detective votes, including ones already locked, since they
@@ -526,6 +605,13 @@ async def vote_node(state: ScotlandYardState) -> dict:
 
         Based on the debate:
         {debate_transcript}
+
+        Structured Proposals going into this debate (pending targets only - "rationale" is the
+        proposer's own reasoning, "distance_to_mrx_zone_per_move" is each destination's
+        hop-distance to Mr. X's possible zone): {proposals_context}
+
+        Each Detective's Stated Position AFTER Debate (pending targets only - what they said
+        they now favor, having heard everyone's arguments): {debate_positions_context}
 
         Mr. X's Possible Zone:
         {zone_block}
