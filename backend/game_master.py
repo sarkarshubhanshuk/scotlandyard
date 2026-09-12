@@ -10,6 +10,7 @@ mcp = FastMCP("ScotlandYardGameMaster")
 # Resolve paths dynamically based on this file's location
 BASE_DIR = Path(__file__).resolve().parent.parent
 MAP_PATH = BASE_DIR / "docs" / "map" / "map.json"
+NODE_POSITIONS_PATH = BASE_DIR / "docs" / "map" / "node_positions.json"
 RULES_PATH = BASE_DIR / "docs" / "rules" / "rules.md"
 
 # Load the Map Data into memory
@@ -17,8 +18,14 @@ def load_map():
     with open(MAP_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["nodes"]
 
+def load_node_positions() -> Dict[str, dict]:
+    """Per-node {x, y} board pixel-percentage coordinates, keyed by node id as a string (see docs/map/node_positions.json)."""
+    with open(NODE_POSITIONS_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
 map_data = load_map()
 node_index: Dict[int, dict] = {node["id"]: node for node in map_data}
+node_positions = load_node_positions()
 
 @mcp.tool()
 def get_node_info(node_id: int) -> dict:

@@ -15,18 +15,14 @@ def _occupied_by_detectives(session: GameSession) -> List[int]:
     return [d["node_id"] for d in session.state["detectives"].values()]
 
 
-def get_mr_x_legal_moves(session: GameSession) -> List[Dict]:
+def _legal_moves_from(node: int, ticket_counts: dict, occupied: set) -> List[Dict]:
     """
-    Returns Mr. X's legal single-hop destinations from his current node, each annotated with
-    which ticket type(s) could be spent to reach it (native transport ticket if he holds one,
-    plus "black" if he holds a black ticket - black covers ANY route type including boat).
-    An empty result means Mr. X has no legal move at all this round - per the rules he can never
-    forfeit, so this is the immediate-loss condition, checked by the caller before offering a
-    move menu rather than discovered via a rejected submission.
+    Shared core of get_mr_x_legal_moves: Mr. X's legal single-hop destinations from `node`,
+    each annotated with which ticket type(s) (from `ticket_counts`) could pay for it - native
+    transport ticket if held, plus "black" if a black ticket is held (covers ANY route type,
+    including boat).
     """
-    mr_x = session.state["mr_x"]
-    occupied = set(_occupied_by_detectives(session))
-    node_info = get_node_info(mr_x["current_node"])
+    node_info = get_node_info(node)
 
     options_by_target: Dict[int, set] = {}
     for connection in node_info["connections"]:
@@ -36,9 +32,9 @@ def get_mr_x_legal_moves(session: GameSession) -> List[Dict]:
         req_type = connection["type"]
 
         options = options_by_target.setdefault(target, set())
-        if req_type in ("taxi", "bus", "metro") and mr_x.get(f"{req_type}_tickets", 0) > 0:
+        if req_type in ("taxi", "bus", "metro") and ticket_counts.get(f"{req_type}_tickets", 0) > 0:
             options.add(req_type)
-        if mr_x.get("black_tickets", 0) > 0:
+        if ticket_counts.get("black_tickets", 0) > 0:
             options.add("black")  # Black covers any route type, including boat.
 
     return [
@@ -46,6 +42,37 @@ def get_mr_x_legal_moves(session: GameSession) -> List[Dict]:
         for target, options in options_by_target.items()
         if options
     ]
+
+
+def get_mr_x_legal_moves(session: GameSession, after_hop: Optional[Dict] = None) -> List[Dict]:
+    """
+    Returns Mr. X's legal single-hop destinations, each annotated with which ticket type(s)
+    could be spent to reach it. An empty result (when `after_hop` is None) means Mr. X has no
+    legal move at all this round - per the rules he can never forfeit, so this is the
+    immediate-loss condition, checked by the caller before offering a move menu rather than
+    discovered via a rejected submission.
+
+    after_hop, when given ({"target_node": int, "ticket_type_spent": str}), previews hop-2
+    options for a double-move: hop-1 must already be a legal current single hop (validated here
+    the same way submit_mr_x_move would, including requiring a double-move ticket in hand, so
+    the preview never offers a double-move the eventual submission would reject), and options are
+    computed from hop-1's target using tickets remaining after hop-1's spend - never from Mr. X's
+    live inventory, or spending the same scarce ticket type on both hops would be missed.
+    """
+    mr_x = session.state["mr_x"]
+    occupied = set(_occupied_by_detectives(session))
+
+    if after_hop is None:
+        return _legal_moves_from(mr_x["current_node"], mr_x, occupied)
+
+    if mr_x.get("double_tickets", 0) <= 0:
+        raise IllegalMoveError("No double-move tickets remaining.")
+    _validate_hop(mr_x["current_node"], after_hop["target_node"], after_hop["ticket_type_spent"], mr_x, occupied)
+
+    post_hop1_tickets = dict(mr_x)
+    spent_key = f"{after_hop['ticket_type_spent']}_tickets"
+    post_hop1_tickets[spent_key] = post_hop1_tickets.get(spent_key, 0) - 1
+    return _legal_moves_from(after_hop["target_node"], post_hop1_tickets, occupied)
 
 
 def _validate_hop(current_node: int, target_node: int, ticket_type_spent: str, ticket_counts: dict, occupied: set) -> None:

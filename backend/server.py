@@ -12,6 +12,7 @@ from session import GAMES, create_game
 from mrx_turn import get_mr_x_legal_moves, submit_mr_x_move, IllegalMoveError
 from round_resolver import run_detective_loop, resolve_round
 from serializers import serialize_public_state, serialize_loop_event
+from game_master import map_data, node_positions
 
 
 def _get_session_or_404(game_id: str):
@@ -33,13 +34,33 @@ async def get_game_route(request: Request) -> JSONResponse:
     return JSONResponse(serialize_public_state(session))
 
 
+async def map_route(request: Request) -> JSONResponse:
+    session = _get_session_or_404(request.path_params["game_id"])
+    if session is None:
+        return JSONResponse({"error": "Game not found."}, status_code=404)
+    # Board topology/positions are game-independent (immutable per .cursorrules), but this route
+    # is scoped under /games/{game_id}/... for consistency with the rest of the API.
+    return JSONResponse({"nodes": map_data, "positions": node_positions})
+
+
 async def mrx_legal_moves_route(request: Request) -> JSONResponse:
     session = _get_session_or_404(request.path_params["game_id"])
     if session is None:
         return JSONResponse({"error": "Game not found."}, status_code=404)
     if session.status != "awaiting_mr_x_move":
         return JSONResponse({"error": f"Not Mr. X's turn (status={session.status})."}, status_code=409)
-    return JSONResponse({"legal_moves": get_mr_x_legal_moves(session)})
+
+    # Optional hop-2 preview for a double-move: both params must be given together.
+    from_node = request.query_params.get("from_node")
+    ticket_type_spent = request.query_params.get("ticket_type_spent")
+    after_hop = None
+    if from_node is not None and ticket_type_spent is not None:
+        after_hop = {"target_node": int(from_node), "ticket_type_spent": ticket_type_spent}
+
+    try:
+        return JSONResponse({"legal_moves": get_mr_x_legal_moves(session, after_hop=after_hop)})
+    except IllegalMoveError as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
 
 
 async def mrx_move_route(request: Request) -> JSONResponse:
@@ -86,6 +107,7 @@ app = Starlette(
     routes=[
         Route("/games", create_game_route, methods=["POST"]),
         Route("/games/{game_id}", get_game_route, methods=["GET"]),
+        Route("/games/{game_id}/map", map_route, methods=["GET"]),
         Route("/games/{game_id}/mrx/legal-moves", mrx_legal_moves_route, methods=["GET"]),
         Route("/games/{game_id}/mrx/move", mrx_move_route, methods=["POST"]),
         Route("/games/{game_id}/round/stream", round_stream_route, methods=["GET"]),

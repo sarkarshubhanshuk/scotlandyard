@@ -452,12 +452,17 @@ subsection.
 
 ### ISSUE-011 — React/Phaser frontend does not exist yet
 
-- **Status**: Not Yet Built
+- **Status**: Fixed
 - **Area**: Phase 4 (frontend)
 - **Logged**: 2026-09-02 (migrated from `game_mechanics.md` §2)
 - **Description**: The mechanic described in `game_mechanics.md` §2 was built specifically so
-  frontend work can target a real, live backend from day one — not the other way around. This is
-  an intentional non-goal at this stage, not a bug.
+  frontend work can target a real, live backend from day one — not the other way around. This was
+  an intentional non-goal at that stage, not a bug.
+- **Fix (2026-09-11)**: Phase 4 built the full React + Phaser frontend across 5 milestones (board
+  render, game/session wiring, Mr. X move UI, live AI debate visualization, travel log/win-loss)
+  — see `CLAUDE.md` §3 for the architecture. Verified end-to-end against a real, unmocked backend
+  including a full natural 14-round game (detectives won via Mr. X's ticket exhaustion, not
+  capture) with a double-move and a surfacing-round reveal both exercised along the way.
 
 ### ISSUE-012 — `docs/map/node_positions.json` has never been visually spot-checked
 

@@ -29,7 +29,7 @@ A digital adaptation of the board game Scotland Yard. The backend uses a multi-a
 
 - **Phase 3:** Completed (Multi-Agent LangGraph System).
 
-- **Phase 4:** Pending (React + Phaser.js Frontend).
+- **Phase 4:** Completed (React + Phaser.js Frontend).
 
 ## Architecture & Code Rationale
 
@@ -59,15 +59,45 @@ The AI agents cannot simply guess their moves. They must query a local Game Mast
 
 - `backend/test_phase3.py` / `backend/test_full_round_e2e.py`: async testing scripts that drive `detective_graph` end-to-end via real LLM calls; both log every LLM call's full input/output to a transcript file for debugging agent behavior.
 
-### 3. Phase 4 Target Architecture (Hybrid Frontend)
+### 3. Phase 4: Hybrid Frontend (React + Phaser)
 
-- **Tech Stack:** React (UI layer) + Phaser.js (Canvas layer).
+- **Tech Stack:** React 19 (UI layer, via `react-router-dom` for `/` and `/game/:gameId`) + Phaser 4
+  (Canvas layer — `phaser` had no pinned major version when installed; the classic Phaser 3 APIs
+  used here are unaffected). No global state library (Zustand, considered up front, turned out
+  unnecessary — `GameScreen`/`LoadedGame` lift the one `PublicGameState` and pass it down to the
+  board and sidebar, which was enough).
 
-- **Layout:** 75% Left Pane (Phaser Game Board), 25% Right Pane (React UI).
+- **Layout:** 75% Left Pane (`BoardCanvas`, one Phaser `Scene` mounted once and updated
+  imperatively via `updateGameState`/`updateHighlights` rather than recreated per render), 25%
+  Right Pane (`TicketInventory`, `MoveSelector`, `ChatLog`, `TravelLog`, stacked).
 
-- **UI Components (React):** Chat Log (AI debate stream), Ticket Inventory, Travel Log (SVG tickets covering node IDs until reveal rounds), and Move Selector.
+- **Backend additions this phase required** (`backend/server.py`, `game_master.py`, `mrx_turn.py`):
+  `GET /games/{id}/map` (serves `map.json` + `node_positions.json` — the frontend never bundles
+  its own copy, keeping the backend the single source of truth for board data), and
+  `GET /games/{id}/mrx/legal-moves` extended with optional `from_node`/`ticket_type_spent` query
+  params to preview a double-move's hop-2 options (reuses the same legality logic
+  `submit_mr_x_move` itself trusts, rather than duplicating it in TypeScript).
 
-- **Board Component (Phaser):** Renders a static SVG graphic of the physical game board. Uses `map_graph.json` supplemented with X/Y coordinates to overlay invisible hitboxes and draw semi-transparent route highlights.
+- **Move Selector** (`hooks/useMrXMoveWizard.ts`): the single/double-move state machine — pick a
+  legal node on the board, choose a ticket type, and for a double-move, repeat for hop 2 using
+  the preview endpoint above before submitting both hops atomically.
+
+- **Live AI debate** (`hooks/useRoundStream.ts`): opens `GET /round/stream` (SSE) as soon as the
+  game enters `detective_loop_running`, renders `proposal`/`debate`/`vote_tally`/`round_finalized`
+  events into `ChatLog`, and on the terminal `round_result` reports the fresh game state back up
+  — which is also what makes the move wizard reset itself for the next round, with no extra
+  coordination code needed between the two hooks.
+
+- **Travel Log** (`components/TravelLog.tsx`): renders Mr. X's full `transport_history` as ticket
+  icons (always visible, per rules.md) plus a single "last known position" line. It does **not**
+  attempt to show a per-round history of past surfacing reveals — `state.py`'s `MrXState` only
+  ever retains the *latest* `last_known_node`/`last_known_round`, so anything earlier is no longer
+  available from the backend to reconstruct.
+
+- **Game over**: `GameOverBanner` reads `status`/`winner` only. Since Mr. X's real position is
+  never serialized (even at game end), a "detectives win" is deliberately **not** worded as a
+  capture — it could equally be rules.md's "Mr. X has no legal move" condition, which the client
+  has no way to distinguish.
 
 ## LLM Configuration
 
