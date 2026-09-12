@@ -5,26 +5,10 @@ from state import ScotlandYardState
 from agents import DETECTIVE_IDS
 from graph import detective_graph, build_next_round_state
 from session import GameSession
+from transport import determine_move_transport
 
 MAX_ROUND = 24
 SURFACING_ROUNDS = {3, 8, 13, 18, 24}
-
-# Tie-break when a target node is reachable via more than one transport type: prefer whichever
-# type the detective currently holds the most tickets of (conserves the scarce metro allotment
-# by default), tied-broken taxi > bus > metro.
-TRANSPORT_PRIORITY = {"taxi": 2, "bus": 1, "metro": 0}
-
-
-def pick_transport(available_transports: list, ticket_counts: dict) -> str:
-    """
-    Deterministic apply-time transport choice for a detective's move. Detectives never choose
-    this themselves - agents.py's build_strategy_schema/build_ballot_schema only ever ask for a
-    target node, never a transport type, since a node pair can legally be connected by more than
-    one transport simultaneously (e.g. map.json's node 1 <-> node 46 via both bus and metro).
-    """
-    def sort_key(transport):
-        return (ticket_counts.get(f"{transport}_tickets", 0), TRANSPORT_PRIORITY[transport])
-    return max(available_transports, key=sort_key)
 
 
 class RoundResult(TypedDict):
@@ -93,16 +77,9 @@ def resolve_round(session: GameSession) -> RoundResult:
 
         if target_node != detective["node_id"]:
             occupied = _other_detective_nodes(state, det_id)
-            legal_moves = compute_valid_moves(
-                detective["node_id"], detective["taxi_tickets"], detective["bus_tickets"],
-                detective["metro_tickets"], black_tickets=0, occupied_nodes=occupied
-            )
-            available_transports = [
-                m["transport_used"] for m in legal_moves if m.get("target_node") == target_node
-            ]
+            transport = determine_move_transport(detective, target_node, occupied)
 
-            if available_transports:
-                transport = pick_transport(available_transports, detective)
+            if transport is not None:
                 ticket_key = f"{transport}_tickets"
                 detective[ticket_key] -= 1
                 mr_x[ticket_key] += 1  # Rules: a detective's spent ticket transfers to Mr. X.

@@ -83,3 +83,9 @@ class ScotlandYardState(TypedDict):
     
     # Final Locked Moves agreed upon after debate consensus
     final_moves: Annotated[Dict[str, int], update_dict]
+
+    # graph.py:finalize_round_node's Chat-Log preview of final_moves - per detective,
+    # {"from_node": int, "to_node": int, "transport": Optional[str]} - computed via
+    # transport.py:determine_move_transport, the same helper round_resolver.py:resolve_round
+    # itself uses to actually apply the move, so this can never disagree with what's deducted.
+    final_move_details: Dict[str, dict]

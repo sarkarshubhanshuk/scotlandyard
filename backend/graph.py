@@ -1,6 +1,7 @@
 from langgraph.graph import StateGraph, START, END
 from state import ScotlandYardState
 from agents import propose_node, debate_node, vote_node, DETECTIVE_IDS
+from transport import determine_move_transport
 
 def check_vote_status(state: ScotlandYardState) -> str:
     """
@@ -48,8 +49,25 @@ def finalize_round_node(state: ScotlandYardState) -> dict:
                 
     print(f"\n=== FINAL LOCKED MOVES FOR ROUND {state.get('round_number')} ===")
     print(final_moves)
-    
-    return {"final_moves": final_moves}
+
+    # A preview of what round_resolver.py:resolve_round is about to apply (from-node, to-node,
+    # and which transport it'll spend) - computed here, not there, so the Chat Log's "Final
+    # Moves" line can show it via this node's own SSE event, before resolve_round actually runs
+    # (it's only called once the whole detective_graph finishes, from server.py). Uses the exact
+    # same determine_move_transport() resolve_round itself calls, so the preview can never
+    # disagree with what's actually deducted.
+    final_move_details = {}
+    for det_id in DETECTIVE_IDS:
+        detective = state["detectives"][det_id]
+        to_node = final_moves[det_id]
+        occupied = [d["node_id"] for other_id, d in state["detectives"].items() if other_id != det_id]
+        final_move_details[det_id] = {
+            "from_node": detective["node_id"],
+            "to_node": to_node,
+            "transport": determine_move_transport(detective, to_node, occupied),
+        }
+
+    return {"final_moves": final_moves, "final_move_details": final_move_details}
 
 
 # ==========================================
@@ -111,4 +129,5 @@ def build_next_round_state(previous_state: ScotlandYardState) -> ScotlandYardSta
         "proposed_strategies": {},
         "locked_moves": {},
         "final_moves": {},
+        "final_move_details": {},
     }

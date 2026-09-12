@@ -69,6 +69,7 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
         "proposed_strategies": {},
         "locked_moves": {},
         "final_moves": {},
+        "final_move_details": {},
     }
 
     session = GameSession(game_id=str(uuid.uuid4()), state=state)

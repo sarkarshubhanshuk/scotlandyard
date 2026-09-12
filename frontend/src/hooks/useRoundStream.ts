@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { openRoundStream } from "../api/client";
-import { DETECTIVE_LABELS } from "../labels";
+import { DETECTIVE_LABELS, TICKET_LABELS } from "../labels";
 import type {
   DebateEvent,
   DetectiveId,
@@ -121,18 +121,26 @@ export function useRoundStream(
       const data = JSON.parse(event.data as string) as RoundFinalizedEvent;
       const lines = [
         "Final moves:",
-        ...Object.entries(data.final_moves).map(([detId, node]) => `${label(detId)} -> node ${node}`),
+        ...Object.entries(data.final_moves).map(([detId, move]) =>
+          move.transport != null
+            ? `${label(detId)} moves from Node ${move.from_node} to Node ${move.to_node} via ${TICKET_LABELS[move.transport]}`
+            : `${label(detId)} stays at Node ${move.from_node}`,
+        ),
       ];
       append({ kind: "round_finalized", lines });
     });
 
     source.addEventListener("round_result", (event) => {
       const data = JSON.parse(event.data as string) as RoundResultEvent;
-      const lines =
-        data.winner != null
-          ? [`Game over - ${data.winner === "mr_x" ? "Mr. X" : "the detectives"} win!`]
-          : [`Round ${round} complete.`];
-      append({ kind: "round_result", lines });
+      // A round continuing normally (winner === null) adds nothing here - the "Final Moves"
+      // entry above already shows what happened, and the next round's own header is the signal
+      // that play continued. Only a genuine game-over is worth its own Chat Log entry.
+      if (data.winner != null) {
+        append({
+          kind: "round_result",
+          lines: [`Game over - ${data.winner === "mr_x" ? "Mr. X" : "the detectives"} win!`],
+        });
+      }
       source.close();
       onRoundResult(data.state);
     });

@@ -100,9 +100,19 @@ export interface VoteTallyEvent {
   loop_number: number;
 }
 
+// Mirrors backend/transport.py:determine_move_transport's output shape - the same transport
+// round_resolver.py:resolve_round will actually apply, computed early so the Chat Log can show
+// it before the round is actually resolved. transport is null only if from_node === to_node
+// (a detective with no legal move stayed put - an emergency-fallback edge case).
+export interface FinalizedMove {
+  from_node: number;
+  to_node: number;
+  transport: TicketType | null;
+}
+
 export interface RoundFinalizedEvent {
   type: "round_finalized";
-  final_moves: Record<string, number>;
+  final_moves: Record<string, FinalizedMove>;
 }
 
 export interface RoundResultEvent {

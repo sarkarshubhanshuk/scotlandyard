@@ -49,5 +49,8 @@ def serialize_loop_event(node_name: str, update: dict) -> dict:
             "loop_number": update.get("debate_loop_count"),
         }
     if node_name == "finalize":
-        return {"type": "round_finalized", "final_moves": update.get("final_moves", {})}
+        # final_move_details (not the plain final_moves int map) is what the client actually
+        # renders - {det_id: {"from_node", "to_node", "transport"}} - see
+        # graph.py:finalize_round_node for why it's computed there rather than here.
+        return {"type": "round_finalized", "final_moves": update.get("final_move_details", {})}
     return {"type": "unknown", "node": node_name}

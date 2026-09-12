@@ -87,18 +87,31 @@ export function ChatLog({ entries, connectionError, onRetry }: ChatLogProps) {
         }}
       >
         {entries.length === 0 && <p style={{ color: "#666", margin: 0 }}>No debate yet.</p>}
-        {entries.map((entry) => (
-          <div key={entry.id}>
-            <div style={{ fontWeight: 600, color: "#444" }}>
-              Round {entry.round} - {KIND_LABELS[entry.kind]}
-            </div>
-            {entry.lines.map((line, i) => (
-              <div key={i} style={{ whiteSpace: "pre-wrap" }}>
-                <ColoredLine text={line} />
+        {entries.map((entry, index) => {
+          const previous = entries[index - 1];
+          const sameRound = previous?.round === entry.round;
+          // A "proposal" entry that isn't the round's very first entry can only follow a
+          // previous loop's "vote_tally" (see check_vote_status in graph.py) - i.e. it marks a
+          // new loop starting, which gets the more prominent solid separator. Any other same-
+          // round transition (proposal->debate, debate->vote_tally, vote_tally->round_finalized)
+          // is a stage change within the same loop, marked with a lighter dashed separator.
+          const isNewLoop = sameRound && entry.kind === "proposal";
+          const isStageChange = sameRound && !isNewLoop;
+          return (
+            <div key={entry.id}>
+              {isNewLoop && <hr style={{ border: "none", borderTop: "2px solid #999", margin: "0 0 8px" }} />}
+              {isStageChange && <hr style={{ border: "none", borderTop: "1px dashed #ccc", margin: "0 0 8px" }} />}
+              <div style={{ fontWeight: 600, color: "#444" }}>
+                Round {entry.round} - {KIND_LABELS[entry.kind]}
               </div>
-            ))}
-          </div>
-        ))}
+              {entry.lines.map((line, i) => (
+                <div key={i} style={{ whiteSpace: "pre-wrap" }}>
+                  <ColoredLine text={line} />
+                </div>
+              ))}
+            </div>
+          );
+        })}
       </div>
       {connectionError && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
