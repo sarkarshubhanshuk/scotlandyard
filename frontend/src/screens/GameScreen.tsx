@@ -128,11 +128,15 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
         }
         sidebar={
           <>
-            <div>
-              <h2 style={{ margin: 0 }}>Round {gameState.round_number}</h2>
-              <p style={{ margin: "4px 0", color: "#666" }}>{gameState.status.replaceAll("_", " ")}</p>
+            {/* Header + Ticket Inventory grouped with their own tighter gap, distinct from the
+                sidebar's regular section-to-section gap (set on GameLayout's outer flex column). */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <h2 style={{ margin: 0 }}>
+                Round {gameState.round_number}{" "}
+                <span style={{ color: "#666", fontWeight: 400 }}>- {gameState.status.replaceAll("_", " ")}</span>
+              </h2>
+              <TicketInventory gameState={gameState} />
             </div>
-            <TicketInventory gameState={gameState} />
             <MoveSelector wizard={wizard} />
             <ChatLog
               entries={roundStream.entries}
