@@ -527,3 +527,161 @@ subsection.
   the same node. This would only be possible if §1's own proposal/vote uniqueness enforcement
   had a bug, since `final_moves` is supposed to already be collision-free by construction —
   `resolve_round` does not add an extra defensive check for this. Related to ISSUE-010.
+
+---
+
+## Group D: Frontend (React + Phaser)
+
+Issues found during and after Phase 4's build-out (see `CLAUDE.md` §3 for the frontend
+architecture). Several were caught and fixed in the same session they were introduced in.
+
+### ISSUE-018 — Board rendered blurred/pixelated
+
+- **Status**: Fixed
+- **Area**: `frontend/src/board/BoardScene.ts`, `BoardCanvas.tsx`
+- **Logged**: 2026-09-12
+- **Description**: The board canvas (and every number/line drawn on it) appeared visibly blurred.
+  Root cause: Phaser's base framebuffer was the plain 600x450 logical board size, but
+  `Phaser.Scale.FIT` stretched that same framebuffer up to fill a much larger CSS box (typically
+  ~950-1200 CSS px wide) on top of browser `devicePixelRatio` — roughly a 2x+ upscale of a
+  fixed-resolution source, which is inherently blurry.
+- **Dead end considered**: `this.cameras.main.setZoom(RENDER_SCALE)` with a larger `Phaser.Game`
+  config size — live-tested and rendered a completely blank board, since Phaser's Scale
+  Manager/FIT-mode interaction with a manually-zoomed main camera didn't frame the world as
+  expected. Reverted before ever showing this to the user.
+- **Fix**: `RENDER_SCALE = 3` — the board SVG is rasterized via `load.svg(..., {scale:
+  RENDER_SCALE})` instead of the generic `load.image`, and every other drawn object's
+  position/size is explicitly multiplied by `RENDER_SCALE` to match, giving the framebuffer
+  enough real source pixels that `Phaser.Scale.FIT`'s stretch no longer needs to upscale it.
+  `BoardCanvas.tsx`'s `Phaser.Game` config width/height are set to `BOARD_WIDTH/HEIGHT *
+  RENDER_SCALE` accordingly. Plain coordinate multiplication was chosen specifically because it
+  has no camera/Scale-Manager ambiguity, unlike the dead-end approach above.
+
+### ISSUE-019 — Vite bundle-splitting regression: Phaser silently pulled back into the main chunk
+
+- **Status**: Fixed (fragile — see Note)
+- **Area**: `frontend/src/layout/GameLayout.tsx`, `frontend/src/board/boardDimensions.ts`
+- **Logged**: 2026-09-12
+- **Description**: `GameScreen.tsx` lazy-loads `BoardCanvas` specifically so Phaser (the bulk of
+  the production bundle) only downloads once a game is entered, not on the home screen. This
+  regressed when `GameLayout.tsx` (rendered eagerly, outside the lazy boundary) started importing
+  `BOARD_WIDTH`/`BOARD_HEIGHT` from `board/BoardScene.ts` for its aspect-ratio CSS —
+  `BoardScene.ts` itself imports Phaser, so that one import silently pulled all of Phaser back
+  into the main chunk (observed: main chunk 245KB → 1.6MB, board chunk 1.38MB → negligible).
+  Caught twice in the same session by proactively re-running `npm run build` and checking chunk
+  sizes after layout changes, before considering that work done.
+- **Fix**: Created `board/boardDimensions.ts` — a Phaser-free module exporting just
+  `BOARD_WIDTH`/`BOARD_HEIGHT` (re-exported from `BoardScene.ts` so its own existing imports keep
+  working) — and re-pointed `GameLayout.tsx`'s import there instead. `labels.ts` (agent
+  colors/display names, shared by `TicketInventory`/`ChatLog`) was deliberately built the same
+  way from the start, for the same reason.
+- **Note**: This boundary is easy to accidentally re-break — any module imported by non-lazy code
+  that transitively imports from `board/BoardScene.ts` (or any other Phaser-importing module)
+  regresses this silently, with no compile error, only a much larger main chunk. `npm run build`'s
+  chunk-size output is the only signal; there is no automated check enforcing this boundary.
+
+### ISSUE-020 — Mr. X's pawn stayed visible on the board for rounds after his surfacing reveal
+
+- **Status**: Fixed
+- **Area**: `frontend/src/board/BoardScene.ts:renderPawns`
+- **Logged**: 2026-09-12
+- **Description**: `mr_x.last_known_node`/`last_known_round` persist unchanged in state from
+  whichever round last surfaced Mr. X (`build_next_round_state` copies `mr_x` wholesale into
+  every new round) — so `last_known_node` alone being non-null means only "he has surfaced at
+  some point," not "this round is a surfacing round." The board was rendering his pawn from
+  `last_known_node` whenever it was non-null, so it kept showing his (now stale) revealed
+  position on every round after a surfacing round, not just the one exact round.
+- **Fix**: Pawn is now only rendered when `mr_x.last_known_round === gameState.round_number` —
+  the exact current round — resolving to `null` otherwise. Verified across an actual surfacing
+  round (visible) and the round immediately after (correctly hidden).
+
+### ISSUE-021 — Travel Log ticket icons rendered as broken images
+
+- **Status**: Fixed
+- **Area**: `frontend/public/tickets/*.svg` (now `.jpg`), `frontend/public/pawn/pawn.svg`
+- **Logged**: 2026-09-12
+- **Description**: The Travel Log showed a broken-image icon plus fallback alt text instead of
+  ticket art. Root cause, confirmed by fetching the assets in-browser and inspecting raw magic
+  bytes: every `frontend/public/tickets/*.svg` file (and `pawn.svg`, separately) was actually a
+  WebP raster image (`RIFF....WEBP`) mislabeled with a `.svg` extension — the browser fetched
+  them successfully (200 OK) but silently failed to decode them as SVG, with no console error
+  pointing at the real cause. The fix's own replacement assets were verified the same way before
+  being copied in, specifically to avoid repeating this same class of bug.
+- **Fix**: Replaced with genuine JPEGs sourced from `docs/tickets/` (`taxi_ticket.jpg`,
+  `bus_ticket.jpg`, `metro_ticket.jpg`, `black_ticket.jpg`, `doublemove_ticket.jpg`) and a
+  genuine vector `pawn.svg` from `docs/ui/`. `labels.ts:TICKET_ICONS` updated to point at the
+  `.jpg` paths.
+
+### ISSUE-022 — Travel Log hover tooltip clipped by its own ticket box's `overflow: hidden`
+
+- **Status**: Fixed
+- **Area**: `frontend/src/components/TravelLog.tsx`
+- **Logged**: 2026-09-12
+- **Description**: While building a hover popup for each Travel Log ticket/placeholder slot, the
+  popup (an absolutely-positioned sibling meant to float above the slot via `bottom: 100%`) never
+  appeared. Root cause: it was a child of the same `div` whose `overflow: hidden` clips the
+  ticket image to its rounded corners — any content positioned outside that div's own box (which
+  `bottom: 100%` always produces) got clipped along with it, regardless of `z-index`.
+  Misdiagnosed once via `document.elementFromPoint`, which appeared to confirm clipping but was
+  actually a false alarm caused by the tooltip's own `pointerEvents: "none"` (correctly making it
+  non-hit-testable, not invisible) — the real check was inspecting the tooltip element's own
+  `getBoundingClientRect()`/computed style directly.
+- **Fix**: Restructured each slot into an unclipped outer wrapper (`position: relative`, no
+  `overflow`) holding two children: the clipped, bordered ticket/placeholder box, and the tooltip
+  as its sibling — both inside the wrapper, but the tooltip no longer inherits the box's clip.
+
+### ISSUE-023 — Travel Log placeholder slots rendered wider than ticket slots in the same grid
+
+- **Status**: Fixed
+- **Area**: `frontend/src/components/TravelLog.tsx`
+- **Logged**: 2026-09-12
+- **Description**: The per-round ticket grid (`display: grid`, `repeat(auto-fill, minmax(...))`)
+  showed visibly uneven column widths — some placeholders (e.g. "Round 19", "Round 24") were
+  wider than columns holding a ticket image. Root cause: CSS grid items default to
+  `min-width: auto`, which sizes a column to fit its content's own min-content width; a
+  placeholder's text was wide enough to stretch whichever column it happened to land in, even
+  though every slot was meant to share one fixed track width.
+- **Fix**: Added `minWidth: 0` to each grid item, overriding the default so the browser shrinks
+  every item to its track's actual width regardless of text content. Verified all 24 slots then
+  measured identically (54px) at a given viewport width.
+
+### ISSUE-024 — React 19 StrictMode's dev-mode double-invoke can leave a stale, input-dead Phaser canvas overlapping the live one
+
+- **Status**: Open
+- **Area**: `frontend/src/board/BoardCanvas.tsx`, `frontend/src/main.tsx` (`<StrictMode>`)
+- **Logged**: 2026-09-12
+- **Description**: While verifying a new pawn-hover-tooltip feature against `npm run dev`, mouse
+  hover (both real, via browser automation, and a directly-dispatched `PointerEvent`/`MouseEvent`
+  on the canvas element) silently did nothing — no `pointerover` ever fired, despite the pointer
+  being over the visually-correct pawn. Root cause: `document.querySelectorAll('canvas')` showed
+  **two** canvas elements stacked in the DOM (one immediately below the other, the second pushed
+  off-screen), inside what React itself reports as a single mounted `GameScreen` (one `<h2>`,
+  one router match) — i.e. one `<div ref={containerRef}>` ended up hosting two separate
+  `Phaser.Game` instances' canvases. `BoardCanvas.tsx`'s mount effect creates a `new Phaser.Game`
+  with an empty dependency array and no other mount-guard; React 19's `<StrictMode>` (`main.tsx`)
+  deliberately mounts → unmounts → remounts a component's effects once in development to surface
+  missing-cleanup bugs. The working theory is that the first run's cleanup (`game.destroy(true)`,
+  which should remove its own canvas) raced Phaser's asynchronous `preload`/`create` boot
+  sequence and didn't fully undo it, leaving that first (now-dead) canvas in place when the
+  second run's `Phaser.Game` created its own canvas alongside it. The **visible** canvas turned
+  out to be the stale, destroyed one — it never receives `updateGameState`/`updateHighlights`
+  calls either, since `gameRef.current` (used by the state-sync effects) points at whichever
+  instance the *last* effect run assigned, i.e. the live, hidden one.
+- **Scope**: Confirmed dev-server-only (`npm run dev`) — `<StrictMode>`'s double-invoke behavior
+  is itself development-only (React's production build does not double-invoke effects); a
+  production build served via `vite preview` showed exactly one canvas and hover worked
+  correctly on the first attempt. Not confirmed to affect any shipped build.
+- **Possibly related**: earlier Phase 4 verification work saw intermittent board-click failures
+  in the dev server, worked around at the time by driving state via direct backend API calls and
+  reloading the browser instead of relying on simulated clicks — attributed then to a browser-
+  automation/CDP quirk (simulated clicks sometimes dispatching only a `click` DOM event without
+  the `pointerdown`/`pointerup` Phaser listens for). A stale, dead canvas sitting on top would
+  plausibly swallow real clicks the same way it swallowed hover here, but this was never actually
+  confirmed as the true cause of those earlier failures — recorded as a hypothesis, not a
+  finding.
+- **Proposed Fix**: Not yet implemented. Direction: make `BoardCanvas.tsx`'s effect
+  StrictMode-safe — e.g. guard against a container that already has a canvas child before
+  creating a new `Phaser.Game`, or track creation/destruction via a ref that survives the
+  double-invoke cleanly, or confirm whether a newer Phaser 4.x release handles
+  create-during-async-boot teardown more robustly. Low urgency given the confirmed
+  production-build scope, but worth fixing for dev-mode testing reliability.

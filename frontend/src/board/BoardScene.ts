@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import { AGENT_COLORS } from "../labels";
+import { AGENT_COLORS, DETECTIVE_LABELS } from "../labels";
 import { DETECTIVE_IDS, type MapData, type PublicGameState } from "../types";
 import { BOARD_HEIGHT, BOARD_WIDTH } from "./boardDimensions";
 
@@ -61,6 +61,7 @@ export class BoardScene extends Phaser.Scene {
   private onNodeClick?: (nodeId: number) => void;
   private pawns = new Map<string, Phaser.GameObjects.Image>();
   private highlights = new Map<number, Phaser.GameObjects.Arc>();
+  private pawnTooltip: Phaser.GameObjects.Container | null = null;
   // The legal-move fetch that drives highlights resolves asynchronously and can arrive before
   // Phaser's own async preload/create has finished booting the scene - updateHighlights records
   // its latest request here unconditionally, and create() paints from it once actually ready,
@@ -118,6 +119,10 @@ export class BoardScene extends Phaser.Scene {
   private renderPawns() {
     for (const pawn of this.pawns.values()) pawn.destroy();
     this.pawns.clear();
+    // The pawn objects a stale tooltip's hover handlers referred to no longer exist once this
+    // runs (a fresh game snapshot recreates every pawn from scratch) - drop any open tooltip
+    // rather than leaving it pointing at a destroyed pawn.
+    this.hidePawnTooltip();
 
     for (const detId of DETECTIVE_IDS) {
       const detective = this.gameState.detectives[detId];
@@ -128,6 +133,7 @@ export class BoardScene extends Phaser.Scene {
         .image(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, "pawn")
         .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
         .setTint(AGENT_COLORS[detId]);
+      this.makePawnHoverable(pawn, DETECTIVE_LABELS[detId], detective.node_id);
       this.pawns.set(detId, pawn);
     }
 
@@ -146,9 +152,69 @@ export class BoardScene extends Phaser.Scene {
           .image(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, "pawn")
           .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
           .setTint(MR_X_COLOR);
+        this.makePawnHoverable(pawn, "Mr. X", mrXNode);
         this.pawns.set("mr_x", pawn);
       }
     }
+  }
+
+  // A pawn's own display bounds (its interactive hit area, since setInteractive() is called with
+  // no explicit shape) are used as the hover target rather than a separate invisible hit circle
+  // like the node markers get - the pawn image itself is the only thing a player would expect to
+  // hover to inspect it.
+  private makePawnHoverable(pawn: Phaser.GameObjects.Image, label: string, node: number) {
+    pawn.setInteractive({ useHandCursor: true });
+    pawn.on("pointerover", () => this.showPawnTooltip(pawn, label, node));
+    pawn.on("pointerout", () => this.hidePawnTooltip());
+  }
+
+  private showPawnTooltip(pawn: Phaser.GameObjects.Image, label: string, node: number) {
+    this.hidePawnTooltip();
+
+    const fontSize = 13 * RENDER_SCALE;
+    const lineGap = 2 * RENDER_SCALE;
+    const paddingX = 8 * RENDER_SCALE;
+    const paddingY = 6 * RENDER_SCALE;
+
+    // Both lines share x=0 with origin (0.5, 0) so each is independently centered horizontally,
+    // rather than centering the box around their (possibly different) text widths by hand.
+    const nameText = this.add
+      .text(0, 0, label, { fontSize: `${fontSize}px`, color: "#ffffff", fontStyle: "bold" })
+      .setOrigin(0.5, 0);
+    const nodeText = this.add
+      .text(0, nameText.height + lineGap, `Current Node ${node}`, { fontSize: `${fontSize}px`, color: "#ffffff" })
+      .setOrigin(0.5, 0);
+
+    const boxWidth = Math.max(nameText.width, nodeText.width) + paddingX * 2;
+    const boxHeight = nameText.height + nodeText.height + lineGap + paddingY * 2;
+    const gapAbovePawn = 6 * RENDER_SCALE;
+
+    // Pawns near the board's edges (e.g. a top-row detective, or one close to the left/right
+    // border) would otherwise have the popup drawn partly off-canvas - Phaser doesn't reflow
+    // it back into view the way a browser tooltip would, it just silently clips at the canvas
+    // boundary. Clamp horizontally, and flip to below the pawn instead of above when there
+    // isn't room above, so the whole box always stays fully on-canvas.
+    const preferredY = pawn.y - pawn.displayHeight / 2 - gapAbovePawn;
+    const fitsAbove = preferredY - boxHeight >= 0;
+    const containerX = Phaser.Math.Clamp(pawn.x, boxWidth / 2, BOARD_WIDTH * RENDER_SCALE - boxWidth / 2);
+    const containerY = fitsAbove ? preferredY : pawn.y + pawn.displayHeight / 2 + gapAbovePawn;
+
+    // origin (0.5, 1) anchors the box's bottom-center at the container's local (0,0) so it grows
+    // UPWARD from that point (the normal case, above the pawn); flipped to (0.5, 0) - growing
+    // DOWNWARD instead - when placed below the pawn.
+    const background = this.add.rectangle(0, 0, boxWidth, boxHeight, 0x222222, 0.9).setOrigin(0.5, fitsAbove ? 1 : 0);
+    background.setStrokeStyle(RENDER_SCALE, 0xffffff, 0.5);
+
+    const textTop = fitsAbove ? -boxHeight + paddingY : paddingY;
+    nameText.setY(textTop);
+    nodeText.setY(nameText.y + nameText.height + lineGap);
+
+    this.pawnTooltip = this.add.container(containerX, containerY, [background, nameText, nodeText]).setDepth(1000);
+  }
+
+  private hidePawnTooltip() {
+    this.pawnTooltip?.destroy();
+    this.pawnTooltip = null;
   }
 
   /** Called by BoardCanvas when a fresh game snapshot arrives, to move pawns without recreating the scene. */
