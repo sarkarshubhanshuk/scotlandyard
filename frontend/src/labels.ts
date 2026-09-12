@@ -31,8 +31,9 @@ export function toCssColor(hex: number): string {
   return `#${hex.toString(16).padStart(6, "0")}`;
 }
 
-// Covers every TicketType (used for MoveSelector's ticket-choice buttons) plus "double" (only
-// ever appears in mr_x.transport_history, rendered by TravelLog).
+// Covers every TicketType (used for the ticket-choice popup BoardCanvas renders near a clicked
+// destination node) plus "double" (only ever appears in mr_x.transport_history, rendered by
+// TravelLog).
 export const TICKET_LABELS: Record<TravelLogTicket, string> = {
   taxi: "Taxi",
   bus: "Bus",

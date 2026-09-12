@@ -34,7 +34,6 @@ const NODE_RADIUS = 8;
 // (which occupies roughly the middle 60x83 of that viewBox) comfortably fits inside that r=12.5
 // node circle rather than overlapping the board's connection lines.
 const PAWN_SIZE = 24;
-const HIGHLIGHT_RADIUS = 12;
 
 // pawn.svg's fill is `var(--pawn-color, #ffffff)` - CSS custom properties don't apply to a
 // texture rasterized once at load time, so instead the texture is loaded with its default white
@@ -68,14 +67,18 @@ const NODE_HALO_BASE_RADIUS_BY_TIER = { metro: 12.5, bus: 10.5, taxi: 8.5 };
 const MR_X_HALO_THICKNESS = 3;
 const MR_X_HALO_COLOR = 0xbfe6ff;
 const MR_X_HALO_CORE_COLOR = 0xffffff;
-const SELECTED_TARGET_COLOR = 0xfb5607;
 // A legal-target halo mirrors Mr. X's own - same MR_X_HALO_COLOR (so it reads as the same kind
 // of marker rather than a differently-colored one) and same per-node base radius (so every node's
 // own layers stay fully visible inside it, with zero gap, whichever tier that node is) - at 3/4
 // its thickness so it reads as a lighter destination marker rather than a second "Mr. X is here"
-// indicator, despite LEGAL_TARGET_ALPHA sitting close to fully opaque.
+// indicator. Alpha varies by selection state (see paintHighlights()) rather than a separate
+// differently-colored "selected" style: LEGAL_TARGET_ALPHA with nothing selected, brightened to
+// LEGAL_TARGET_SELECTED_ALPHA for the one node currently pending a ticket choice, and dimmed to
+// LEGAL_TARGET_UNSELECTED_ALPHA for every other candidate while that pick is in progress.
 const LEGAL_TARGET_HALO_THICKNESS = MR_X_HALO_THICKNESS * 0.75;
 const LEGAL_TARGET_ALPHA = 0.9;
+const LEGAL_TARGET_SELECTED_ALPHA = 1;
+const LEGAL_TARGET_UNSELECTED_ALPHA = 0.5;
 
 export interface BoardSceneData {
   mapData: MapData;
@@ -304,22 +307,24 @@ export class BoardScene extends Phaser.Scene {
     for (const highlight of this.highlights.values()) highlight.destroy();
     this.highlights.clear();
 
+    // Nothing pending -> every candidate reads at the same neutral alpha. Once one is pending a
+    // ticket choice, it brightens to LEGAL_TARGET_SELECTED_ALPHA and every other candidate dims
+    // to LEGAL_TARGET_UNSELECTED_ALPHA, so the board itself reflects the popup's current pick.
     for (const nodeId of this.latestHighlightedNodeIds) {
       const pos = this.mapData.positions[String(nodeId)];
       if (!pos) continue;
       const cx = pos.x * RENDER_SCALE;
       const cy = pos.y * RENDER_SCALE;
-
-      if (nodeId === this.latestSelectedNodeId) {
-        const ring = this.add.circle(cx, cy, HIGHLIGHT_RADIUS * RENDER_SCALE, 0, 0);
-        ring.setStrokeStyle(2 * RENDER_SCALE, SELECTED_TARGET_COLOR, 1);
-        this.highlights.set(nodeId, ring);
-        continue;
-      }
+      const alpha =
+        this.latestSelectedNodeId === null
+          ? LEGAL_TARGET_ALPHA
+          : nodeId === this.latestSelectedNodeId
+            ? LEGAL_TARGET_SELECTED_ALPHA
+            : LEGAL_TARGET_UNSELECTED_ALPHA;
 
       const legalTargetHaloRadius = this.nodeHaloBaseRadius(nodeId) + LEGAL_TARGET_HALO_THICKNESS / 2;
       const ring = this.add.graphics();
-      ring.lineStyle(LEGAL_TARGET_HALO_THICKNESS * RENDER_SCALE, MR_X_HALO_COLOR, LEGAL_TARGET_ALPHA);
+      ring.lineStyle(LEGAL_TARGET_HALO_THICKNESS * RENDER_SCALE, MR_X_HALO_COLOR, alpha);
       ring.strokeCircle(cx, cy, legalTargetHaloRadius * RENDER_SCALE);
       this.highlights.set(nodeId, ring);
     }

@@ -15,9 +15,9 @@ interface Hop {
 /**
  * Drives Mr. X's single/double-move flow end to end: fetches legal targets whenever it becomes
  * his turn, tracks the in-progress pick (target -> ticket type, and for a double-move, hop-1 ->
- * hop-2), and submits the finished move. Board clicks and ticket-choice buttons both funnel
- * through this one state machine so BoardCanvas and MoveSelector never disagree about what's
- * currently selectable.
+ * hop-2), and submits the finished move. Board clicks (which set pendingTarget) and the
+ * ticket-choice popup BoardCanvas renders near that node both funnel through this one state
+ * machine, so there's a single source of truth for what's currently selectable.
  */
 export function useMrXMoveWizard(
   gameId: string,
@@ -72,13 +72,14 @@ export function useMrXMoveWizard(
     return hop1 === null ? legalMoves : (hop2Options ?? []);
   }, [isMrXTurn, hop1, legalMoves, hop2Options]);
   const highlightedNodeIds = useMemo(() => currentLegalMoves.map((m) => m.target_node), [currentLegalMoves]);
-  const selectedNodeId = pendingTarget?.target ?? hop1?.target ?? null;
 
   const setDoubleMode = useCallback(
     (value: boolean) => {
       if (hop1 !== null) return; // Can't switch modes mid-double-move; cancel hop-1 first.
       setDoubleModeState(value);
-      setPendingTarget(null);
+      // Deliberately leaves pendingTarget alone - the double-move checkbox lives inside the same
+      // ticket-choice popup as the pending pick (BoardCanvas), so clearing it here would dismiss
+      // that popup the instant the box is checked, before the player ever gets to pick a ticket.
     },
     [hop1],
   );
@@ -182,7 +183,6 @@ export function useMrXMoveWizard(
     hop2Options,
     pendingTarget,
     highlightedNodeIds,
-    selectedNodeId,
     submitting,
     error,
     handleNodeClick,

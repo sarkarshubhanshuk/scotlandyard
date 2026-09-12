@@ -3,7 +3,6 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, getGame, getMap } from "../api/client";
 import { ChatLog } from "../components/ChatLog";
 import { GameOverBanner } from "../components/GameOverBanner";
-import { MoveSelector } from "../components/MoveSelector";
 import { TicketInventory } from "../components/TicketInventory";
 import { TravelLog } from "../components/TravelLog";
 import { useMrXMoveWizard } from "../hooks/useMrXMoveWizard";
@@ -117,13 +116,7 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
       <GameLayout
         board={
           <Suspense fallback={<div style={{ padding: 24 }}>Loading board...</div>}>
-            <BoardCanvas
-              mapData={mapData}
-              gameState={gameState}
-              onNodeClick={wizard.handleNodeClick}
-              highlightedNodeIds={wizard.highlightedNodeIds}
-              selectedNodeId={wizard.selectedNodeId}
-            />
+            <BoardCanvas mapData={mapData} gameState={gameState} wizard={wizard} />
           </Suspense>
         }
         sidebar={
@@ -142,7 +135,6 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
               </h2>
               <TicketInventory gameState={gameState} />
             </div>
-            <MoveSelector wizard={wizard} />
             <ChatLog
               entries={roundStream.entries}
               connectionError={roundStream.connectionError}
