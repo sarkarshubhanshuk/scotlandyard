@@ -402,17 +402,17 @@ Starlette API (`backend/server.py`).
   `POST /games/{id}/mrx/move`, `GET /games/{id}/round/stream` (SSE via `sse_starlette`, chosen
   over WebSocket since this is one-directional server→client data once opened).
 - `serializers.serialize_public_state` is the **single choke point** every route and streamed
-  event goes through to build an outward-facing payload — this is what structurally guarantees
-  `mr_x.current_node` can never leak to a client, rather than relying on handler-by-handler
-  discipline. Only `mr_x`'s ticket counts, `last_known_node`/`last_known_round`, and
-  `transport_history` are ever exposed for him (ticket counts are public per the rules'
-  Inventory Visibility rule; position is not).
+  event goes through to build an outward-facing payload. `mr_x.current_node` (his real position)
+  IS included as of the board's always-visible Mr. X pawn feature — safe because the only
+  human-facing client is the one played BY Mr. X; the detectives are backend-only LangGraph/LLM
+  agents with no access to this or any client. If a detective-facing client is ever added,
+  `current_node` must be excluded from whatever serialization *that* client receives.
 
 ### State Involved
 
 | Field | Role in this mechanic |
 |---|---|
-| `mr_x.current_node` | Mr. X's real, secret position — added in this mechanic; never read by any detective-facing code path (§1) and never serialized by `serialize_public_state` |
+| `mr_x.current_node` | Mr. X's real position — added in this mechanic; never read by any detective-facing code path (§1). Now serialized by `serialize_public_state` for the always-visible Mr. X pawn (see §2's own note above) - still never exposed to anything detective-facing. |
 | `mr_x.last_known_node` / `last_known_round` | Set only by `mrx_turn` on a surfacing-round move |
 | `mr_x.transport_history` | Appended to by `mrx_turn` on every hop (records the ticket type spent, not necessarily the underlying route type — a black ticket is logged as `"black"`, matching the rules' obfuscation intent). A double-move additionally inserts a `"double"` sentinel immediately before its own two hop entries, matching rules.md's stated broadcast order — never a valid `ticket_type_spent` itself, only ever inserted by `submit_mr_x_move`'s double-move branch. |
 | `detectives[*].node_id`, ticket counts | Mutated by `resolve_round`, never by the graph itself |

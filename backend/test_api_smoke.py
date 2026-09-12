@@ -21,20 +21,23 @@ import server
 from agents import DETECTIVE_IDS
 
 
-def test_create_get_and_public_state_never_leaks_mr_x_position():
-    print("\n=== TEST: create + get game - public state never exposes mr_x.current_node ===")
+def test_create_get_and_public_state_includes_mr_x_current_node():
+    print("\n=== TEST: create + get game - public state includes mr_x.current_node ===")
+    # current_node is deliberately public (see serializers.py's own note): the only human-facing
+    # client is played BY Mr. X, and detectives are backend-only agents with no client access at
+    # all, so this isn't a leak to an opponent - it's what lets the board always show his pawn.
     with TestClient(server.app) as client:
         r = client.post("/games")
         assert r.status_code == 201, r.text
         body = r.json()
-        assert "current_node" not in body["mr_x"]
+        assert isinstance(body["mr_x"]["current_node"], int)
         assert body["status"] == "awaiting_mr_x_move"
         assert set(body["detectives"].keys()) == set(DETECTIVE_IDS)
         game_id = body["game_id"]
 
         r2 = client.get(f"/games/{game_id}")
         assert r2.status_code == 200
-        assert "current_node" not in r2.json()["mr_x"]
+        assert r2.json()["mr_x"]["current_node"] == body["mr_x"]["current_node"]
         assert r2.json() == body
     print("PASSED")
 
@@ -65,7 +68,7 @@ def test_mrx_move_flow_and_turn_guards():
         assert r2.status_code == 200, r2.text
         body = r2.json()
         assert body["status"] == "detective_loop_running"
-        assert "current_node" not in body["mr_x"]
+        assert body["mr_x"]["current_node"] == move["target_node"]
 
         # It's no longer Mr. X's turn - legal-moves must now 409.
         r3 = client.get(f"/games/{game_id}/mrx/legal-moves")
@@ -132,7 +135,7 @@ def test_full_round_stream_manual():
 
 
 if __name__ == "__main__":
-    test_create_get_and_public_state_never_leaks_mr_x_position()
+    test_create_get_and_public_state_includes_mr_x_current_node()
     test_get_unknown_game_returns_404()
     test_mrx_move_flow_and_turn_guards()
     test_mrx_move_rejects_illegal_target()

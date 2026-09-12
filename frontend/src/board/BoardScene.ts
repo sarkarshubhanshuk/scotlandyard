@@ -44,6 +44,10 @@ const HIGHLIGHT_RADIUS = 12;
 // varies. Per-agent colors live in labels.ts (AGENT_COLORS) so TicketInventory/ChatLog can use
 // the exact same values for their text coloring.
 const MR_X_COLOR = 0x000000; // black
+// Semi-transparent on a non-surfacing round - a reminder to the human Mr. X player that
+// detectives don't currently know this position, not an actual information-hiding mechanism
+// (see renderPawns()'s own comment on why exposing current_node here is safe at all).
+const MR_X_HIDDEN_ALPHA = 0.4;
 const LEGAL_TARGET_COLOR = 0xffd60a;
 const SELECTED_TARGET_COLOR = 0xfb5607;
 
@@ -137,24 +141,27 @@ export class BoardScene extends Phaser.Scene {
       this.pawns.set(detId, pawn);
     }
 
-    // last_known_node/last_known_round persist in state unchanged from whichever round last
-    // surfaced Mr. X (build_next_round_state copies mr_x wholesale into every new round) - so
-    // last_known_node alone being non-null does NOT mean "this round is a surfacing round", only
-    // "he has surfaced at some point". The pawn must only show while the CURRENT round is the one
-    // that surfaced him; every later round has last_known_round stuck in the past and should not
-    // keep showing a now-stale position as if it were current.
+    // Mr. X's pawn is always rendered at his real current_node now (see serializers.py's own
+    // note on why exposing this is safe: the only human-facing client is played BY Mr. X, and
+    // detectives are backend-only agents with no client access at all). Alpha is a visual
+    // reminder for the human of whether detectives ALSO currently know this position - opaque
+    // only on the exact round he's surfaced (last_known_round stays stuck on a past round
+    // forever after, per build_next_round_state, so this must compare against the CURRENT round,
+    // not just check non-null), semi-transparent every other round - not an information-hiding
+    // mechanism, since nothing here is ever hidden from the one person who can see this canvas.
     const mrX = this.gameState.mr_x;
-    const mrXNode = mrX.last_known_round === this.gameState.round_number ? mrX.last_known_node : null;
-    if (mrXNode != null) {
-      const pos = this.mapData.positions[String(mrXNode)];
-      if (pos) {
-        const pawn = this.add
-          .image(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, "pawn")
-          .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
-          .setTint(MR_X_COLOR);
-        this.makePawnHoverable(pawn, "Mr. X", mrXNode);
-        this.pawns.set("mr_x", pawn);
-      }
+    const pos = this.mapData.positions[String(mrX.current_node)];
+    if (pos) {
+      const isSurfacingRound = mrX.last_known_round === this.gameState.round_number;
+      const pawn = this.add
+        .image(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, "pawn")
+        .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
+        .setTint(MR_X_COLOR)
+        .setAlpha(isSurfacingRound ? 1 : MR_X_HIDDEN_ALPHA);
+      this.makePawnHoverable(pawn, "Mr. X", mrX.current_node, [
+        isSurfacingRound ? "Visible to Detectives" : "Invisible to Detectives",
+      ]);
+      this.pawns.set("mr_x", pawn);
     }
   }
 
@@ -162,13 +169,15 @@ export class BoardScene extends Phaser.Scene {
   // no explicit shape) are used as the hover target rather than a separate invisible hit circle
   // like the node markers get - the pawn image itself is the only thing a player would expect to
   // hover to inspect it.
-  private makePawnHoverable(pawn: Phaser.GameObjects.Image, label: string, node: number) {
+  private makePawnHoverable(pawn: Phaser.GameObjects.Image, label: string, node: number, extraLines: string[] = []) {
     pawn.setInteractive({ useHandCursor: true });
-    pawn.on("pointerover", () => this.showPawnTooltip(pawn, label, node));
+    pawn.on("pointerover", () => this.showPawnTooltip(pawn, [label, `Current Node ${node}`, ...extraLines]));
     pawn.on("pointerout", () => this.hidePawnTooltip());
   }
 
-  private showPawnTooltip(pawn: Phaser.GameObjects.Image, label: string, node: number) {
+  // lines[0] renders bold (the pawn's name); every other line renders as plain text below it -
+  // a detective's tooltip has 2 lines (name, node), Mr. X's has a 3rd (surfaced status).
+  private showPawnTooltip(pawn: Phaser.GameObjects.Image, lines: string[]) {
     this.hidePawnTooltip();
 
     const fontSize = 13 * RENDER_SCALE;
@@ -176,17 +185,18 @@ export class BoardScene extends Phaser.Scene {
     const paddingX = 8 * RENDER_SCALE;
     const paddingY = 6 * RENDER_SCALE;
 
-    // Both lines share x=0 with origin (0.5, 0) so each is independently centered horizontally,
+    // All lines share x=0 with origin (0.5, 0) so each is independently centered horizontally,
     // rather than centering the box around their (possibly different) text widths by hand.
-    const nameText = this.add
-      .text(0, 0, label, { fontSize: `${fontSize}px`, color: "#ffffff", fontStyle: "bold" })
-      .setOrigin(0.5, 0);
-    const nodeText = this.add
-      .text(0, nameText.height + lineGap, `Current Node ${node}`, { fontSize: `${fontSize}px`, color: "#ffffff" })
-      .setOrigin(0.5, 0);
+    const textObjects = lines.map((line, i) =>
+      this.add
+        .text(0, 0, line, { fontSize: `${fontSize}px`, color: "#ffffff", fontStyle: i === 0 ? "bold" : "normal" })
+        .setOrigin(0.5, 0),
+    );
 
-    const boxWidth = Math.max(nameText.width, nodeText.width) + paddingX * 2;
-    const boxHeight = nameText.height + nodeText.height + lineGap + paddingY * 2;
+    const boxWidth = Math.max(...textObjects.map((t) => t.width)) + paddingX * 2;
+    const contentHeight =
+      textObjects.reduce((sum, t) => sum + t.height, 0) + lineGap * (textObjects.length - 1);
+    const boxHeight = contentHeight + paddingY * 2;
     const gapAbovePawn = 6 * RENDER_SCALE;
 
     // Pawns near the board's edges (e.g. a top-row detective, or one close to the left/right
@@ -205,11 +215,13 @@ export class BoardScene extends Phaser.Scene {
     const background = this.add.rectangle(0, 0, boxWidth, boxHeight, 0x222222, 0.9).setOrigin(0.5, fitsAbove ? 1 : 0);
     background.setStrokeStyle(RENDER_SCALE, 0xffffff, 0.5);
 
-    const textTop = fitsAbove ? -boxHeight + paddingY : paddingY;
-    nameText.setY(textTop);
-    nodeText.setY(nameText.y + nameText.height + lineGap);
+    let cursorY = fitsAbove ? -boxHeight + paddingY : paddingY;
+    for (const textObj of textObjects) {
+      textObj.setY(cursorY);
+      cursorY += textObj.height + lineGap;
+    }
 
-    this.pawnTooltip = this.add.container(containerX, containerY, [background, nameText, nodeText]).setDepth(1000);
+    this.pawnTooltip = this.add.container(containerX, containerY, [background, ...textObjects]).setDepth(1000);
   }
 
   private hidePawnTooltip() {

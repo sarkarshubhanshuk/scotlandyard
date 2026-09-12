@@ -1,19 +1,27 @@
 from session import GameSession
 
-# Ticket counts are always visible to everyone (rules.md: "Inventory Visibility"), but Mr. X's
-# true position must never leak - only these public fields may ever cross the wire for him.
+# Ticket counts are always visible to everyone (rules.md: "Inventory Visibility"). current_node
+# (Mr. X's real position) IS included here, deliberately - see serialize_public_state's own
+# docstring for why this is no longer the "never leaves the server" field it used to be.
 _MR_X_PUBLIC_FIELDS = (
-    "taxi_tickets", "bus_tickets", "metro_tickets", "black_tickets", "double_tickets",
-    "last_known_node", "last_known_round", "transport_history",
+    "current_node", "taxi_tickets", "bus_tickets", "metro_tickets", "black_tickets",
+    "double_tickets", "last_known_node", "last_known_round", "transport_history",
 )
 
 
 def serialize_public_state(session: GameSession) -> dict:
     """
     The single choke point every route/streamed event uses to build an outward-facing payload.
-    Structurally guarantees mr_x.current_node can never leak to a client - by construction, not
-    by handler-by-handler discipline - since this is the only place a client-facing dict is built
-    from session.state at all.
+
+    mr_x.current_node IS included here (as of the board's always-visible Mr. X pawn feature) -
+    this is safe specifically because this project has exactly one human-facing client, and that
+    client is played BY Mr. X: the detectives are backend-only LangGraph/LLM agents (agents.py)
+    that never see this frontend or any HTTP response at all, only prompt text built server-side.
+    "Never leak to a client" was never actually about hiding this from the OPPONENT (impossible -
+    the opponent has no client), it was about not hiding it from the one client that exists
+    unnecessarily - now revisited so the Mr. X player can always see their own pawn on their own
+    board. If a detective-facing client (e.g. a spectator/detective-controlled mode) is ever
+    added, current_node must be excluded from whatever serialization THAT client receives.
     """
     state = session.state
     mr_x_public = {field: state["mr_x"][field] for field in _MR_X_PUBLIC_FIELDS}

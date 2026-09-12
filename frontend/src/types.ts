@@ -33,6 +33,9 @@ export type GameStatus = "awaiting_mr_x_move" | "detective_loop_running" | "game
 export type Winner = "detectives" | "mr_x" | null;
 
 export interface PublicMrX {
+  // Mr. X's real position - safe to expose because the only human-facing client is played BY
+  // Mr. X (see backend/serializers.py's own note on this). Used to always render his board pawn.
+  current_node: number;
   taxi_tickets: number;
   bus_tickets: number;
   metro_tickets: number;

@@ -118,16 +118,27 @@ The AI agents cannot simply guess their moves. They must query a local Game Mast
   generic regex over all 5 known names, not just a fixed prefix position, since the AI debate
   transcript's backend-built text can mention an agent's name anywhere mid-sentence.
 
+- **Board pawns** (`board/BoardScene.ts`): every pawn (5 detectives + Mr. X) is interactive -
+  hovering shows a small popup with the pawn's name and current node, plus (Mr. X only) whether
+  detectives currently know it. Mr. X's pawn is always rendered at his real `mr_x.current_node`
+  (see `serializers.py`'s own note on why exposing this is safe), tinted black and alpha-toggled:
+  opaque on the exact round he's surfaced (`last_known_round === round_number`), semi-transparent
+  otherwise - a visual reminder for the human Mr. X player of whether they're currently exposed,
+  not an information-hiding mechanism (the detectives are backend-only agents with no client).
+
 - **Travel Log** (`components/TravelLog.tsx`): renders Mr. X's full `transport_history` as ticket
   icons (always visible, per rules.md) plus a single "last known position" line. It does **not**
   attempt to show a per-round history of past surfacing reveals — `state.py`'s `MrXState` only
   ever retains the *latest* `last_known_node`/`last_known_round`, so anything earlier is no longer
   available from the backend to reconstruct.
 
-- **Game over**: `GameOverBanner` reads `status`/`winner` only. Since Mr. X's real position is
-  never serialized (even at game end), a "detectives win" is deliberately **not** worded as a
-  capture — it could equally be rules.md's "Mr. X has no legal move" condition, which the client
-  has no way to distinguish.
+- **Game over**: `GameOverBanner` reads `status`/`winner` only, deliberately **not** cross-
+  referencing `mr_x.current_node` against detective positions to distinguish an actual capture
+  from rules.md's "Mr. X has no legal move" condition — both serialize identically as
+  `winner: "detectives"`, and re-deriving which one happened client-side would duplicate logic
+  `round_resolver.py:resolve_round` already owns. A "detectives win" is worded generically for
+  this reason, not because the client lacks the underlying data (`current_node` is serialized
+  always now — see §2's board-pawn note above).
 
 ## LLM Configuration
 
