@@ -31,7 +31,9 @@ export function HomeScreen() {
         gap: 16,
       }}
     >
-      <h1>Scotland Yard</h1>
+      {/* 350x200 source (docs/ui/game_logo.jpg) - width constraint + height:auto keeps that
+          aspect ratio intact rather than stretching it. */}
+      <img src="/game_logo.jpg" alt="Scotland Yard" style={{ width: "min(420px, 80vw)", height: "auto" }} />
       <p>Play Mr. X against 5 AI-driven detectives.</p>
       <button onClick={() => void handleNewGame()} disabled={starting} style={{ padding: "10px 24px", fontSize: 16 }}>
         {starting ? "Starting..." : "New Game"}
