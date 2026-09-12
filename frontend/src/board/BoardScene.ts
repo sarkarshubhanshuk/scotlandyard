@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { AGENT_COLORS, DETECTIVE_LABELS } from "../labels";
-import { DETECTIVE_IDS, type MapData, type PublicGameState } from "../types";
+import { DETECTIVE_IDS, type MapData, type MapNode, type PublicGameState } from "../types";
 import { BOARD_HEIGHT, BOARD_WIDTH } from "./boardDimensions";
 
 // Re-exported so BoardCanvas.tsx's existing `from "./BoardScene"` import keeps working - moved to
@@ -48,8 +48,34 @@ const MR_X_COLOR = 0x000000; // black
 // detectives don't currently know this position, not an actual information-hiding mechanism
 // (see renderPawns()'s own comment on why exposing current_node here is safe at all).
 const MR_X_HIDDEN_ALPHA = 0.4;
-const LEGAL_TARGET_COLOR = 0xffd60a;
+// Mr. X's halo (and the legal-target halo below) is drawn with Phaser Graphics rather than an
+// image asset (a prior attempt using docs/ui/halo.png looked too large and showed faint
+// checkerboard patches where its matted-out background wasn't fully transparent) - a plain
+// stroked circle has no such artifacts and its size is exact rather than approximated from a
+// raster's own padding.
+//
+// board.svg draws every node as one of three concentric marker sizes, layered outer-to-inner as
+// red (r=12.5, metro) -> green (r=10.5, bus) -> white-fill-black-stroke (r=7.5 fill, ~8.5 to the
+// outer edge of its 2px stroke - or the same footprint with a dashed stroke for the 4 boat-only
+// nodes) - each tier only drawn when the node's own allowed_transport includes it, so the
+// widest/outermost tier actually visible is metro > bus > taxi. Confirmed by rasterizing
+// board.svg to a canvas and radially sampling pixel color away from a sample node of each tier
+// until it hit the board's own background grey. So there's no single "widest node marker"
+// constant any more - nodeHaloBaseRadius() below picks the right one per node so the halo's
+// inner edge sits exactly on that node's own outermost visible layer, whichever tier it is,
+// with zero gap.
+const NODE_HALO_BASE_RADIUS_BY_TIER = { metro: 12.5, bus: 10.5, taxi: 8.5 };
+const MR_X_HALO_THICKNESS = 3;
+const MR_X_HALO_COLOR = 0xbfe6ff;
+const MR_X_HALO_CORE_COLOR = 0xffffff;
 const SELECTED_TARGET_COLOR = 0xfb5607;
+// A legal-target halo mirrors Mr. X's own - same MR_X_HALO_COLOR (so it reads as the same kind
+// of marker rather than a differently-colored one) and same per-node base radius (so every node's
+// own layers stay fully visible inside it, with zero gap, whichever tier that node is) - at 3/4
+// its thickness so it reads as a lighter destination marker rather than a second "Mr. X is here"
+// indicator, despite LEGAL_TARGET_ALPHA sitting close to fully opaque.
+const LEGAL_TARGET_HALO_THICKNESS = MR_X_HALO_THICKNESS * 0.75;
+const LEGAL_TARGET_ALPHA = 0.9;
 
 export interface BoardSceneData {
   mapData: MapData;
@@ -61,10 +87,12 @@ export interface BoardSceneData {
 
 export class BoardScene extends Phaser.Scene {
   private mapData!: MapData;
+  private nodesById = new Map<number, MapNode>();
   private gameState!: PublicGameState;
   private onNodeClick?: (nodeId: number) => void;
   private pawns = new Map<string, Phaser.GameObjects.Image>();
-  private highlights = new Map<number, Phaser.GameObjects.Arc>();
+  private mrXHalo: Phaser.GameObjects.Graphics | null = null;
+  private highlights = new Map<number, Phaser.GameObjects.GameObject>();
   private pawnTooltip: Phaser.GameObjects.Container | null = null;
   // The legal-move fetch that drives highlights resolves asynchronously and can arrive before
   // Phaser's own async preload/create has finished booting the scene - updateHighlights records
@@ -80,10 +108,22 @@ export class BoardScene extends Phaser.Scene {
 
   init(data: BoardSceneData) {
     this.mapData = data.mapData;
+    this.nodesById = new Map(this.mapData.nodes.map((node) => [node.id, node]));
     this.gameState = data.gameState;
     this.onNodeClick = data.onNodeClick;
     this.latestHighlightedNodeIds = data.highlightedNodeIds ?? [];
     this.latestSelectedNodeId = data.selectedNodeId ?? null;
+  }
+
+  // Picks the base radius matching the outermost marker tier board.svg actually draws for this
+  // node (see NODE_HALO_BASE_RADIUS_BY_TIER's own comment) - metro > bus > taxi, since each tier
+  // is only drawn when present and layered outer-to-inner in that order. Falls back to the
+  // narrowest (taxi) tier if the node is somehow missing from mapData.nodes.
+  private nodeHaloBaseRadius(nodeId: number): number {
+    const node = this.nodesById.get(nodeId);
+    if (node?.allowed_transport.includes("metro")) return NODE_HALO_BASE_RADIUS_BY_TIER.metro;
+    if (node?.allowed_transport.includes("bus")) return NODE_HALO_BASE_RADIUS_BY_TIER.bus;
+    return NODE_HALO_BASE_RADIUS_BY_TIER.taxi;
   }
 
   preload() {
@@ -123,6 +163,8 @@ export class BoardScene extends Phaser.Scene {
   private renderPawns() {
     for (const pawn of this.pawns.values()) pawn.destroy();
     this.pawns.clear();
+    this.mrXHalo?.destroy();
+    this.mrXHalo = null;
     // The pawn objects a stale tooltip's hover handlers referred to no longer exist once this
     // runs (a fresh game snapshot recreates every pawn from scratch) - drop any open tooltip
     // rather than leaving it pointing at a destroyed pawn.
@@ -152,6 +194,22 @@ export class BoardScene extends Phaser.Scene {
     const mrX = this.gameState.mr_x;
     const pos = this.mapData.positions[String(mrX.current_node)];
     if (pos) {
+      // Drawn before the pawn below so it sits behind it in the display list - a ring around the
+      // node, not a disc covering it, so both the pawn and the node's own marker/border remain
+      // visible inside it, with zero gap (see nodeHaloBaseRadius()'s own comment). Two concentric
+      // strokes at the same radius - a wider, low-alpha one for a soft glow and a thinner
+      // full-alpha one for a crisp bright core - stand in for a blurred glow without an actual
+      // blur filter.
+      const cx = pos.x * RENDER_SCALE;
+      const cy = pos.y * RENDER_SCALE;
+      const mrXHaloRadius = this.nodeHaloBaseRadius(mrX.current_node) + MR_X_HALO_THICKNESS / 2;
+      const halo = this.add.graphics();
+      halo.lineStyle(MR_X_HALO_THICKNESS * 2 * RENDER_SCALE, MR_X_HALO_COLOR, 0.35);
+      halo.strokeCircle(cx, cy, mrXHaloRadius * RENDER_SCALE);
+      halo.lineStyle(MR_X_HALO_THICKNESS * RENDER_SCALE, MR_X_HALO_CORE_COLOR, 0.9);
+      halo.strokeCircle(cx, cy, mrXHaloRadius * RENDER_SCALE);
+      this.mrXHalo = halo;
+
       const isSurfacingRound = mrX.last_known_round === this.gameState.round_number;
       const pawn = this.add
         .image(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, "pawn")
@@ -249,9 +307,20 @@ export class BoardScene extends Phaser.Scene {
     for (const nodeId of this.latestHighlightedNodeIds) {
       const pos = this.mapData.positions[String(nodeId)];
       if (!pos) continue;
-      const isSelected = nodeId === this.latestSelectedNodeId;
-      const ring = this.add.circle(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, HIGHLIGHT_RADIUS * RENDER_SCALE, 0, 0);
-      ring.setStrokeStyle(2 * RENDER_SCALE, isSelected ? SELECTED_TARGET_COLOR : LEGAL_TARGET_COLOR, 1);
+      const cx = pos.x * RENDER_SCALE;
+      const cy = pos.y * RENDER_SCALE;
+
+      if (nodeId === this.latestSelectedNodeId) {
+        const ring = this.add.circle(cx, cy, HIGHLIGHT_RADIUS * RENDER_SCALE, 0, 0);
+        ring.setStrokeStyle(2 * RENDER_SCALE, SELECTED_TARGET_COLOR, 1);
+        this.highlights.set(nodeId, ring);
+        continue;
+      }
+
+      const legalTargetHaloRadius = this.nodeHaloBaseRadius(nodeId) + LEGAL_TARGET_HALO_THICKNESS / 2;
+      const ring = this.add.graphics();
+      ring.lineStyle(LEGAL_TARGET_HALO_THICKNESS * RENDER_SCALE, MR_X_HALO_COLOR, LEGAL_TARGET_ALPHA);
+      ring.strokeCircle(cx, cy, legalTargetHaloRadius * RENDER_SCALE);
       this.highlights.set(nodeId, ring);
     }
   }
