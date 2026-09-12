@@ -131,7 +131,14 @@ export class BoardScene extends Phaser.Scene {
       this.pawns.set(detId, pawn);
     }
 
-    const mrXNode = this.gameState.mr_x.last_known_node;
+    // last_known_node/last_known_round persist in state unchanged from whichever round last
+    // surfaced Mr. X (build_next_round_state copies mr_x wholesale into every new round) - so
+    // last_known_node alone being non-null does NOT mean "this round is a surfacing round", only
+    // "he has surfaced at some point". The pawn must only show while the CURRENT round is the one
+    // that surfaced him; every later round has last_known_round stuck in the past and should not
+    // keep showing a now-stale position as if it were current.
+    const mrX = this.gameState.mr_x;
+    const mrXNode = mrX.last_known_round === this.gameState.round_number ? mrX.last_known_node : null;
     if (mrXNode != null) {
       const pos = this.mapData.positions[String(mrXNode)];
       if (pos) {
