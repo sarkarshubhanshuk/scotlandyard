@@ -4,7 +4,7 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Dict, Literal, Optional
 
-from agents import DETECTIVE_NAMES
+from agents import DETECTIVE_IDS
 from state import ScotlandYardState
 
 # Rules 1: shared pool detectives and Mr. X are randomly, uniquely assigned starting nodes from.
@@ -40,7 +40,7 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
     assigns each of Mr. X and the 5 detectives a unique starting node from the rules' pool, and
     gives everyone their rules-mandated starting ticket inventory.
 
-    seed_positions, when given, must map "mr_x" and each of DETECTIVE_NAMES to a node id and
+    seed_positions, when given, must map "mr_x" and each of DETECTIVE_IDS to a node id and
     bypasses the random draw entirely - lets tests construct a fixed, reproducible board.
     """
     if seed_positions is not None:
@@ -48,7 +48,7 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
     else:
         drawn = random.sample(STARTING_NODE_POOL, 6)
         positions = {"mr_x": drawn[0]}
-        for det_id, node in zip(DETECTIVE_NAMES, drawn[1:]):
+        for det_id, node in zip(DETECTIVE_IDS, drawn[1:]):
             positions[det_id] = node
 
     state: ScotlandYardState = {
@@ -63,7 +63,7 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
         },
         "detectives": {
             det_id: {"node_id": positions[det_id], **DETECTIVE_STARTING_TICKETS}
-            for det_id in DETECTIVE_NAMES
+            for det_id in DETECTIVE_IDS
         },
         "messages": [],
         "proposed_strategies": {},

@@ -3,6 +3,7 @@ import { openRoundStream } from "../api/client";
 import { DETECTIVE_LABELS } from "../labels";
 import type {
   DebateEvent,
+  DetectiveId,
   ProposalEvent,
   PublicGameState,
   RoundFinalizedEvent,
@@ -18,7 +19,9 @@ export interface ChatLogEntry {
 }
 
 function label(detId: string): string {
-  return DETECTIVE_LABELS[detId] ?? detId;
+  // detId comes from JSON object keys (proposed_strategies/locked_moves/final_moves), typed as
+  // plain string - always one of the 5 known DetectiveId values per the backend's own contract.
+  return DETECTIVE_LABELS[detId as DetectiveId] ?? detId;
 }
 
 /**

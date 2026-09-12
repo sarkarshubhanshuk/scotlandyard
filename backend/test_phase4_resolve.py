@@ -7,14 +7,14 @@ LLM-dependent paths - run it manually/opt-in once a valid GROQ_API_KEY is config
 Run: python test_phase4_resolve.py
 """
 from game_master import compute_valid_moves
-from agents import DETECTIVE_NAMES
+from agents import DETECTIVE_IDS
 from session import create_game
 from mrx_turn import get_mr_x_legal_moves, submit_mr_x_move, IllegalMoveError
 from round_resolver import resolve_round
 
 SEED_POSITIONS = {
-    "mr_x": 13, "detective_1": 26, "detective_2": 29,
-    "detective_3": 34, "detective_4": 50, "detective_5": 53,
+    "mr_x": 13, "agent_red": 26, "agent_blue": 29,
+    "agent_green": 34, "agent_yellow": 50, "agent_purple": 53,
 }
 
 
@@ -31,9 +31,9 @@ def test_create_game_seeded():
     print("\n=== TEST: create_game (seeded) ===")
     session = create_game(seed_positions=SEED_POSITIONS)
     assert session.state["mr_x"]["current_node"] == 13
-    assert session.state["detectives"]["detective_1"]["node_id"] == 26
+    assert session.state["detectives"]["agent_red"]["node_id"] == 26
     assert session.state["mr_x"]["taxi_tickets"] == 2 and session.state["mr_x"]["black_tickets"] == 5
-    assert session.state["detectives"]["detective_1"]["taxi_tickets"] == 11
+    assert session.state["detectives"]["agent_red"]["taxi_tickets"] == 11
     assert session.status == "awaiting_mr_x_move"
     print("PASSED")
 
@@ -133,28 +133,28 @@ def test_resolve_round_non_capturing_conserves_tickets_and_advances_round():
 def test_resolve_round_capture_short_circuits_remaining_detectives():
     print("\n=== TEST: resolve_round - capture stops remaining detectives from moving ===")
     session = create_game(seed_positions=SEED_POSITIONS)
-    d1 = session.state["detectives"]["detective_1"]
-    occupied = [d["node_id"] for k, d in session.state["detectives"].items() if k != "detective_1"]
+    d1 = session.state["detectives"]["agent_red"]
+    occupied = [d["node_id"] for k, d in session.state["detectives"].items() if k != "agent_red"]
     legal = compute_valid_moves(d1["node_id"], d1["taxi_tickets"], d1["bus_tickets"], d1["metro_tickets"], 0, occupied)
     target = legal[0]["target_node"]
 
     session.state["mr_x"]["current_node"] = target  # force a guaranteed capture
-    d2_original_node = session.state["detectives"]["detective_2"]["node_id"]
-    session.state["final_moves"] = {"detective_1": target, "detective_2": d2_original_node + 0}
-    # Give detective_2 a real (but irrelevant, since the round must stop before they move) move too.
-    d2 = session.state["detectives"]["detective_2"]
-    occupied_for_d2 = [d["node_id"] for k, d in session.state["detectives"].items() if k != "detective_2"]
+    d2_original_node = session.state["detectives"]["agent_blue"]["node_id"]
+    session.state["final_moves"] = {"agent_red": target, "agent_blue": d2_original_node + 0}
+    # Give agent_blue a real (but irrelevant, since the round must stop before they move) move too.
+    d2 = session.state["detectives"]["agent_blue"]
+    occupied_for_d2 = [d["node_id"] for k, d in session.state["detectives"].items() if k != "agent_blue"]
     d2_legal = compute_valid_moves(d2["node_id"], d2["taxi_tickets"], d2["bus_tickets"], d2["metro_tickets"], 0, occupied_for_d2)
     if d2_legal:
-        session.state["final_moves"]["detective_2"] = d2_legal[0]["target_node"]
+        session.state["final_moves"]["agent_blue"] = d2_legal[0]["target_node"]
 
     result = resolve_round(session)
 
     assert result["winner"] == "detectives"
     assert result["status"] == "game_over"
-    assert session.state["detectives"]["detective_1"]["node_id"] == target
-    assert session.state["detectives"]["detective_2"]["node_id"] == d2_original_node, \
-        "detective_2 must NOT have moved - the round must stop the instant detective_1 captures Mr. X"
+    assert session.state["detectives"]["agent_red"]["node_id"] == target
+    assert session.state["detectives"]["agent_blue"]["node_id"] == d2_original_node, \
+        "agent_blue must NOT have moved - the round must stop the instant agent_red captures Mr. X"
     print("PASSED")
 
 

@@ -59,7 +59,8 @@ class ScotlandYardState(TypedDict):
     # Mr. X Status & Travel Log
     mr_x: MrXState
     
-    # Detective Statuses (Keys: "detective_1", "detective_2", ..., "detective_5")
+    # Detective Statuses (Keys: agents.py's DETECTIVE_IDS - "agent_red", "agent_blue",
+    # "agent_green", "agent_yellow", "agent_purple")
     detectives: Dict[str, Detective]
     
     # Shared Debate History

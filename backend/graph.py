@@ -1,6 +1,6 @@
 from langgraph.graph import StateGraph, START, END
 from state import ScotlandYardState
-from agents import propose_node, debate_node, vote_node
+from agents import propose_node, debate_node, vote_node, DETECTIVE_IDS
 
 def check_vote_status(state: ScotlandYardState) -> str:
     """
@@ -31,9 +31,7 @@ def finalize_round_node(state: ScotlandYardState) -> dict:
     proposals = state.get("proposed_strategies", {})
     final_moves = {}
     
-    detectives = ["detective_1", "detective_2", "detective_3", "detective_4", "detective_5"]
-    
-    for det_id in detectives:
+    for det_id in DETECTIVE_IDS:
         if det_id in locked:
             final_moves[det_id] = locked[det_id]
         else:

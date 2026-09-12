@@ -98,7 +98,7 @@ START -> propose -> debate -> vote -> [router] -> propose (loop) OR finalize -> 
   is a best-effort quality improvement, not a correctness guarantee — see the deterministic
   pass below, which fixes whatever the retry doesn't.
 - Every proposal (retried or not) then goes through deterministic, code-enforced reconciliation,
-  processing targets in fixed `DETECTIVE_NAMES` order so conflicts resolve in favor of the
+  processing targets in fixed `DETECTIVE_IDS` order so conflicts resolve in favor of the
   earlier detective:
   - **(a) Must move if possible** — a target is only left at their current node when no legal,
     unclaimed move exists for them; it is never the default outcome for an illegal or
@@ -186,7 +186,7 @@ START -> propose -> debate -> vote -> [router] -> propose (loop) OR finalize -> 
   is discarded before tallying, never counted.
 - Within one voter's own ballot, a vote is also discarded if it duplicates a node the same
   voter already cast for a different still-undecided detective (checked in the ballot's fixed
-  `pending_targets`/`DETECTIVE_NAMES` order, so the earlier-listed detective's vote wins).
+  `pending_targets`/`DETECTIVE_IDS` order, so the earlier-listed detective's vote wins).
   Unlike a proposal, a discarded vote has no fallback to reassign — it's simply not counted,
   since no rule requires a voter to vote for every target. This does not cover a *different*
   voter's ballot naming the same node for a different detective — see Known Limitations.
@@ -237,6 +237,12 @@ does **not** apply `final_moves` to positions or deduct tickets — see Known Li
 
 ### Implementation References
 
+- `backend/agents.py:DETECTIVE_IDS` — the 5 detectives' internal identifiers (`agent_red`,
+  `agent_blue`, `agent_green`, `agent_yellow`, `agent_purple`); `AGENT_DISPLAY_NAMES`/`agent_names`
+  map them to their human-readable callsigns ("Agent Red", etc.) used anywhere a detective's
+  identity appears in LLM-facing prompt text or the debate transcript, so the agents' own
+  reasoning refers to itself/peers by callsign rather than the internal id. Dict keys, schema
+  field names (e.g. `agent_red_move`), and console logs still use the raw id.
 - `backend/agents.py:get_psychology_prompt` — round-based desperation curve (arrogant/selfish
   through round 12, compromising through round 18, panicked/consensus-seeking after)
 - `backend/agents.py:build_strategy_schema`, `build_ballot_schema`, `build_debate_position_schema`
@@ -376,7 +382,7 @@ Starlette API (`backend/server.py`).
   — `"updates"` chunks identify which node just ran for event labeling, the last `"values"`
   chunk becomes the new `session.state` directly, reusing `state.py`'s own reducers rather than
   reimplementing them.
-- `resolve_round` applies `final_moves` to `detective_1..5` **sequentially, in fixed order**,
+- `resolve_round` applies `final_moves` to each detective (agents.py's `DETECTIVE_IDS`) **sequentially, in fixed order**,
   never trusting the graph's output for legality (re-derived via `game_master.compute_valid_moves`
   — the same posture §1 already applies to every LLM response). When a target node is reachable
   via more than one transport type (verified real case: map.json's node 1 ↔ node 46 via both bus

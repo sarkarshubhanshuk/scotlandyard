@@ -8,7 +8,22 @@ from state import ScotlandYardState, DetectiveStrategy
 from mcp_client import get_detective_llm, get_debate_llm
 from game_master import compute_mrx_zone, compute_distances_to_zone
 
-DETECTIVE_NAMES = ["detective_1", "detective_2", "detective_3", "detective_4", "detective_5"]
+DETECTIVE_IDS = ["agent_red", "agent_blue", "agent_green", "agent_yellow", "agent_purple"]
+# Human-readable callsigns used anywhere a detective's identity appears in LLM-facing prompt
+# text (so agents reason about "Agent Red", not the internal id) - DETECTIVE_IDS itself stays the
+# system identifier used for dict keys, schema field names, tickets, etc.
+AGENT_DISPLAY_NAMES = {
+    "agent_red": "Agent Red",
+    "agent_blue": "Agent Blue",
+    "agent_green": "Agent Green",
+    "agent_yellow": "Agent Yellow",
+    "agent_purple": "Agent Purple",
+}
+
+def agent_names(det_ids) -> str:
+    """Comma-separated display names for a list of detective ids, for prompt-text readability."""
+    return ", ".join(AGENT_DISPLAY_NAMES[d] for d in det_ids)
+
 MAX_ROUNDS = 24
 
 # --- DYNAMIC SCHEMAS FOR STRUCTURED LLM OUTPUT ---
@@ -20,12 +35,16 @@ def build_strategy_schema(pending_targets: list) -> type[BaseModel]:
         "rationale": (str, Field(description="Crisp rationale focusing on team win and your selfish goals"))
     }
     for det_id in pending_targets:
-        fields[f"{det_id}_move"] = (int, Field(description=f"Must be selected from {det_id}'s legal moves"))
+        fields[f"{det_id}_move"] = (
+            int, Field(description=f"Must be selected from {AGENT_DISPLAY_NAMES[det_id]}'s legal moves")
+        )
     return create_model("StrategyProposal", **fields)
 
 def build_ballot_schema(pending_targets: list) -> type[BaseModel]:
     fields = {
-        f"{det_id}_vote": (int, Field(description=f"Target node you vote for {det_id} to take"))
+        f"{det_id}_vote": (
+            int, Field(description=f"Target node you vote for {AGENT_DISPLAY_NAMES[det_id]} to take")
+        )
         for det_id in pending_targets
     }
     return create_model("VotingBallot", **fields)
@@ -45,7 +64,7 @@ def build_debate_position_schema(pending_targets: list) -> type[BaseModel]:
     }
     for det_id in pending_targets:
         fields[f"{det_id}_position"] = (
-            int, Field(description=f"Your current preferred node for {det_id}, given the debate so far")
+            int, Field(description=f"Your current preferred node for {AGENT_DISPLAY_NAMES[det_id]}, given the debate so far")
         )
     return create_model("DebatePosition", **fields)
 
@@ -189,13 +208,14 @@ def find_proposal_conflicts(strategy_obj, pending_targets: list, legal_move_sets
         legal_for_target = legal_move_sets.get(target_id, set())
         if node not in legal_for_target:
             conflicts.append(
-                f"{target_id}: proposed Node {node} is not one of its legal moves "
-                f"{sorted(legal_for_target)}"
+                f"{AGENT_DISPLAY_NAMES[target_id]}: proposed Node {node} is not one of its legal "
+                f"moves {sorted(legal_for_target)}"
             )
         elif node in claimed:
             conflicts.append(
-                f"{target_id}: proposed Node {node} duplicates {claimed[node]}'s destination - "
-                f"every detective in this proposal needs a distinct node"
+                f"{AGENT_DISPLAY_NAMES[target_id]}: proposed Node {node} duplicates "
+                f"{AGENT_DISPLAY_NAMES[claimed[node]]}'s destination - every detective in this "
+                f"proposal needs a distinct node"
             )
         else:
             claimed[node] = target_id
@@ -214,7 +234,7 @@ def get_psychology_prompt(round_number: int, det_id: str) -> str:
     return f"""
     YOUR 3 MOTIVATIONS:
     1. MOST IMPORTANT: Catch Mr. X (Team Win).
-    2. 2ND IMPORTANT: YOU ({det_id}) must be the one who lands on him (Selfish Glory).
+    2. 2ND IMPORTANT: YOU ({AGENT_DISPLAY_NAMES[det_id]}) must be the one who lands on him (Selfish Glory).
     3. 3RD IMPORTANT: Catch him in the fewest turns possible (Efficiency).
     
     Current Mindset: {behavior}
@@ -234,7 +254,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
     print(f"\n--- DEBATE LOOP {state.get('debate_loop_count', 0) + 1} / 3: STRATEGY PROPOSAL ---")
 
     locked = state.get("locked_moves", {})
-    pending_targets = [d for d in DETECTIVE_NAMES if d not in locked]
+    pending_targets = [d for d in DETECTIVE_IDS if d not in locked]
 
     if not pending_targets:
         # Everyone already locked this round - nothing left to propose.
@@ -303,7 +323,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
     contested_note = ""
     if contested_nodes:
         contested_lines = "\n".join(
-            f"- Node {node}: reachable by {', '.join(dets)} this turn - assign AT MOST ONE of them here"
+            f"- Node {node}: reachable by {agent_names(dets)} this turn - assign AT MOST ONE of them here"
             for node, dets in contested_nodes.items()
         )
         contested_note = (
@@ -320,7 +340,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
     # before making their own), so fetch all 5 concurrently instead of sequentially.
     async def get_proposal(det_id):
         prompt = f"""
-        You are {det_id}.
+        You are {AGENT_DISPLAY_NAMES[det_id]}.
         {get_psychology_prompt(state['round_number'], det_id)}
 
         Board State: {board_state}
@@ -334,7 +354,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
         Already Locked Moves This Round (FINAL - these detectives are done, do not send anyone
         else to their nodes): {json.dumps(locked, indent=2)}
 
-        The only detectives who still need a move decided this round are: {pending_targets}.
+        The only detectives who still need a move decided this round are: {agent_names(pending_targets)}.
         CRITICAL: Here are the ONLY legal target nodes each of them can reach this turn (already
         excludes nodes currently occupied by other detectives and nodes already locked as
         someone else's destination this round). Each option's "distance_to_mrx_zone" is its own
@@ -344,7 +364,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
         whether a move is actually progress: {json.dumps(legal_moves_context, indent=2)}{contested_note}
 
         Task: Propose a target node ONLY for the still-undecided detectives listed above
-        ({', '.join(pending_targets)}). YOU MUST ONLY SELECT FROM THE LEGAL MOVES PROVIDED ABOVE.
+        ({agent_names(pending_targets)}). YOU MUST ONLY SELECT FROM THE LEGAL MOVES PROVIDED ABOVE.
         CRITICAL: Every destination you propose must be a DIFFERENT node from every other
         detective's destination in this same response - two detectives can never be sent to
         the same node.
@@ -365,7 +385,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
         YOUR PREVIOUS PROPOSAL HAD THE FOLLOWING CONFLICTS - FIX THEM:
         {chr(10).join(f'- {c}' for c in conflicts)}
 
-        Provide a corrected proposal for ALL still-undecided detectives ({', '.join(pending_targets)})
+        Provide a corrected proposal for ALL still-undecided detectives ({agent_names(pending_targets)})
         that resolves every conflict above, still only using each detective's legal moves listed
         earlier, with no two detectives sharing a destination.
         """
@@ -376,9 +396,9 @@ async def propose_node(state: ScotlandYardState) -> dict:
 
         return det_id, strategy_obj, None
 
-    proposal_results = await asyncio.gather(*[get_proposal(det_id) for det_id in DETECTIVE_NAMES])
+    proposal_results = await asyncio.gather(*[get_proposal(det_id) for det_id in DETECTIVE_IDS])
 
-    # Process in fixed DETECTIVE_NAMES order (asyncio.gather preserves input order in its
+    # Process in fixed DETECTIVE_IDS order (asyncio.gather preserves input order in its
     # results regardless of which call actually finished first) so console output stays
     # readable even though the calls above ran concurrently.
     for det_id, strategy_obj, error in proposal_results:
@@ -391,7 +411,7 @@ async def propose_node(state: ScotlandYardState) -> dict:
 
         # Deterministic backup enforcement (never trust the LLM's raw output, since a
         # small/local model can still ignore prompt instructions) - processed in fixed
-        # DETECTIVE_NAMES order so conflicts resolve in favor of the earlier detective:
+        # DETECTIVE_IDS order so conflicts resolve in favor of the earlier detective:
         #   (b) destination must be in target_id's own legal-move set
         #       (this set already excludes locked destinations, so (d) is enforced here too)
         #   (c) destination must not already be claimed by an earlier target this call
@@ -443,7 +463,7 @@ async def debate_node(state: ScotlandYardState) -> dict:
 
     transcript = []
     locked = state.get("locked_moves", {})
-    pending_targets = [d for d in DETECTIVE_NAMES if d not in locked]
+    pending_targets = [d for d in DETECTIVE_IDS if d not in locked]
 
     # Mr. X possible-zone context (ISSUE-005): annotate each proposer's already-proposed
     # destinations with their hop-distance to Mr. X's possible zone, so debaters can argue
@@ -471,11 +491,11 @@ async def debate_node(state: ScotlandYardState) -> dict:
         if pending_targets else None
     debate_positions = {}
 
-    for det_id in DETECTIVE_NAMES:
+    for det_id in DETECTIVE_IDS:
         transcript_history = "\n".join(transcript) if transcript else "No one has spoken yet."
 
         prompt = f"""
-        You are {det_id}.
+        You are {AGENT_DISPLAY_NAMES[det_id]}.
         {get_psychology_prompt(state['round_number'], det_id)}
 
         Mr. X's Possible Zone:
@@ -491,10 +511,11 @@ async def debate_node(state: ScotlandYardState) -> dict:
         Debate Transcript so far:
         {transcript_history}
 
-        Task: If you are D1, pitch your plan aggressively. If you are D2-D5, DO NOT just agree.
-        Point out why the previous speakers' plans are bad for YOU. Counter-propose your own plan and demand votes.
-        Keep your pitch to 2-3 sentences. Also state your current preferred node for each
-        still-undecided detective ({', '.join(pending_targets)}), given everything argued so far.
+        Task: If no one has spoken yet, pitch your plan aggressively. Otherwise, DO NOT just
+        agree. Point out why the previous speakers' plans are bad for YOU. Counter-propose your
+        own plan and demand votes. Keep your pitch to 2-3 sentences. Also state your current
+        preferred node for each still-undecided detective ({agent_names(pending_targets)}), given
+        everything argued so far.
         """
 
         if structured_llm is not None:
@@ -513,7 +534,9 @@ async def debate_node(state: ScotlandYardState) -> dict:
             pitch = response.content
 
         print(f"[{det_id.upper()}]: {pitch}")
-        transcript.append(f"[{det_id}]: {pitch}")
+        # This is what the frontend's Chat Log actually renders (agents.py streams the raw
+        # transcript text verbatim), so the display name - not the internal id - belongs here.
+        transcript.append(f"[{AGENT_DISPLAY_NAMES[det_id]}]: {pitch}")
 
     return {
         "messages": [AIMessage(content="\n".join(transcript))],
@@ -525,7 +548,7 @@ async def vote_node(state: ScotlandYardState) -> dict:
     print("\n--- VOTING PHASE ---")
 
     current_locked = state.get("locked_moves", {})
-    pending_targets = [d for d in DETECTIVE_NAMES if d not in current_locked]
+    pending_targets = [d for d in DETECTIVE_IDS if d not in current_locked]
 
     if not pending_targets:
         # Nothing left to vote on this round.
@@ -599,7 +622,7 @@ async def vote_node(state: ScotlandYardState) -> dict:
         psychology_context = get_psychology_prompt(state['round_number'], det_id)
 
         prompt = f"""
-        You are {det_id}.
+        You are {AGENT_DISPLAY_NAMES[det_id]}.
 
         {psychology_context}
 
@@ -618,7 +641,7 @@ async def vote_node(state: ScotlandYardState) -> dict:
         Each still-undecided detective's CURRENT distance (in hops) to the nearest node in that
         zone, for comparison: {json.dumps(current_distances_to_zone)}
 
-        The only detectives who still need a vote this round are: {pending_targets}.
+        The only detectives who still need a vote this round are: {agent_names(pending_targets)}.
         Each candidate's legal target nodes, with "distance_to_mrx_zone" (0 means that node IS
         one of Mr. X's possible current locations; lower is generally better if you want the
         team closing in on him): {json.dumps(legal_moves_context, indent=2)}
@@ -636,9 +659,9 @@ async def vote_node(state: ScotlandYardState) -> dict:
         except Exception as e:
             return det_id, None, e
 
-    ballot_results = await asyncio.gather(*[cast_ballot(det_id) for det_id in DETECTIVE_NAMES])
+    ballot_results = await asyncio.gather(*[cast_ballot(det_id) for det_id in DETECTIVE_IDS])
 
-    # Process in fixed DETECTIVE_NAMES order (asyncio.gather preserves input order in its
+    # Process in fixed DETECTIVE_IDS order (asyncio.gather preserves input order in its
     # results regardless of which call actually finished first) so console output stays
     # readable even though the calls above ran concurrently.
     all_votes = []
@@ -659,7 +682,7 @@ async def vote_node(state: ScotlandYardState) -> dict:
     # discarded, never counted, if it's illegal OR if it duplicates a node this same voter
     # already voted for a different detective within this same ballot - never trust the LLM's
     # raw output for either. Targets are checked in the ballot's fixed insertion order (==
-    # pending_targets, i.e. DETECTIVE_NAMES order), so within one voter's ballot the
+    # pending_targets, i.e. DETECTIVE_IDS order), so within one voter's ballot the
     # earlier-listed detective keeps its vote and a later duplicate is dropped. Unlike
     # propose_node, a discarded vote has no fallback to reassign - it's simply not counted,
     # since nothing requires every voter to vote for every target.

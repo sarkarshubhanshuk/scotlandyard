@@ -30,7 +30,7 @@ from uuid import UUID
 from langchain_core.callbacks import AsyncCallbackHandler
 from game_master import compute_valid_moves
 from graph import detective_graph
-from agents import DETECTIVE_NAMES
+from agents import DETECTIVE_IDS
 
 # agents.py's own print() calls (propose/debate/vote node console output) share this
 # process's stdout, whose default encoding on Windows is the system codepage (e.g.
@@ -175,11 +175,11 @@ INITIAL_STATE = {
     },
     # Spread the detectives out across the map, same seed as test_phase3.py's round.
     "detectives": {
-        "detective_1": {"node_id": 29, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
-        "detective_2": {"node_id": 50, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
-        "detective_3": {"node_id": 91, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
-        "detective_4": {"node_id": 117, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
-        "detective_5": {"node_id": 123, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
+        "agent_red": {"node_id": 29, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
+        "agent_blue": {"node_id": 50, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
+        "agent_green": {"node_id": 91, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
+        "agent_yellow": {"node_id": 117, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
+        "agent_purple": {"node_id": 123, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
     },
     "messages": [],
     "proposed_strategies": {},
@@ -205,7 +205,7 @@ async def test_full_round_propose_debate_vote_finalize():
     print(f"final_moves={final_moves}")
 
     # 1. Every detective got a final move out of the finalize stage.
-    assert set(final_moves.keys()) == set(DETECTIVE_NAMES), \
+    assert set(final_moves.keys()) == set(DETECTIVE_IDS), \
         f"expected final moves for all 5 detectives, got {sorted(final_moves.keys())}"
 
     # 2. No two detectives ended up on the same node - catches both a proposal/vote

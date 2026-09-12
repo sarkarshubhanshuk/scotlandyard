@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ChatLogEntry } from "../hooks/useRoundStream";
+import { AGENT_COLORS, AGENT_LABEL_TO_ID, toCssColor } from "../labels";
 
 const KIND_LABELS: Record<ChatLogEntry["kind"], string> = {
   proposal: "Proposals",
@@ -8,6 +9,35 @@ const KIND_LABELS: Record<ChatLogEntry["kind"], string> = {
   round_finalized: "Finalized",
   round_result: "Result",
 };
+
+// Matches any agent's display name ("Agent Red", etc.) wherever it appears in a line - built
+// once from AGENT_LABEL_TO_ID's keys rather than assuming a fixed prefix position, since some
+// lines are built by the frontend (label always leads) and some are the AI's own free-text
+// debate transcript (a name could appear anywhere, e.g. "Agent Blue is wrong about node 45").
+// Escaped defensively even though none of the current names contain regex metacharacters.
+const AGENT_NAME_PATTERN = new RegExp(
+  `(${Object.keys(AGENT_LABEL_TO_ID)
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|")})`,
+  "g",
+);
+
+function ColoredLine({ text }: { text: string }) {
+  const parts = text.split(AGENT_NAME_PATTERN);
+  return (
+    <>
+      {parts.map((part, i) => {
+        const agentId = AGENT_LABEL_TO_ID[part];
+        if (!agentId) return part;
+        return (
+          <span key={i} style={{ color: toCssColor(AGENT_COLORS[agentId]), fontWeight: 600 }}>
+            {part}
+          </span>
+        );
+      })}
+    </>
+  );
+}
 
 // How close to the bottom (px) counts as "already at the bottom" for auto-scroll purposes.
 const NEAR_BOTTOM_THRESHOLD = 24;
@@ -64,7 +94,7 @@ export function ChatLog({ entries, connectionError, onRetry }: ChatLogProps) {
             </div>
             {entry.lines.map((line, i) => (
               <div key={i} style={{ whiteSpace: "pre-wrap" }}>
-                {line}
+                <ColoredLine text={line} />
               </div>
             ))}
           </div>

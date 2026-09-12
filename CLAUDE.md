@@ -49,9 +49,17 @@ The AI agents cannot simply guess their moves. They must query a local Game Mast
 
   - Uses `get_psychology_prompt()` to enforce 3 goals (1. Team Win, 2. Selfish Glory, 3. Efficiency). Agents become more desperate and willing to compromise as the round number approaches 24.
 
-  - Debate is sequential (D1 speaks, D2 replies, etc.).
+  - Debate is sequential: each detective speaks once per loop, in `DETECTIVE_IDS` order — the
+    first speaker pitches proactively, every later speaker is told not to just agree.
 
   - Voting requires a 3/5 threshold to lock a move.
+
+  - Each detective has both an internal id (`DETECTIVE_IDS`: `agent_red`/`agent_blue`/`agent_green`/
+    `agent_yellow`/`agent_purple`) and a human-readable callsign (`AGENT_DISPLAY_NAMES`, e.g. "Agent
+    Red") used in all LLM-facing prompt text and the debate transcript, so agents reason about and
+    refer to each other by callsign rather than the internal id — confirmed in practice: the LLM's
+    own free-text rationale/pitch naturally adopts these names unprompted. See
+    `docs/mechanics/game_mechanics.md` §1 for the full list of what uses which form.
 
   - All three nodes inject a "Mr. X Possible-Zone Context" — a server-side board-topology BFS (`game_master.py:compute_mrx_zone`/`compute_distances_to_zone`, called in-process, not via MCP) giving detectives spatial grounding: where Mr. X could plausibly be, and each candidate move's hop-distance to that zone. See `docs/mechanics/game_mechanics.md` §1 for the full design (and why it's a single per-move number, not a full distance matrix).
 
@@ -66,6 +74,15 @@ The AI agents cannot simply guess their moves. They must query a local Game Mast
   used here are unaffected). No global state library (Zustand, considered up front, turned out
   unnecessary — `GameScreen`/`LoadedGame` lift the one `PublicGameState` and pass it down to the
   board and sidebar, which was enough).
+
+- **Bundle splitting:** `GameScreen.tsx` lazy-loads `BoardCanvas` (`React.lazy`/`Suspense`) so
+  Phaser — the bulk of the production bundle — only downloads once a game is actually entered, not
+  on the home screen. This is easy to accidentally undo: anything imported by a component *outside*
+  that lazy boundary (e.g. `GameLayout.tsx`) must not transitively import from `board/BoardScene.ts`
+  or any other Phaser-importing module, or Phaser silently gets pulled back into the main chunk.
+  `board/boardDimensions.ts` and `labels.ts` exist specifically as Phaser-free modules non-lazy code
+  can safely import from. Verify with `npm run build` — the main chunk should stay ~245KB, not
+  balloon to ~1.6MB.
 
 - **Layout:** Left pane (`BoardCanvas`, one Phaser `Scene` mounted once and updated imperatively
   via `updateGameState`/`updateHighlights` rather than recreated per render) is sized by height
@@ -92,6 +109,14 @@ The AI agents cannot simply guess their moves. They must query a local Game Mast
   events into `ChatLog`, and on the terminal `round_result` reports the fresh game state back up
   — which is also what makes the move wizard reset itself for the next round, with no extra
   coordination code needed between the two hooks.
+
+- **Agent identity/colors** (`labels.ts`): maps each detective id to its display name
+  (`DETECTIVE_LABELS`, matching the backend's `AGENT_DISPLAY_NAMES`) and a shared color
+  (`AGENT_COLORS`) - deliberately kept here rather than in `board/BoardScene.ts` (which imports
+  Phaser) so `TicketInventory` and `ChatLog` can color each agent's name without re-triggering the
+  bundle-splitting issue above. `ChatLog` colors every occurrence of an agent's display name via a
+  generic regex over all 5 known names, not just a fixed prefix position, since the AI debate
+  transcript's backend-built text can mention an agent's name anywhere mid-sentence.
 
 - **Travel Log** (`components/TravelLog.tsx`): renders Mr. X's full `transport_history` as ticket
   icons (always visible, per rules.md) plus a single "last known position" line. It does **not**

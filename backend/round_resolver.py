@@ -2,7 +2,7 @@ from typing import AsyncIterator, Optional, TypedDict
 
 from game_master import compute_valid_moves
 from state import ScotlandYardState
-from agents import DETECTIVE_NAMES
+from agents import DETECTIVE_IDS
 from graph import detective_graph, build_next_round_state
 from session import GameSession
 
@@ -65,7 +65,7 @@ async def run_detective_loop(session: GameSession) -> AsyncIterator[dict]:
 def resolve_round(session: GameSession) -> RoundResult:
     """
     Applies session.state["final_moves"] (produced by detective_graph) to the board: moves each
-    detective in fixed DETECTIVE_NAMES order, deducting/transferring tickets, and checking for
+    detective in fixed DETECTIVE_IDS order, deducting/transferring tickets, and checking for
     capture after EVERY individual move - not just once at the end - since the rules end the
     game the instant any detective lands on Mr. X's real node; the remaining detectives never
     get to move once that happens.
@@ -78,7 +78,7 @@ def resolve_round(session: GameSession) -> RoundResult:
     final_moves = state.get("final_moves", {})
     mr_x = state["mr_x"]
 
-    for det_id in DETECTIVE_NAMES:
+    for det_id in DETECTIVE_IDS:
         detective = state["detectives"][det_id]
         target_node = final_moves.get(det_id, detective["node_id"])
 
@@ -120,7 +120,7 @@ def resolve_round(session: GameSession) -> RoundResult:
         return {"status": session.status, "winner": session.winner, "round_number": state["round_number"]}
 
     all_detectives_trapped = True
-    for det_id in DETECTIVE_NAMES:
+    for det_id in DETECTIVE_IDS:
         detective = state["detectives"][det_id]
         occupied = _other_detective_nodes(state, det_id)
         if compute_valid_moves(

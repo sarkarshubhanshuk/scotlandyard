@@ -46,13 +46,9 @@ export interface PublicDetective {
   metro_tickets: number;
 }
 
-export const DETECTIVE_IDS = [
-  "detective_1",
-  "detective_2",
-  "detective_3",
-  "detective_4",
-  "detective_5",
-] as const;
+// Mirrors backend/agents.py's DETECTIVE_IDS - the internal identifier for each detective. Their
+// human-readable callsigns ("Agent Red" etc.) live in labels.ts's DETECTIVE_LABELS.
+export const DETECTIVE_IDS = ["agent_red", "agent_blue", "agent_green", "agent_yellow", "agent_purple"] as const;
 export type DetectiveId = (typeof DETECTIVE_IDS)[number];
 
 export interface PublicGameState {

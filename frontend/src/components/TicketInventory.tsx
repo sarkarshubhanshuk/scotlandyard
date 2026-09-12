@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { DETECTIVE_LABELS } from "../labels";
+import { AGENT_COLORS, DETECTIVE_LABELS, toCssColor } from "../labels";
 import { DETECTIVE_IDS, type PublicGameState } from "../types";
 
 const cellStyle: CSSProperties = { padding: "2px 8px", textAlign: "right" };
@@ -33,7 +33,7 @@ export function TicketInventory({ gameState }: { gameState: PublicGameState }) {
             const detective = gameState.detectives[detId];
             return (
               <tr key={detId}>
-                <td style={headerStyle}>{DETECTIVE_LABELS[detId]}</td>
+                <td style={{ ...headerStyle, color: toCssColor(AGENT_COLORS[detId]) }}>{DETECTIVE_LABELS[detId]}</td>
                 <td style={cellStyle}>{detective.taxi_tickets}</td>
                 <td style={cellStyle}>{detective.bus_tickets}</td>
                 <td style={cellStyle}>{detective.metro_tickets}</td>

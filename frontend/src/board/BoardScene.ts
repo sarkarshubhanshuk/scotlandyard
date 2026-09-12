@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { AGENT_COLORS } from "../labels";
 import { DETECTIVE_IDS, type MapData, type PublicGameState } from "../types";
 import { BOARD_HEIGHT, BOARD_WIDTH } from "./boardDimensions";
 
@@ -40,14 +41,8 @@ const HIGHLIGHT_RADIUS = 12;
 // fill and recolored per instance via Phaser's setTint (a multiplicative tint): white * color =
 // color exactly, while the SVG's separately-drawn black outline stays black regardless of tint
 // (black * anything = black) - this is what keeps every pawn's border black while only the fill
-// varies. Values are the standard CSS named-color hex codes for each name.
-const DETECTIVE_COLORS: Record<string, number> = {
-  detective_1: 0xff0000, // red
-  detective_2: 0x0000ff, // blue
-  detective_3: 0x008000, // green
-  detective_4: 0xffff00, // yellow
-  detective_5: 0x800080, // purple
-};
+// varies. Per-agent colors live in labels.ts (AGENT_COLORS) so TicketInventory/ChatLog can use
+// the exact same values for their text coloring.
 const MR_X_COLOR = 0x000000; // black
 const LEGAL_TARGET_COLOR = 0xffd60a;
 const SELECTED_TARGET_COLOR = 0xfb5607;
@@ -132,7 +127,7 @@ export class BoardScene extends Phaser.Scene {
       const pawn = this.add
         .image(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, "pawn")
         .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
-        .setTint(DETECTIVE_COLORS[detId]);
+        .setTint(AGENT_COLORS[detId]);
       this.pawns.set(detId, pawn);
     }
 

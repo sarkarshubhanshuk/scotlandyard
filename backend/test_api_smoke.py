@@ -18,6 +18,7 @@ import json
 
 from starlette.testclient import TestClient
 import server
+from agents import DETECTIVE_IDS
 
 
 def test_create_get_and_public_state_never_leaks_mr_x_position():
@@ -28,7 +29,7 @@ def test_create_get_and_public_state_never_leaks_mr_x_position():
         body = r.json()
         assert "current_node" not in body["mr_x"]
         assert body["status"] == "awaiting_mr_x_move"
-        assert set(body["detectives"].keys()) == {f"detective_{i}" for i in range(1, 6)}
+        assert set(body["detectives"].keys()) == set(DETECTIVE_IDS)
         game_id = body["game_id"]
 
         r2 = client.get(f"/games/{game_id}")
