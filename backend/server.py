@@ -93,7 +93,10 @@ async def round_stream_route(request: Request) -> EventSourceResponse:
     async def event_generator():
         async with session.lock:
             async for event in run_detective_loop(session):
-                payload = serialize_loop_event(event["node"], event["update"])
+                if event["type"] == "stage_started":
+                    payload = {"type": "stage_started", "stage": event["stage"]}
+                else:
+                    payload = serialize_loop_event(event["node"], event["update"])
                 yield {"event": payload["type"], "data": json.dumps(payload)}
 
             round_result = resolve_round(session)

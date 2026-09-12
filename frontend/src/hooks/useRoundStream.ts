@@ -8,6 +8,7 @@ import type {
   PublicGameState,
   RoundFinalizedEvent,
   RoundResultEvent,
+  StageStartedEvent,
   VoteTallyEvent,
 } from "../types";
 
@@ -17,6 +18,16 @@ export interface ChatLogEntry {
   kind: "proposal" | "debate" | "vote_tally" | "round_finalized" | "round_result";
   lines: string[];
 }
+
+// Mirrors graph.py's node order (propose -> debate -> vote, looping back to propose up to 3
+// times) - the stage the sidebar header shows while status is "detective_loop_running".
+type LoopStage = "proposal" | "debate" | "vote";
+
+const LOOP_STAGE_LABELS: Record<LoopStage, string> = {
+  proposal: "Detectives are creating proposals",
+  debate: "Detectives are debating on proposals",
+  vote: "Detectives are voting on the next moves",
+};
 
 function label(detId: string): string {
   // detId comes from JSON object keys (proposed_strategies/locked_moves/final_moves), typed as
@@ -47,6 +58,21 @@ export function useRoundStream(
     setRetryToken((t) => t + 1);
   }, []);
 
+  // The loop always starts with a proposal round (see graph.py), so that's the correct label
+  // both before the first event arrives and immediately after each new round's stream (re)opens.
+  // Reset during render rather than in the effect below (React's documented "adjust state during
+  // render" pattern, used elsewhere in this codebase - see useMrXMoveWizard/GameScreen) so the
+  // reset doesn't cost an extra render.
+  const [stage, setStage] = useState<LoopStage>("proposal");
+  const streamKey = `${gameState.round_number}:${gameState.status}:${retryToken}`;
+  const [lastStreamKey, setLastStreamKey] = useState(streamKey);
+  if (streamKey !== lastStreamKey) {
+    setLastStreamKey(streamKey);
+    if (gameState.status === "detective_loop_running") {
+      setStage("proposal");
+    }
+  }
+
   useEffect(() => {
     if (gameState.status !== "detective_loop_running") return;
 
@@ -56,6 +82,15 @@ export function useRoundStream(
     const nextId = () => `${round}-${seq++}`;
     const append = (entry: Omit<ChatLogEntry, "id" | "round">) =>
       setEntries((prev) => [...prev, { id: nextId(), round, ...entry }]);
+
+    // Fires as soon as a stage's first LLM call actually goes out (see agents.py's
+    // get_stream_writer() calls) - this, not the proposal/debate/vote_tally events below, is
+    // what should move the header label, since those only arrive once the WHOLE stage (all 5
+    // detectives) has already finished.
+    source.addEventListener("stage_started", (event) => {
+      const data = JSON.parse(event.data as string) as StageStartedEvent;
+      setStage(data.stage);
+    });
 
     source.addEventListener("proposal", (event) => {
       const data = JSON.parse(event.data as string) as ProposalEvent;
@@ -109,5 +144,5 @@ export function useRoundStream(
     return () => source.close();
   }, [gameId, gameState.status, gameState.round_number, onRoundResult, retryToken]);
 
-  return { entries, connectionError, retry };
+  return { entries, connectionError, retry, stageLabel: LOOP_STAGE_LABELS[stage] };
 }

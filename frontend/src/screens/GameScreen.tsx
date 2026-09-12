@@ -133,7 +133,12 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <h2 style={{ margin: 0 }}>
                 Round {gameState.round_number}{" "}
-                <span style={{ color: "#666", fontWeight: 400 }}>- {gameState.status.replaceAll("_", " ")}</span>
+                <span style={{ color: "#666", fontWeight: 400 }}>
+                  -{" "}
+                  {gameState.status === "detective_loop_running"
+                    ? roundStream.stageLabel
+                    : gameState.status.replaceAll("_", " ")}
+                </span>
               </h2>
               <TicketInventory gameState={gameState} />
             </div>

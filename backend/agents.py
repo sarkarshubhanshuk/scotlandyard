@@ -4,6 +4,7 @@ from collections import defaultdict
 from typing import Optional
 from pydantic import BaseModel, Field, create_model
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.config import get_stream_writer
 from state import ScotlandYardState, DetectiveStrategy
 from mcp_client import get_detective_llm, get_debate_llm
 from game_master import compute_mrx_zone, compute_distances_to_zone
@@ -396,6 +397,10 @@ async def propose_node(state: ScotlandYardState) -> dict:
 
         return det_id, strategy_obj, None
 
+    # Signal the stage as actually starting only now - right as the first LLM calls are about
+    # to fire - not earlier (pending-target computation, MCP legal-move lookups, and zone-context
+    # prep above are bookkeeping, not "creating a proposal" from the frontend's point of view).
+    get_stream_writer()({"stage": "proposal"})
     proposal_results = await asyncio.gather(*[get_proposal(det_id) for det_id in DETECTIVE_IDS])
 
     # Process in fixed DETECTIVE_IDS order (asyncio.gather preserves input order in its
@@ -491,6 +496,10 @@ async def debate_node(state: ScotlandYardState) -> dict:
         if pending_targets else None
     debate_positions = {}
 
+    # Debate is sequential (Agent Red speaks first), so this genuinely marks "the first
+    # detective starts their debate" - unlike propose/vote's concurrent gather, there's no
+    # earlier moment where multiple calls could already be in flight.
+    get_stream_writer()({"stage": "debate"})
     for det_id in DETECTIVE_IDS:
         transcript_history = "\n".join(transcript) if transcript else "No one has spoken yet."
 
@@ -659,6 +668,9 @@ async def vote_node(state: ScotlandYardState) -> dict:
         except Exception as e:
             return det_id, None, e
 
+    # Same rationale as propose_node: signal only once the actual voting LLM calls are about
+    # to fire, not during the legal-move/zone-context prep above.
+    get_stream_writer()({"stage": "vote"})
     ballot_results = await asyncio.gather(*[cast_ballot(det_id) for det_id in DETECTIVE_IDS])
 
     # Process in fixed DETECTIVE_IDS order (asyncio.gather preserves input order in its

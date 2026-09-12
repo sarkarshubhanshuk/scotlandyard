@@ -42,18 +42,27 @@ async def run_detective_loop(session: GameSession) -> AsyncIterator[dict]:
     Drives detective_graph for the current round, yielding one labeled event per LangGraph step
     so an API layer can stream propose/debate/vote progress to a client in real time.
 
-    Uses stream_mode=["updates", "values"] together: "updates" chunks are {node_name: partial}
-    and identify which node just ran (propose/debate/vote/finalize) for event labeling; "values"
-    chunks are full cumulative state snapshots after each step. The LAST "values" snapshot
-    becomes the new session.state directly - this reuses state.py's own reducers (update_dict,
-    operator.add) rather than hand-reimplementing them here.
+    Uses stream_mode=["updates", "values", "custom"] together: "updates" chunks are
+    {node_name: partial} and identify which node just ran (propose/debate/vote/finalize) for
+    event labeling; "values" chunks are full cumulative state snapshots after each step; "custom"
+    chunks are agents.py's own get_stream_writer() calls, fired the moment a node's first LLM
+    call actually goes out (not when the node merely starts, which could still be doing MCP/
+    zone-context prep) - this is what lets the frontend show "Detectives are debating..." etc.
+    as each stage BEGINS rather than only once "updates" reports the whole node finished. The
+    LAST "values" snapshot becomes the new session.state directly - this reuses state.py's own
+    reducers (update_dict, operator.add) rather than hand-reimplementing them here.
     """
     session.status = "detective_loop_running"
     last_values = session.state
 
-    async for mode, chunk in detective_graph.astream(session.state, stream_mode=["updates", "values"]):
+    async for mode, chunk in detective_graph.astream(
+        session.state, stream_mode=["updates", "values", "custom"]
+    ):
         if mode == "values":
             last_values = chunk
+            continue
+        if mode == "custom":
+            yield {"type": "stage_started", "stage": chunk["stage"]}
             continue
         # mode == "updates": chunk is {node_name: partial_state_update}
         for node_name, update in chunk.items():

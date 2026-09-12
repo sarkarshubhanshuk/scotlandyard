@@ -86,6 +86,14 @@ export interface DebateEvent {
   transcript: string;
 }
 
+// Fired the moment a stage's first LLM call actually goes out (agents.py's get_stream_writer()
+// calls) - distinct from the proposal/debate/vote_tally events below, which only arrive once the
+// ENTIRE stage (all 5 detectives) has finished.
+export interface StageStartedEvent {
+  type: "stage_started";
+  stage: "proposal" | "debate" | "vote";
+}
+
 export interface VoteTallyEvent {
   type: "vote_tally";
   locked_moves: Record<string, number>;
