@@ -67,9 +67,14 @@ The AI agents cannot simply guess their moves. They must query a local Game Mast
   unnecessary — `GameScreen`/`LoadedGame` lift the one `PublicGameState` and pass it down to the
   board and sidebar, which was enough).
 
-- **Layout:** 75% Left Pane (`BoardCanvas`, one Phaser `Scene` mounted once and updated
-  imperatively via `updateGameState`/`updateHighlights` rather than recreated per render), 25%
-  Right Pane (`TicketInventory`, `MoveSelector`, `ChatLog`, `TravelLog`, stacked).
+- **Layout:** Left pane (`BoardCanvas`, one Phaser `Scene` mounted once and updated imperatively
+  via `updateGameState`/`updateHighlights` rather than recreated per render) is sized by height
+  (100% of the viewport) plus a CSS `aspect-ratio` derived from the board's own resolution, not a
+  fixed width percentage - it's pinned flush to the left edge, fills the viewport height exactly
+  (no letterboxing), and can't distort. The right pane (`TicketInventory`, `MoveSelector`,
+  `ChatLog`, `TravelLog`, stacked) takes whatever width remains via `flex: 1`, flush against the
+  board with no gap, out to the browser's right edge. `GameLayout.tsx`'s outer row and the global
+  `html`/`body` both set `overflow: hidden` so the game screen never shows a scrollbar.
 
 - **Backend additions this phase required** (`backend/server.py`, `game_master.py`, `mrx_turn.py`):
   `GET /games/{id}/map` (serves `map.json` + `node_positions.json` — the frontend never bundles
