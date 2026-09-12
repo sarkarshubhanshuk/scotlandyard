@@ -1,0 +1,25 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Recreated as a genuine vector SVG (the original file at this path was actually a raster
+    WebP image mislabeled with a .svg extension, so it could not be recolored).
+
+    Two groups trace the EXACT same silhouette (a ball head plus a flared, rounded body, the
+    classic board-game pawn shape): the bottom group is fill only (no stroke) and drives the
+    per-player color, the top group is the black border (stroke only, fill:none) drawn on top
+    of it. Because both groups share identical geometry, the fill can never bleed outside the
+    border regardless of what color it's set to.
+
+    Recolor per instance via the pawn-color CSS custom property, two leading hyphens per CSS
+    syntax (inherited, so it works even when this SVG is inlined multiple times on one page
+    without id collisions). See docs/mechanics/game_mechanics.md for the exact per-detective
+    color values and Mr. X's transparent-fill case.
+  -->
+  <g fill="var(--pawn-color, #ffffff)" stroke="none">
+    <circle cx="50" cy="24" r="13"/>
+    <path d="M38 40 C38 40 30 46 27 58 C24 70 20 82 20 88 C20 92 24 94 28 94 L72 94 C76 94 80 92 80 88 C80 82 76 70 73 58 C70 46 62 40 62 40 C58 44 42 44 38 40 Z"/>
+  </g>
+  <g fill="none" stroke="#000000" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+    <circle cx="50" cy="24" r="13"/>
+    <path d="M38 40 C38 40 30 46 27 58 C24 70 20 82 20 88 C20 92 24 94 28 94 L72 94 C76 94 80 92 80 88 C80 82 76 70 73 58 C70 46 62 40 62 40 C58 44 42 44 38 40 Z"/>
+  </g>
+</svg>

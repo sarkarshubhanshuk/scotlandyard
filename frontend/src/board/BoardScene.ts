@@ -1,12 +1,13 @@
 import Phaser from "phaser";
 import { DETECTIVE_IDS, type MapData, type PublicGameState } from "../types";
+import { BOARD_HEIGHT, BOARD_WIDTH } from "./boardDimensions";
 
-// board.svg's own viewBox (docs/map/board.svg) - node_positions.json's x/y coordinates are
-// already expressed in this same 600x450 pixel space, not percentages. Every drawn position
-// below multiplies these logical coordinates by RENDER_SCALE (see its own comment) to place
-// things in the actual, larger framebuffer pixel space.
-export const BOARD_WIDTH = 600;
-export const BOARD_HEIGHT = 450;
+// Re-exported so BoardCanvas.tsx's existing `from "./BoardScene"` import keeps working - moved to
+// boardDimensions.ts (a Phaser-free module) so GameLayout.tsx can use these for its CSS
+// aspect-ratio without pulling Phaser into the main bundle; see that file's own comment. Every
+// drawn position below multiplies these logical coordinates by RENDER_SCALE (see its own comment)
+// to place things in the actual, larger framebuffer pixel space.
+export { BOARD_WIDTH, BOARD_HEIGHT };
 
 // Phaser.Scale.FIT stretches the game's base width/height (the actual WebGL framebuffer
 // resolution) up to fill its CSS container - at the plain 600x450 base resolution, that
@@ -26,17 +27,28 @@ export const RENDER_SCALE = 3;
 // kept generous rather than pixel-tight, since a 600x450 canvas scaled up to fill the board pane
 // still only gives each of 199 nodes a few CSS px of hit area even at a fairly wide window size.
 const NODE_RADIUS = 8;
-const PAWN_RADIUS = 7;
+// board.svg's own node markers are drawn at r=12.5 in this same logical space (docs/map/board.svg)
+// - PAWN_SIZE is the full pawn.svg texture's display footprint (its 100x100 viewBox, most of
+// which is transparent padding around the actual silhouette), sized so the silhouette itself
+// (which occupies roughly the middle 60x83 of that viewBox) comfortably fits inside that r=12.5
+// node circle rather than overlapping the board's connection lines.
+const PAWN_SIZE = 24;
 const HIGHLIGHT_RADIUS = 12;
 
+// pawn.svg's fill is `var(--pawn-color, #ffffff)` - CSS custom properties don't apply to a
+// texture rasterized once at load time, so instead the texture is loaded with its default white
+// fill and recolored per instance via Phaser's setTint (a multiplicative tint): white * color =
+// color exactly, while the SVG's separately-drawn black outline stays black regardless of tint
+// (black * anything = black) - this is what keeps every pawn's border black while only the fill
+// varies. Values are the standard CSS named-color hex codes for each name.
 const DETECTIVE_COLORS: Record<string, number> = {
-  detective_1: 0xe63946,
-  detective_2: 0x2a9d8f,
-  detective_3: 0xf4a261,
-  detective_4: 0x457b9d,
-  detective_5: 0x8338ec,
+  detective_1: 0xff0000, // red
+  detective_2: 0x0000ff, // blue
+  detective_3: 0x008000, // green
+  detective_4: 0xffff00, // yellow
+  detective_5: 0x800080, // purple
 };
-const MR_X_COLOR = 0x111111;
+const MR_X_COLOR = 0x000000; // black
 const LEGAL_TARGET_COLOR = 0xffd60a;
 const SELECTED_TARGET_COLOR = 0xfb5607;
 
@@ -52,7 +64,7 @@ export class BoardScene extends Phaser.Scene {
   private mapData!: MapData;
   private gameState!: PublicGameState;
   private onNodeClick?: (nodeId: number) => void;
-  private pawns = new Map<string, Phaser.GameObjects.Arc>();
+  private pawns = new Map<string, Phaser.GameObjects.Image>();
   private highlights = new Map<number, Phaser.GameObjects.Arc>();
   // The legal-move fetch that drives highlights resolves asynchronously and can arrive before
   // Phaser's own async preload/create has finished booting the scene - updateHighlights records
@@ -80,6 +92,11 @@ export class BoardScene extends Phaser.Scene {
     // that default was too low-res for 199 small numbered labels + thin line art on its own, even
     // before the framebuffer-level magnification RENDER_SCALE (above) addresses.
     this.load.svg("board", "/board/board.svg", { scale: RENDER_SCALE });
+    // pawn.svg has no width/height attribute of its own (only a 100x100 viewBox), so an explicit
+    // target size is required here rather than relying on the SVG's own declared size like board
+    // does - rasterized well above its ~24-logical-unit display footprint (see PAWN_SIZE) so it
+    // stays crisp after RENDER_SCALE and Phaser.Scale.FIT both magnify it further.
+    this.load.svg("pawn", "/pawn/pawn.svg", { width: 200, height: 200 });
   }
 
   create() {
@@ -112,8 +129,10 @@ export class BoardScene extends Phaser.Scene {
       if (!detective) continue;
       const pos = this.mapData.positions[String(detective.node_id)];
       if (!pos) continue;
-      const pawn = this.add.circle(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, PAWN_RADIUS * RENDER_SCALE, DETECTIVE_COLORS[detId]);
-      pawn.setStrokeStyle(1 * RENDER_SCALE, 0xffffff, 1);
+      const pawn = this.add
+        .image(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, "pawn")
+        .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
+        .setTint(DETECTIVE_COLORS[detId]);
       this.pawns.set(detId, pawn);
     }
 
@@ -121,8 +140,10 @@ export class BoardScene extends Phaser.Scene {
     if (mrXNode != null) {
       const pos = this.mapData.positions[String(mrXNode)];
       if (pos) {
-        const pawn = this.add.circle(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, PAWN_RADIUS * RENDER_SCALE, MR_X_COLOR);
-        pawn.setStrokeStyle(2 * RENDER_SCALE, 0xffffff, 1);
+        const pawn = this.add
+          .image(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, "pawn")
+          .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
+          .setTint(MR_X_COLOR);
         this.pawns.set("mr_x", pawn);
       }
     }

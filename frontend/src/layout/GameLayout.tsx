@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { BOARD_HEIGHT, BOARD_WIDTH } from "../board/BoardScene";
+import { BOARD_HEIGHT, BOARD_WIDTH } from "../board/boardDimensions";
 
 interface GameLayoutProps {
   board: ReactNode;
