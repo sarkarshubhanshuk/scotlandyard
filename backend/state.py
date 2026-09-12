@@ -25,7 +25,9 @@ class MrXState(TypedDict):
     current_node: int                 # Mr. X's true position - NEVER exposed to detectives
     last_known_node: Optional[int]    # None during rounds 1-2 before the 1st reveal
     last_known_round: Optional[int]   # Round number when he last revealed his location
-    transport_history: List[str]      # Complete travel log, e.g., ["taxi", "bus", "black"]
+    transport_history: List[str]      # Complete travel log, e.g., ["taxi", "bus", "black"] - a
+                                       # double-move inserts a "double" entry immediately before
+                                       # its own two hop entries (see mrx_turn.py)
     
     # Mr. X Ticket Inventory (Crucial for detective deduction algorithms)
     taxi_tickets: int

@@ -159,6 +159,11 @@ def submit_mr_x_move(session: GameSession, move_request: dict) -> dict:
         _validate_hop(hop1["target_node"], hop2["target_node"], hop2["ticket_type_spent"], post_hop1_tickets, occupied)
 
         mr_x["double_tickets"] -= 1
+        # rules.md: "a Double-Move is broadcast as the Double-Move ticket being played, followed
+        # by the two transport tickets sequentially" - "double" is a sentinel never valid as an
+        # actual ticket_type_spent (see VALID_TICKET_TYPES), only ever inserted here, so the
+        # frontend's travel log can render it as its own icon ahead of the two hop tickets.
+        mr_x["transport_history"].append("double")
         _apply_hop(mr_x, hop1["target_node"], hop1["ticket_type_spent"])
         intermediate_node = mr_x["current_node"]
         _apply_hop(mr_x, hop2["target_node"], hop2["ticket_type_spent"])

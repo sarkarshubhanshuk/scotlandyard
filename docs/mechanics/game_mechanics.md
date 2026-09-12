@@ -414,7 +414,7 @@ Starlette API (`backend/server.py`).
 |---|---|
 | `mr_x.current_node` | Mr. X's real, secret position — added in this mechanic; never read by any detective-facing code path (§1) and never serialized by `serialize_public_state` |
 | `mr_x.last_known_node` / `last_known_round` | Set only by `mrx_turn` on a surfacing-round move |
-| `mr_x.transport_history` | Appended to by `mrx_turn` on every hop (records the ticket type spent, not necessarily the underlying route type — a black ticket is logged as `"black"`, matching the rules' obfuscation intent) |
+| `mr_x.transport_history` | Appended to by `mrx_turn` on every hop (records the ticket type spent, not necessarily the underlying route type — a black ticket is logged as `"black"`, matching the rules' obfuscation intent). A double-move additionally inserts a `"double"` sentinel immediately before its own two hop entries, matching rules.md's stated broadcast order — never a valid `ticket_type_spent` itself, only ever inserted by `submit_mr_x_move`'s double-move branch. |
 | `detectives[*].node_id`, ticket counts | Mutated by `resolve_round`, never by the graph itself |
 | `final_moves` | Read (never written) by `resolve_round`; still produced exactly as §1 describes |
 

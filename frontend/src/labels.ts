@@ -1,4 +1,4 @@
-import { DETECTIVE_IDS, type DetectiveId, type TicketType } from "./types";
+import { DETECTIVE_IDS, type DetectiveId, type TravelLogTicket } from "./types";
 
 // Mirrors backend/agents.py's AGENT_DISPLAY_NAMES.
 export const DETECTIVE_LABELS: Record<DetectiveId, string> = {
@@ -31,18 +31,24 @@ export function toCssColor(hex: number): string {
   return `#${hex.toString(16).padStart(6, "0")}`;
 }
 
-export const TICKET_LABELS: Record<TicketType, string> = {
+// Covers every TicketType (used for MoveSelector's ticket-choice buttons) plus "double" (only
+// ever appears in mr_x.transport_history, rendered by TravelLog).
+export const TICKET_LABELS: Record<TravelLogTicket, string> = {
   taxi: "Taxi",
   bus: "Bus",
   metro: "Metro",
   black: "Black",
+  double: "Double Move",
 };
 
-export const TICKET_ICONS: Record<TicketType, string> = {
-  taxi: "/tickets/taxi_ticket.svg",
-  bus: "/tickets/bus_ticket.svg",
-  metro: "/tickets/metro_ticket.svg",
-  black: "/tickets/concealed_ticket.svg",
+// Sourced from docs/tickets/ (the project's canonical ticket art) - copied verbatim into
+// frontend/public/tickets/ since Vite only serves static assets from within the frontend project.
+export const TICKET_ICONS: Record<TravelLogTicket, string> = {
+  taxi: "/tickets/taxi_ticket.jpg",
+  bus: "/tickets/bus_ticket.jpg",
+  metro: "/tickets/metro_ticket.jpg",
+  black: "/tickets/black_ticket.jpg",
+  double: "/tickets/doublemove_ticket.jpg",
 };
 
 // Mirrors backend/round_resolver.py:SURFACING_ROUNDS - the rounds after which Mr. X must reveal

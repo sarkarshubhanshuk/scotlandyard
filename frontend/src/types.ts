@@ -3,6 +3,10 @@
 
 export type TransportType = "taxi" | "bus" | "metro" | "boat";
 export type TicketType = "taxi" | "bus" | "metro" | "black";
+// mr_x.transport_history's entries: every hop's TicketType, plus a "double" sentinel a
+// double-move inserts immediately before its own two hop entries (mrx_turn.py) - "double" is
+// never a valid TicketType to spend for an actual hop, only ever a log entry.
+export type TravelLogTicket = TicketType | "double";
 
 export interface MapConnection {
   destination: number;
@@ -36,7 +40,7 @@ export interface PublicMrX {
   double_tickets: number;
   last_known_node: number | null;
   last_known_round: number | null;
-  transport_history: TicketType[];
+  transport_history: TravelLogTicket[];
 }
 
 export interface PublicDetective {
