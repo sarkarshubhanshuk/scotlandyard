@@ -54,3 +54,7 @@ export const TICKET_ICONS: Record<TravelLogTicket, string> = {
 // Mirrors backend/round_resolver.py:SURFACING_ROUNDS - the rounds after which Mr. X must reveal
 // his position (rules.md: "Mr. X must reveal his location at the end of turns 3, 8, 13, 18, and 24").
 export const SURFACING_ROUNDS = [3, 8, 13, 18, 24];
+
+// Mirrors backend/round_resolver.py's MAX_ROUND - TravelLog always renders one slot per possible
+// round (played or not), rather than growing as the game progresses.
+export const MAX_ROUND = 24;
