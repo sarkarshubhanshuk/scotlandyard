@@ -80,6 +80,13 @@ const LEGAL_TARGET_ALPHA = 0.9;
 const LEGAL_TARGET_SELECTED_ALPHA = 1;
 const LEGAL_TARGET_UNSELECTED_ALPHA = 0.5;
 
+// Fixed regardless of hop distance (a 1-hop taxi ride and a cross-board double-move both take
+// exactly this long to animate) - see renderMrX()'s own comment for why that's straightforward
+// to guarantee with a Phaser tween. Sine.easeInOut eases into and out of the motion rather than
+// moving at a constant speed.
+const MR_X_MOVE_DURATION_MS = 1000;
+const MR_X_MOVE_EASE = "Sine.easeInOut";
+
 export interface BoardSceneData {
   mapData: MapData;
   gameState: PublicGameState;
@@ -95,6 +102,11 @@ export class BoardScene extends Phaser.Scene {
   private onNodeClick?: (nodeId: number) => void;
   private pawns = new Map<string, Phaser.GameObjects.Image>();
   private mrXHalo: Phaser.GameObjects.Graphics | null = null;
+  // The node Mr. X's pawn was last actually PLACED at (as opposed to gameState.mr_x.current_node,
+  // which is always the latest server truth) - renderMrX() diffs against this to tell "he just
+  // moved, animate it" apart from "a detective-only update arrived and he's exactly where he was".
+  // null only before the very first render, so that one is never mistaken for a move.
+  private lastMrXNode: number | null = null;
   private highlights = new Map<number, Phaser.GameObjects.GameObject>();
   private pawnTooltip: Phaser.GameObjects.Container | null = null;
   // The legal-move fetch that drives highlights resolves asynchronously and can arrive before
@@ -164,13 +176,17 @@ export class BoardScene extends Phaser.Scene {
   }
 
   private renderPawns() {
-    for (const pawn of this.pawns.values()) pawn.destroy();
-    this.pawns.clear();
-    this.mrXHalo?.destroy();
-    this.mrXHalo = null;
+    // Detectives are always fully recreated (no movement animation asked for them) - Mr. X's own
+    // pawn/halo are handled separately by renderMrX(), which reuses rather than recreates them
+    // so a move can tween smoothly instead of snapping.
+    for (const [id, pawn] of this.pawns) {
+      if (id === "mr_x") continue;
+      pawn.destroy();
+      this.pawns.delete(id);
+    }
     // The pawn objects a stale tooltip's hover handlers referred to no longer exist once this
-    // runs (a fresh game snapshot recreates every pawn from scratch) - drop any open tooltip
-    // rather than leaving it pointing at a destroyed pawn.
+    // runs (a fresh game snapshot recreates every detective pawn from scratch) - drop any open
+    // tooltip rather than leaving it pointing at a destroyed pawn.
     this.hidePawnTooltip();
 
     for (const detId of DETECTIVE_IDS) {
@@ -186,52 +202,93 @@ export class BoardScene extends Phaser.Scene {
       this.pawns.set(detId, pawn);
     }
 
-    // Mr. X's pawn is always rendered at his real current_node now (see serializers.py's own
-    // note on why exposing this is safe: the only human-facing client is played BY Mr. X, and
-    // detectives are backend-only agents with no client access at all). Alpha is a visual
-    // reminder for the human of whether detectives ALSO currently know this position - opaque
-    // only on the exact round he's surfaced (last_known_round stays stuck on a past round
-    // forever after, per build_next_round_state, so this must compare against the CURRENT round,
-    // not just check non-null), semi-transparent every other round - not an information-hiding
-    // mechanism, since nothing here is ever hidden from the one person who can see this canvas.
+    this.renderMrX();
+  }
+
+  // Mr. X's pawn is always rendered at his real current_node now (see serializers.py's own note
+  // on why exposing this is safe: the only human-facing client is played BY Mr. X, and detectives
+  // are backend-only agents with no client access at all). Alpha is a visual reminder for the
+  // human of whether detectives ALSO currently know this position - opaque only on the exact
+  // round he's surfaced (last_known_round stays stuck on a past round forever after, per
+  // build_next_round_state, so this must compare against the CURRENT round, not just check
+  // non-null), semi-transparent every other round - not an information-hiding mechanism, since
+  // nothing here is ever hidden from the one person who can see this canvas.
+  //
+  // When current_node has actually changed since the last render, the existing pawn+halo are
+  // reused and tweened to the new spot (a Phaser tween interpolates from whatever a target's own
+  // x/y property already is, so there's no need to look up or store the OLD position here) rather
+  // than destroyed and recreated at the destination - that's what turns a move into a visible
+  // animation instead of an instant snap. Every other case (first render, or a same-node update
+  // from a detective-only round) just places them directly, which is also what a plain
+  // destroy-and-recreate already did before this existed.
+  private renderMrX() {
     const mrX = this.gameState.mr_x;
     const pos = this.mapData.positions[String(mrX.current_node)];
-    if (pos) {
+    if (!pos) return; // Defensive only - every node has a position entry.
+
+    const cx = pos.x * RENDER_SCALE;
+    const cy = pos.y * RENDER_SCALE;
+    const isSurfacingRound = mrX.last_known_round === this.gameState.round_number;
+    const tooltipLines = [isSurfacingRound ? "Visible to Detectives" : "Invisible to Detectives"];
+    const existingPawn = this.pawns.get("mr_x");
+    const justMoved = this.lastMrXNode !== null && this.lastMrXNode !== mrX.current_node;
+
+    if (existingPawn && this.mrXHalo && justMoved) {
+      const halo = this.mrXHalo;
+      this.tweens.killTweensOf(existingPawn);
+      this.tweens.killTweensOf(halo);
+      this.tweens.add({
+        targets: [existingPawn, halo],
+        x: cx,
+        y: cy,
+        duration: MR_X_MOVE_DURATION_MS,
+        ease: MR_X_MOVE_EASE,
+      });
+      existingPawn.setAlpha(isSurfacingRound ? 1 : MR_X_HIDDEN_ALPHA);
+      this.makePawnHoverable(existingPawn, "Mr. X", mrX.current_node, tooltipLines);
+    } else {
+      existingPawn?.destroy();
+      this.mrXHalo?.destroy();
+
       // Drawn before the pawn below so it sits behind it in the display list - a ring around the
       // node, not a disc covering it, so both the pawn and the node's own marker/border remain
       // visible inside it, with zero gap (see nodeHaloBaseRadius()'s own comment). Two concentric
       // strokes at the same radius - a wider, low-alpha one for a soft glow and a thinner
       // full-alpha one for a crisp bright core - stand in for a blurred glow without an actual
-      // blur filter.
-      const cx = pos.x * RENDER_SCALE;
-      const cy = pos.y * RENDER_SCALE;
+      // blur filter. Circles are drawn at the graphics object's own local origin and positioned
+      // via setPosition (rather than passing cx/cy straight into strokeCircle) so a later move
+      // can tween its x/y like any other GameObject instead of needing a manual per-frame redraw.
       const mrXHaloRadius = this.nodeHaloBaseRadius(mrX.current_node) + MR_X_HALO_THICKNESS / 2;
       const halo = this.add.graphics();
       halo.lineStyle(MR_X_HALO_THICKNESS * 2 * RENDER_SCALE, MR_X_HALO_COLOR, 0.35);
-      halo.strokeCircle(cx, cy, mrXHaloRadius * RENDER_SCALE);
+      halo.strokeCircle(0, 0, mrXHaloRadius * RENDER_SCALE);
       halo.lineStyle(MR_X_HALO_THICKNESS * RENDER_SCALE, MR_X_HALO_CORE_COLOR, 0.9);
-      halo.strokeCircle(cx, cy, mrXHaloRadius * RENDER_SCALE);
+      halo.strokeCircle(0, 0, mrXHaloRadius * RENDER_SCALE);
+      halo.setPosition(cx, cy);
       this.mrXHalo = halo;
 
-      const isSurfacingRound = mrX.last_known_round === this.gameState.round_number;
       const pawn = this.add
-        .image(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, "pawn")
+        .image(cx, cy, "pawn")
         .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
         .setTint(MR_X_COLOR)
         .setAlpha(isSurfacingRound ? 1 : MR_X_HIDDEN_ALPHA);
-      this.makePawnHoverable(pawn, "Mr. X", mrX.current_node, [
-        isSurfacingRound ? "Visible to Detectives" : "Invisible to Detectives",
-      ]);
+      this.makePawnHoverable(pawn, "Mr. X", mrX.current_node, tooltipLines);
       this.pawns.set("mr_x", pawn);
     }
+
+    this.lastMrXNode = mrX.current_node;
   }
 
   // A pawn's own display bounds (its interactive hit area, since setInteractive() is called with
   // no explicit shape) are used as the hover target rather than a separate invisible hit circle
   // like the node markers get - the pawn image itself is the only thing a player would expect to
-  // hover to inspect it.
+  // hover to inspect it. Detectives always call this on a freshly-created pawn, but Mr. X's own
+  // pawn can be reused across renders (see renderMrX()) - clearing any previous listeners first
+  // keeps this idempotent either way, rather than stacking a duplicate pair on every re-render.
   private makePawnHoverable(pawn: Phaser.GameObjects.Image, label: string, node: number, extraLines: string[] = []) {
     pawn.setInteractive({ useHandCursor: true });
+    pawn.off("pointerover");
+    pawn.off("pointerout");
     pawn.on("pointerover", () => this.showPawnTooltip(pawn, [label, `Current Node ${node}`, ...extraLines]));
     pawn.on("pointerout", () => this.hidePawnTooltip());
   }
