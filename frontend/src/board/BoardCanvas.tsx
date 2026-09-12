@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { useEffect, useRef } from "react";
 import type { MapData, PublicGameState } from "../types";
-import { BOARD_HEIGHT, BOARD_WIDTH, BoardScene } from "./BoardScene";
+import { BOARD_HEIGHT, BOARD_WIDTH, BoardScene, RENDER_SCALE } from "./BoardScene";
 
 interface BoardCanvasProps {
   mapData: MapData;
@@ -34,8 +34,11 @@ export function BoardCanvas({ mapData, gameState, onNodeClick, highlightedNodeId
 
     const game = new Phaser.Game({
       type: Phaser.AUTO,
-      width: BOARD_WIDTH,
-      height: BOARD_HEIGHT,
+      // Rendered at RENDER_SCALE x the logical board size - Phaser.Scale.FIT still stretches this
+      // to the same CSS box (same aspect ratio), but the framebuffer now has enough source pixels
+      // for that stretch to no longer look blurred. See BoardScene.ts's RENDER_SCALE comment.
+      width: BOARD_WIDTH * RENDER_SCALE,
+      height: BOARD_HEIGHT * RENDER_SCALE,
       parent: containerRef.current,
       backgroundColor: "#f4f1ea",
       scale: {

@@ -2,10 +2,25 @@ import Phaser from "phaser";
 import { DETECTIVE_IDS, type MapData, type PublicGameState } from "../types";
 
 // board.svg's own viewBox (docs/map/board.svg) - node_positions.json's x/y coordinates are
-// already expressed in this same pixel space, not percentages, so no rescaling is needed beyond
-// what Phaser.Scale.FIT does for the canvas itself.
+// already expressed in this same 600x450 pixel space, not percentages. Every drawn position
+// below multiplies these logical coordinates by RENDER_SCALE (see its own comment) to place
+// things in the actual, larger framebuffer pixel space.
 export const BOARD_WIDTH = 600;
 export const BOARD_HEIGHT = 450;
+
+// Phaser.Scale.FIT stretches the game's base width/height (the actual WebGL framebuffer
+// resolution) up to fill its CSS container - at the plain 600x450 base resolution, that
+// container is typically ~950-1200 CSS px wide, plus devicePixelRatio on top, so the fixed
+// 600x450 framebuffer was being magnified roughly 2x and appearing blurred. BoardCanvas.tsx sets
+// the Phaser.Game config's actual width/height to BOARD_WIDTH/HEIGHT * RENDER_SCALE so the
+// framebuffer has enough source pixels that the same CSS-size stretch no longer needs to upscale
+// it (the same trick a "supersampled"/Retina-aware canvas uses) - every position and radius drawn
+// below is multiplied by this same RENDER_SCALE to match, since board.svg's own load.svg call is
+// rasterized at this scale too and every other GameObject needs to line up with it in the same
+// pixel space. (Deliberately not done via camera zoom - Phaser's Scale Manager/FIT-mode
+// interaction with a manually zoomed main camera turned out to not frame the world as expected;
+// plain coordinate multiplication has no such ambiguity.)
+export const RENDER_SCALE = 3;
 
 // NODE_RADIUS doubles as both the drawn (near-invisible) marker and its click/tap hit area -
 // kept generous rather than pixel-tight, since a 600x450 canvas scaled up to fill the board pane
@@ -60,18 +75,25 @@ export class BoardScene extends Phaser.Scene {
   }
 
   preload() {
-    this.load.image("board", "/board/board.svg");
+    // load.svg (not the generic load.image) rasterizes the vector source at a target resolution
+    // rather than the browser's default of the SVG's own declared intrinsic size (600x450) -
+    // that default was too low-res for 199 small numbered labels + thin line art on its own, even
+    // before the framebuffer-level magnification RENDER_SCALE (above) addresses.
+    this.load.svg("board", "/board/board.svg", { scale: RENDER_SCALE });
   }
 
   create() {
-    this.add.image(0, 0, "board").setOrigin(0, 0).setDisplaySize(BOARD_WIDTH, BOARD_HEIGHT);
+    this.add
+      .image(0, 0, "board")
+      .setOrigin(0, 0)
+      .setDisplaySize(BOARD_WIDTH * RENDER_SCALE, BOARD_HEIGHT * RENDER_SCALE);
 
     for (const node of this.mapData.nodes) {
       const pos = this.mapData.positions[String(node.id)];
       if (!pos) continue; // Defensive only - every node.json entry has a matching position entry.
 
-      const hitCircle = this.add.circle(pos.x, pos.y, NODE_RADIUS, 0xffffff, 0);
-      hitCircle.setStrokeStyle(1, 0x888888, 0.4);
+      const hitCircle = this.add.circle(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, NODE_RADIUS * RENDER_SCALE, 0xffffff, 0);
+      hitCircle.setStrokeStyle(1 * RENDER_SCALE, 0x888888, 0.4);
       hitCircle.setInteractive({ useHandCursor: true });
       hitCircle.on("pointerdown", () => this.onNodeClick?.(node.id));
     }
@@ -90,8 +112,8 @@ export class BoardScene extends Phaser.Scene {
       if (!detective) continue;
       const pos = this.mapData.positions[String(detective.node_id)];
       if (!pos) continue;
-      const pawn = this.add.circle(pos.x, pos.y, PAWN_RADIUS, DETECTIVE_COLORS[detId]);
-      pawn.setStrokeStyle(1, 0xffffff, 1);
+      const pawn = this.add.circle(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, PAWN_RADIUS * RENDER_SCALE, DETECTIVE_COLORS[detId]);
+      pawn.setStrokeStyle(1 * RENDER_SCALE, 0xffffff, 1);
       this.pawns.set(detId, pawn);
     }
 
@@ -99,8 +121,8 @@ export class BoardScene extends Phaser.Scene {
     if (mrXNode != null) {
       const pos = this.mapData.positions[String(mrXNode)];
       if (pos) {
-        const pawn = this.add.circle(pos.x, pos.y, PAWN_RADIUS, MR_X_COLOR);
-        pawn.setStrokeStyle(2, 0xffffff, 1);
+        const pawn = this.add.circle(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, PAWN_RADIUS * RENDER_SCALE, MR_X_COLOR);
+        pawn.setStrokeStyle(2 * RENDER_SCALE, 0xffffff, 1);
         this.pawns.set("mr_x", pawn);
       }
     }
@@ -127,8 +149,8 @@ export class BoardScene extends Phaser.Scene {
       const pos = this.mapData.positions[String(nodeId)];
       if (!pos) continue;
       const isSelected = nodeId === this.latestSelectedNodeId;
-      const ring = this.add.circle(pos.x, pos.y, HIGHLIGHT_RADIUS, 0, 0);
-      ring.setStrokeStyle(2, isSelected ? SELECTED_TARGET_COLOR : LEGAL_TARGET_COLOR, 1);
+      const ring = this.add.circle(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, HIGHLIGHT_RADIUS * RENDER_SCALE, 0, 0);
+      ring.setStrokeStyle(2 * RENDER_SCALE, isSelected ? SELECTED_TARGET_COLOR : LEGAL_TARGET_COLOR, 1);
       this.highlights.set(nodeId, ring);
     }
   }
