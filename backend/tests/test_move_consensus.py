@@ -20,6 +20,7 @@ from scotland_yard.agents import (
     apply_detective_move,
     fetch_legal_moves,
     get_collaboration_tier,
+    get_surfacing_proximity_prompt,
     other_detective_nodes,
     responders_for,
 )
@@ -30,6 +31,7 @@ from scotland_yard.rules_constants import (
     DETECTIVE_STARTING_TICKETS,
     MAX_ROUND,
     NUM_DETECTIVES,
+    SURFACING_ROUNDS,
 )
 
 
@@ -355,6 +357,40 @@ class TestCollaborationTiers:
     def test_collaboration_rises_monotonically_with_the_round(self):
         percentages = [get_collaboration_tier(r)[0] for r in range(1, MAX_ROUND + 1)]
         assert percentages == sorted(percentages)
+
+
+class TestSurfacingProximityPrompt:
+    """
+    The tapered onward_moves_after emphasis injected in the two rounds immediately before Mr. X
+    surfaces (project owner's design decision - gated purely on round_number). SURFACING_ROUNDS
+    is {3, 8, 13, 18, 24}, so the "1 round out" set is {2, 7, 12, 17, 23} and "2 rounds out" is
+    {1, 6, 11, 16, 22}.
+    """
+
+    def test_empty_outside_the_two_round_window(self):
+        affected = {r - 1 for r in SURFACING_ROUNDS} | {r - 2 for r in SURFACING_ROUNDS}
+        for round_number in range(1, MAX_ROUND + 1):
+            if round_number in affected:
+                continue
+            assert get_surfacing_proximity_prompt(round_number) == ""
+
+    @pytest.mark.parametrize("round_number", [r - 1 for r in SURFACING_ROUNDS])
+    def test_strongest_wording_one_round_before_surfacing(self, round_number):
+        text = get_surfacing_proximity_prompt(round_number)
+        assert "end of THIS round" in text
+        assert "onward_moves_after" in text
+
+    @pytest.mark.parametrize("round_number", [r - 2 for r in SURFACING_ROUNDS])
+    def test_softer_wording_two_rounds_before_surfacing(self, round_number):
+        text = get_surfacing_proximity_prompt(round_number)
+        assert "in 2 rounds" in text
+        assert "onward_moves_after" in text
+
+    def test_surfacing_rounds_themselves_get_no_guidance(self):
+        # Mr. X moves before detectives each round, so a detective playing IN a surfacing round
+        # already has the fresh reveal - the "it's coming" nudge belongs to the round before.
+        for round_number in SURFACING_ROUNDS:
+            assert get_surfacing_proximity_prompt(round_number) == ""
 
 
 def _play_out_round(state) -> dict:

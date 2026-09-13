@@ -42,6 +42,7 @@ from .rules_constants import (
     LLM_CALL_DEADLINE_SECONDS,
     MAX_ROUND,
     NUM_DETECTIVES,
+    SURFACING_ROUNDS,
     TURN_ACK_TIMEOUT_SECONDS,
 )
 from .state import ScotlandYardState
@@ -306,8 +307,56 @@ def get_collaboration_tier(round_number: int) -> tuple[int, str]:
     return COLLABORATION_TIERS[-1][1], COLLABORATION_TIERS[-1][2]
 
 
+# --- SURFACING-ROUND POSITIONING ---
+# In the two rounds immediately before Mr. X surfaces, "distance_to_mrx_zone" is progress
+# toward an estimate that is about to be replaced by his exact position - so positional
+# flexibility is worth emphasizing more than usual during that short window, tapering by how
+# many rounds remain. Deliberately a prompt-emphasis change only, not a new deterministic
+# annotation: "onward_moves_after" (annotate_onward_options) already measures exactly this -
+# how many next-round moves a candidate destination would leave, with THIS detective's actual
+# remaining tickets deducted - which a raw board-connectivity count (nodes/transport types)
+# would not, since a well-connected node is not actually more flexible for a detective who lacks
+# tickets for most of its connections. Gated purely on round_number (project owner's decision),
+# not on how close any particular detective already is to the zone.
+SURFACING_PROXIMITY_GUIDANCE = {
+    # 1 round out: the reveal lands before this detective's NEXT turn, so today's zone
+    # progress is about to be moot - flexibility now matters more than closing distance.
+    1: (
+        'Mr. X will reveal his exact position at the end of THIS round - before your next '
+        'turn. Today\'s "possible zone" estimate is about to be replaced by his real location, '
+        'so closing distance to it right now is worth less than usual. Strongly prefer '
+        'whichever legal destination leaves you with the highest "onward_moves_after" (the '
+        'most options next round), even at some cost to "distance_to_mrx_zone", so you can '
+        'react decisively the instant his real position is known.'
+    ),
+    # 2 rounds out: softer - still make real zone progress, but start weighing flexibility
+    # too, not just as a last-resort dead-end check.
+    2: (
+        'Mr. X will reveal his exact position in 2 rounds. Today\'s "possible zone" estimate '
+        'will soon be replaced by his real location, so start weighing a legal destination\'s '
+        '"onward_moves_after" (options next round) somewhat more than usual, alongside - not '
+        'instead of - closing "distance_to_mrx_zone".'
+    ),
+}
+
+
+def get_surfacing_proximity_prompt(round_number: int) -> str:
+    """
+    The SURFACING_PROXIMITY_GUIDANCE paragraph for however many rounds remain until Mr. X next
+    surfaces (checked in that order, though 1 and 2 rounds out can never both match at once -
+    SURFACING_ROUNDS are always at least 4 rounds apart) - empty everywhere else.
+    """
+    for rounds_remaining, text in SURFACING_PROXIMITY_GUIDANCE.items():
+        if round_number + rounds_remaining in SURFACING_ROUNDS:
+            return f"\n    {text}\n"
+    return ""
+
+
 def get_psychology_prompt(round_number: int, det_id: str) -> str:
-    """Injects the 3 goals plus the round's collaboration tendency, stated as a literal number."""
+    """
+    Injects the 3 goals, the round's collaboration tendency (stated as a literal number), and -
+    in the two rounds immediately before Mr. X surfaces - a nudge toward positional flexibility.
+    """
     percentage, label = get_collaboration_tier(round_number)
 
     return f"""
@@ -319,7 +368,7 @@ def get_psychology_prompt(round_number: int, det_id: str) -> str:
     COLLABORATION TENDENCY: {label} ({percentage}%). Round {round_number} of {MAX_ROUND}.
     {COLLABORATION_BEHAVIOR[label]}
     Weigh a teammate's argument at roughly {percentage}% against your own read of the board.
-
+    {get_surfacing_proximity_prompt(round_number)}
     STRICT RULE: NO TWO DETECTIVES CAN OCCUPY THE SAME NODE. Never name a node another
     detective is already standing on or has already committed to this round.
 

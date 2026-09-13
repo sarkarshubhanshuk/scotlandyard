@@ -236,6 +236,24 @@ it never move. Each `turn` node run is one detective's whole turn:
   ticket arithmetic is exactly the kind of thing it gets quietly wrong. Costs one integer per
   candidate.
 
+**Surfacing-Round Positioning** (`agents.py:get_surfacing_proximity_prompt`, injected by `get_psychology_prompt`)
+- In the two rounds immediately before Mr. X surfaces (`round_number + 1` or `+ 2` in
+  `SURFACING_ROUNDS`), an added paragraph tells detectives to weigh `onward_moves_after` more
+  heavily than usual — strongest one round out ("even at some cost to `distance_to_mrx_zone`"),
+  softer two rounds out ("alongside — not instead of" it). Nothing outside that two-round window
+  changes.
+- Deliberately **no new annotation** — `onward_moves_after` already measures the thing this is
+  after (how many next-round moves a candidate destination would leave, with *this* detective's
+  actual remaining tickets deducted). A raw board-connectivity count (nodes/transport types)
+  would be a cruder, ticket-blind version of the same signal, and `known_issues.md` ISSUE-016
+  already rejected a similarly-flavored addition on the small model's already-documented
+  reasoning-budget fragility (ISSUE-006/007). Reweighting existing data was chosen over adding
+  more of it.
+- Gated **purely on `round_number`**, shared verbatim by every one of a turn's six calls (same
+  mechanism as the collaboration-tendency paragraph below) — so it shapes the mover's proposal
+  and final decision *and* every other detective's advisory own-move preference identically,
+  with no per-detective distance check.
+
 **Collaboration tendency** (`agents.py:get_collaboration_tier`, `get_psychology_prompt`)
 - `get_psychology_prompt` keeps its three motivations unchanged (1. Team Win, 2. Selfish Glory,
   3. Efficiency). The ladder underneath them used to be a 3-step *desperation* scale whose job
@@ -342,6 +360,8 @@ ended, so `detectives` and `mr_x` are already current.
 - `backend/scotland_yard/agents.py:responders_for` — the cyclic response order for a given mover
 - `backend/scotland_yard/agents.py:get_psychology_prompt`, `get_collaboration_tier` — the 3 motivations and the
   round-based collaboration ladder
+- `backend/scotland_yard/agents.py:get_surfacing_proximity_prompt`, `SURFACING_PROXIMITY_GUIDANCE`
+  — the tapered `onward_moves_after` emphasis in the two rounds before Mr. X surfaces
 - `backend/scotland_yard/agents.py:MoveChoice`, `TurnResponseChoice` — the two fixed structured-output schemas
 - `backend/scotland_yard/agents.py:_invoke`, `_choose_move`, `_enforce_legal_node` — the per-call deadline, the
   one-retry wrapper, and the deterministic enforcement that backs it
