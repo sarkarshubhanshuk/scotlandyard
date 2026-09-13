@@ -32,9 +32,15 @@ if none fits. Don't renumber or delete old entries when one is fixed — flip it
 
 ---
 
-## Group A: Detective Move Decision Cycle (`propose_node` / `debate_node` / `vote_node`)
+## Group A: Detective Turn Cycle (`agents.py:turn_node`)
 
 See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
+
+**Note (2026-09-13, ADR-0009):** entries below that predate ADR-0009 refer to `propose_node`,
+`debate_node` and `vote_node` — the three nodes of the simultaneous propose/debate/vote
+consensus loop that turn-wise play replaced. They are left as written, per this log's own
+"don't rewrite history" discipline. Where such an entry is now moot because the code it
+describes no longer exists, its Status says so explicitly rather than the entry being deleted.
 
 ### ISSUE-001 — MCP tool-result unwrapping bug silently broke move legality end-to-end
 
@@ -414,8 +420,8 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
 
 ### ISSUE-009 — `timeout=45` does not bound observed call latency; its own comment was stale
 
-- **Status**: Partially Fixed (2026-09-13) — the stale comment is corrected; whether a real
-  wall-clock deadline is wanted remains open
+- **Status**: Fixed (2026-09-13) — stale comment corrected, and a real wall-clock deadline
+  added alongside the idle-gap timeout
 - **Area**: `backend/scotland_yard/llm_client.py:_build_chat_llm` (was `mcp_client.py`)
 - **Logged**: 2026-09-02
 - **Description**: The `ChatOpenAI(..., timeout=45, ...)` call site's own comment claims 45s
@@ -430,9 +436,15 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   semantics rather than claiming a wall-clock bound it does not provide, and ADR-0004 records
   why the timeout must exist at all (without it, a hung request blocks forever and neither the
   SDK's retry nor `agents.py`'s per-call fallback ever runs).
-- **Still open**: whether this workload actually wants a hard wall-clock deadline. Adding one
-  means wrapping each call in `asyncio.wait_for`, which would need a decision about what a
-  timed-out detective does — fall back to its previous proposal, or abstain from the round.
+- **Fix (2026-09-13, completing this entry)**: turn-wise play (ADR-0009) settled the open
+  question. Under the old design a straggler overlapped four concurrent siblings, so a slow call
+  cost little; with all 30 of a round's calls sequential, one slow call adds its full duration to
+  the round. `agents.py:_invoke` now wraps every call in
+  `asyncio.wait_for(LLM_CALL_DEADLINE_SECONDS)` (90s, in `rules_constants.py`) *in addition to*
+  the idle-gap `timeout=45`, which is kept for what it genuinely does. The question of what a
+  timed-out detective does is answered by the same deterministic path an illegal answer takes:
+  `_invoke` returns `None`, and `_enforce_legal_node` assigns that detective its lowest-numbered
+  free legal move — never a forfeit, since a detective must move when a legal move exists.
 
 ---
 
@@ -463,6 +475,13 @@ subsection.
 - **Note**: the *cross-loop* variant of this — a pending detective being voted onto a node
   locked in an EARLIER loop — was a real and reachable bug, and is tracked separately as
   ISSUE-025.
+- **Update (2026-09-13, ADR-0009)**: moot. There is no vote, so there are no tallies to collide.
+  `VOTE_THRESHOLD` and its assert are gone from `rules_constants.py`, and
+  `test_vote_threshold_is_a_strict_majority` with them. Under turn-wise play the collision this
+  entry worried about is prevented one step earlier: a later mover is never *offered* a node an
+  earlier one committed to, so it cannot be chosen in the first place. Worth knowing if
+  simultaneous decisions ever return — the arithmetic argument above would need to come back
+  with them.
 
 ### ISSUE-011 — React/Phaser frontend does not exist yet
 
@@ -749,6 +768,11 @@ case, the original entry has been updated too, rather than left to contradict th
   `reserved_nodes` explicitly, so they cannot drift again. The vote prompt gained the "Already
   Locked Moves" block for parity with propose and debate. Covered by
   `tests/test_move_consensus.py::TestFetchLegalMoves`.
+- **Update (2026-09-13, ADR-0009)**: the *shape* of this bug is now unreachable rather than
+  merely fixed. Turn-wise play has exactly one place that computes legal moves — the mover's own
+  turn — so there are no two call sites left to drift apart. `reserved_nodes` (now carrying
+  `committed_moves`) survives unchanged and is doing more work than ever: it is the whole
+  collision guarantee, not one of several overlapping checks.
 
 ### ISSUE-026 — `finalize_round_node`'s fallback path produced colliding destinations by construction
 
@@ -776,6 +800,138 @@ case, the original entry has been updated too, rather than left to contradict th
   that detective's own lowest-numbered free legal move, and only stays put if it genuinely has
   none. `finalize_round_node` then asserts uniqueness outright (see ISSUE-014). Covered by
   `tests/test_move_consensus.py::TestFallbackResolution`.
+- **Update (2026-09-13, ADR-0009)**: moot — there is no fallback path. Every turn ends in a
+  committed move, so `finalize_round_node` has nothing to resolve and
+  `_resolve_fallback_moves` is gone. `finalize_round_node` now raises if a detective reaches it
+  with no commitment at all, and still asserts destination uniqueness (ISSUE-014) as defence in
+  depth, even though the paths that assert was written for can no longer fire. The
+  `final_move_details` caveat above stands as history: the preview is still computed against
+  pre-move positions, but there is no longer a way for two detectives to reach it holding the
+  same destination.
+
+### ISSUE-035 — Detective rounds were unreadable: 15 messages arrived at once, up to 3 times per round
+
+- **Status**: Fixed (2026-09-13) — see **ADR-0009**
+- **Area**: `backend/scotland_yard/agents.py`, `graph.py`, `state.py`, `rules_constants.py`,
+  `serializers.py`, `server.py`, `frontend/src/hooks/useRoundStream.ts`,
+  `frontend/src/components/ChatLog.tsx`
+- **Logged**: 2026-09-13
+- **Description**: All five detectives decided simultaneously (propose concurrently → debate
+  sequentially → vote concurrently, looping up to 3×). Move *quality* was fine; legibility was
+  not. A round delivered three bursts of five messages, up to three times over, and the human
+  player could not follow which detective was arguing for what, or why any given move happened.
+  Two compounding causes: a simultaneous decision has no natural narrative order for the
+  frontend to impose, and `serialize_loop_event` only fired once an entire stage had finished,
+  so the Chat Log alternated between frozen and flooded.
+- **Fix**: Turn-wise play. Detectives take turns in fixed `DETECTIVE_IDS` order; each turn is
+  the mover's proposal, one response from each of the other four (sequential, cyclic order from
+  the mover's successor), then the mover's binding decision — six LLM calls, 30 per round.
+  `agents.py:turn_node` emits a custom stream event **per LLM call**, so messages arrive at
+  roughly reading pace instead of five at a time, and `ChatLog` groups them into five turns.
+- **What it cost**: latency. Nothing in a turn can be parallelized, so the critical path goes
+  from 7 sequential call-slots per loop (7–21 per round) to a flat 30 — roughly 2.2 min per
+  round against 30–90s. Accepted deliberately; perceived wait is better even though wall-clock
+  is worse. Token cost is roughly flat (~31k input tokens/round against 25k–76k) and now
+  predictable, because each call carries one or two detectives' option lists rather than all
+  five.
+- **What it retired**: `VOTE_THRESHOLD`, `MAX_DEBATE_LOOPS`, `locked_moves`,
+  `debate_loop_count`, `proposed_strategies`, `debate_positions`, `find_proposal_conflicts`,
+  `_resolve_fallback_moves`'s de-duplication, and the dynamic per-loop schemas. See ISSUE-010,
+  ISSUE-025 and ISSUE-026, each annotated with what turn-wise play does instead.
+- **Related**: closes the still-open half of ISSUE-009 (a real wall-clock deadline per call),
+  which sequential calls made necessary rather than merely nice.
+
+### ISSUE-036 — Detective moves were applied all at once, so the board showed a turn-wise round as a simultaneous scramble
+
+- **Status**: Fixed (2026-09-13) — see **ADR-0010**
+- **Area**: `backend/scotland_yard/agents.py`, `graph.py`, `round_resolver.py`, `state.py`,
+  `session.py`, `server.py`, `frontend/src/board/BoardScene.ts`, `hooks/useRoundStream.ts`
+- **Logged**: 2026-09-13
+- **Description**: ADR-0009 made detectives take turns, but a turn only *committed* a
+  destination - all five moves were applied together by `resolve_round` at the end of the round.
+  Two consequences, both wrong:
+  1. **The board contradicted the narrative.** Five pawns jumped to their new nodes at once when
+     the round resolved, so a round deliberated one detective at a time was still *shown* as a
+     simultaneous scramble. The legibility ADR-0009 bought in the Chat Log was thrown away on the
+     board. Detective pawns were also destroyed and recreated on every render, so they could only
+     ever teleport - the tween ISSUE-030's fix gave Mr. X had no equivalent for them.
+  2. **It was a rules deviation.** `rules.md` §2 has detectives "moving in sequential order",
+     each receiving "the current board state". Committing-without-moving needed a `reserved_nodes`
+     set to prevent collisions, and that set blocked each mover's **origin** for the rest of the
+     round as well as its destination - a node Agent Red had walked away from stayed unusable by
+     everyone until the round ended, which the rules never ask for.
+- **Fix**: `agents.py:apply_detective_move` moves the detective, transfers its ticket and decides
+  capture at the end of its own turn. `fetch_legal_moves` loses `reserved_nodes` (occupancy is
+  now just "where the other four are standing", which is exact); the Mr. X zone BFS is recomputed
+  per turn rather than memoized per round, since its occupancy input genuinely changes five times
+  a round; capture ends the round where it happens via `captured_by` and the graph's router;
+  `resolve_round` keeps only the whole-round win conditions. Every pawn is reused across renders
+  and tweened over `PAWN_MOVE_DURATION_MS`, and the next detective's first LLM call waits for the
+  previous pawn to land - via a `POST /turn-ack` handshake for detectives, and by holding the
+  round stream closed for the animation's duration for Mr. X.
+- **Bounded by design**: the wait always has a timeout (`TURN_ACK_TIMEOUT_SECONDS`). Nobody may
+  be watching (ISSUE-027), the tab may be backgrounded with its tweens throttled, or the
+  connection may have dropped; timing out logs at INFO and continues rather than stalling.
+- **Cost**: ~6s per round of animation on top of ADR-0009's ~2.2min. Deliberate - it is what
+  makes the round watchable.
+- **Testing note**: httpx's `ASGITransport` buffers a streaming response rather than delivering
+  it incrementally, so an in-process test of this handshake sees every event arrive at once after
+  the round finishes, and every ack rejected as stale. Verifying it needs a real server over a
+  real socket. `test_round_stream_concurrency.py` stubs the loop entirely and is unaffected.
+
+### ISSUE-037 — LangGraph silently passes no config to a node whose `config` parameter is not annotated `RunnableConfig`
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/scotland_yard/agents.py:turn_node`
+- **Logged**: 2026-09-13
+- **Description**: `turn_node` needs the `GameSession` to run the pawn-animation handshake, and
+  it is threaded through LangGraph's `config` (`astream(..., config={"configurable": {...}})`)
+  rather than through graph state, so a live orchestration object stays out of the serializable
+  state. Declared as `async def turn_node(state, config: Optional[dict] = None)`, `config`
+  arrived as **None** on every call - LangGraph decides whether to hand a node its config by
+  inspecting that parameter's *annotation*, and an unrecognised one is passed nothing rather than
+  raising. The failure is silent and looks exactly like a working handshake that never fires:
+  `session` was None, so no ack was ever armed, every client ack was rejected as unmatched, and
+  every turn waited out its full timeout.
+- **Evidence**: a minimal two-node graph with an unannotated `config=None` parameter *did*
+  receive the config, which is what narrowed it to the annotation rather than the parameter name.
+- **Fix**: annotate it `config: RunnableConfig`. The annotation carries a comment saying it is
+  load-bearing, since it reads like decoration and removing it fails quietly.
+
+### ISSUE-038 — Negative depths put the turn halo and the last-known ghost *behind* the board, so neither ever rendered
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `frontend/src/board/BoardScene.ts`
+- **Logged**: 2026-09-13
+- **Description**: Both newly added board markers - the turn halo (ADR-0011) and Mr. X's
+  last-known-location ghost (ADR-0012) - were created, positioned, and `visible: true`, yet
+  neither appeared on screen.
+
+  Phaser depth-sorts the entire display list as soon as *any* object sets a depth, falling back
+  to insertion order only within one depth value. The board background is a full-bleed **opaque**
+  image at the default depth `0`. Both markers had been given *negative* depths - `-1` for the
+  halo, `-0.5` for the ghost - on the reasoning that "behind the pawns" meant "below zero". That
+  reasoning was half right: it did put them behind the pawns, but it also put them behind the
+  board artwork, which then painted straight over them.
+
+  The halo inherited this from Mr. X's own original `ensureMrXHalo`, which used `setDepth(-1)`
+  too - so Mr. X's personal halo had almost certainly never rendered either, and the halos
+  players *did* see were the legal-target rings, which set no depth at all and therefore landed
+  at depth `0` after the board in insertion order.
+- **Evidence**: the live display list, after `depthSort()`, ordered: turn halo (index 0), ghost
+  (index 1), **board background (index 2)**, … pawns (index 207). Anything at an index below the
+  board is drawn before it and covered by it.
+- **Root cause, generalized**: depth was set on *some* objects and left implicit on others, so
+  the layering was partly explicit and partly an accident of call order - which is exactly the
+  kind of arrangement that looks fine until one new object is added at the wrong end of it.
+- **Fix**: a single named depth ladder in `BoardScene.ts`, applied to **every** object it adds -
+  `DEPTH_BOARD` (0, map + node hit circles), `DEPTH_HALO` (1, turn halo + legal-target rings),
+  `DEPTH_GHOST` (2), `DEPTH_PAWN` (3), `DEPTH_TOOLTIP` (1000). Nothing on this board relies on
+  insertion order any more, and the intended stacking can be read in one place.
+- **Note on how this got missed**: it was "verified" from zoomed screenshot crops, in which
+  board.svg's own concentric node markers and the legal-target rings were mistaken for the new
+  markers. Small JPEG crops of a 199-node board are not sufficient evidence that a specific new
+  object rendered; inspecting the scene's display list is, and is what actually found this.
 
 ### ISSUE-027 — `round/stream`'s status check sat outside the lock, so two subscribers ran the detective loop twice
 

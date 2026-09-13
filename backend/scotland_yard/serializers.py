@@ -1,3 +1,5 @@
+from typing import Optional
+
 from .session import GameSession
 
 # Ticket counts are always visible to everyone (rules.md: "Inventory Visibility"). current_node
@@ -41,24 +43,23 @@ def serialize_public_state(session: GameSession) -> dict:
 def serialize_loop_event(node_name: str, update: dict) -> dict:
     """
     Translates one raw LangGraph "updates"-mode chunk (from round_resolver.run_detective_loop)
-    into a JSON-safe event for the SSE stream. Only "debate" updates need real translation - its
-    `messages` list holds LangChain message objects, not plain data; every other node's update
-    is already JSON-safe as-is.
+    into a JSON-safe event for the SSE stream.
+
+    Only "finalize" is translated here. Everything a turn produces reaches the client through
+    agents.py's per-call custom stream events instead (see run_detective_loop): a node-level
+    update only arrives once the whole six-call turn has finished, which is exactly the
+    all-at-once delivery turn-wise play exists to get rid of. A "turn" update is therefore
+    swallowed rather than re-sent - its content has already been streamed, call by call.
     """
-    if node_name == "propose":
-        return {"type": "proposal", "proposed_strategies": update.get("proposed_strategies", {})}
-    if node_name == "debate":
-        messages = update.get("messages", [])
-        return {"type": "debate", "transcript": messages[-1].content if messages else ""}
-    if node_name == "vote":
-        return {
-            "type": "vote_tally",
-            "locked_moves": update.get("locked_moves", {}),
-            "loop_number": update.get("debate_loop_count"),
-        }
     if node_name == "finalize":
         # final_move_details (not the plain final_moves int map) is what the client actually
         # renders - {det_id: {"from_node", "to_node", "transport"}} - see
         # graph.py:finalize_round_node for why it's computed there rather than here.
         return {"type": "round_finalized", "final_moves": update.get("final_move_details", {})}
-    return {"type": "unknown", "node": node_name}
+    return {"type": "turn_finished", "detective": _committed_detective(update)}
+
+
+def _committed_detective(update: dict) -> Optional[str]:
+    """Which detective the just-finished turn belonged to, from its committed_moves update."""
+    committed = update.get("committed_moves") or {}
+    return next(iter(committed), None)

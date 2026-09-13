@@ -28,7 +28,7 @@ SEED_POSITIONS = {
     "agent_red": 26,
     "agent_blue": 29,
     "agent_green": 34,
-    "agent_yellow": 50,
+    "agent_orange": 50,
     "agent_purple": 53,
 }
 

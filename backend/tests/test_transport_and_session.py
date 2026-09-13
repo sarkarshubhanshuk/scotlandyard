@@ -19,6 +19,8 @@ from scotland_yard.rules_constants import (
 from scotland_yard.session import GAMES, SESSION_TTL_SECONDS, _evict_stale_games, create_game
 from scotland_yard.transport import determine_move_transport, pick_transport
 
+from .conftest import SEED_POSITIONS
+
 
 class TestPickTransport:
     def test_prefers_the_ticket_type_the_detective_holds_most_of(self):
@@ -134,3 +136,61 @@ class TestSessionEviction:
 
     def teardown_method(self):
         GAMES.clear()
+
+
+class TestPawnAckHandshake:
+    """
+    session.py's half of the pawn-animation handshake (ADR-0010). The turn loop arms it before
+    telling the client a detective has moved, then waits for the client to say the animation
+    finished - bounded, because a round must survive nobody watching.
+    """
+
+    def test_an_ack_matching_the_armed_move_releases_the_wait(self):
+        s = create_game(seed_positions=SEED_POSITIONS)
+        s.expect_pawn_ack(3, "agent_red")
+        assert s.acknowledge_pawn_settled(3, "agent_red") is True
+
+    def test_an_ack_for_a_different_turn_is_ignored(self):
+        """
+        A late ack for the PREVIOUS turn must never release the current one - the client is not
+        taken on faith any more than an LLM is.
+        """
+        s = create_game(seed_positions=SEED_POSITIONS)
+        s.expect_pawn_ack(3, "agent_blue")
+
+        assert s.acknowledge_pawn_settled(3, "agent_red") is False   # wrong detective
+        assert s.acknowledge_pawn_settled(2, "agent_blue") is False  # wrong round
+        assert s.acknowledge_pawn_settled(3, "agent_blue") is True
+
+    def test_an_ack_arriving_before_anything_is_armed_is_ignored(self):
+        s = create_game(seed_positions=SEED_POSITIONS)
+        assert s.acknowledge_pawn_settled(1, "agent_red") is False
+
+    async def test_waiting_returns_true_once_acked(self):
+        s = create_game(seed_positions=SEED_POSITIONS)
+        s.expect_pawn_ack(1, "agent_red")
+        s.acknowledge_pawn_settled(1, "agent_red")
+
+        assert await s.await_pawn_settled(timeout=1.0) is True
+
+    async def test_waiting_times_out_rather_than_stalling_the_round(self):
+        """
+        The property that matters most: nobody may be watching (the round runs whether or not a
+        client is listening - ISSUE-027), so this must always come back.
+        """
+        s = create_game(seed_positions=SEED_POSITIONS)
+        s.expect_pawn_ack(1, "agent_red")
+
+        assert await s.await_pawn_settled(timeout=0.05) is False
+
+    async def test_a_timed_out_wait_disarms_so_a_stale_ack_cannot_leak_into_the_next_turn(self):
+        s = create_game(seed_positions=SEED_POSITIONS)
+        s.expect_pawn_ack(1, "agent_red")
+        await s.await_pawn_settled(timeout=0.05)
+
+        assert s.awaiting_ack is None
+        assert s.acknowledge_pawn_settled(1, "agent_red") is False
+
+    async def test_waiting_with_nothing_armed_returns_immediately(self):
+        s = create_game(seed_positions=SEED_POSITIONS)
+        assert await s.await_pawn_settled(timeout=5.0) is True

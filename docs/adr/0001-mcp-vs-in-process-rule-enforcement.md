@@ -6,6 +6,10 @@
 
 ## Context
 
+> **Naming note (ADR-0009):** `propose_node`, `debate_node` and `vote_node` were replaced by a single
+> `agents.py:turn_node` when detectives moved to turn-wise play. The decision recorded here is
+> unaffected — read those names as "the detective-facing LLM calls".
+
 The project was originally built around a claim stated in both `README.md` and `CLAUDE.md`:
 an MCP (Model Context Protocol) server holds the board and exposes `get_valid_moves`, and the
 agents must query it, so they *cannot* hallucinate an illegal move.

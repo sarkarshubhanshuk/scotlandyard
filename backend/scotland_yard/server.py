@@ -20,7 +20,7 @@ from starlette.routing import Route
 from .game_master import map_data, node_positions
 from .logging_config import configure_logging, game_log_context
 from .mrx_turn import IllegalMoveError, get_mr_x_legal_moves, submit_mr_x_move
-from .requests import MR_X_MOVE_ADAPTER, Hop2PreviewQuery
+from .requests import MR_X_MOVE_ADAPTER, Hop2PreviewQuery, TurnAckRequest
 from .round_resolver import resolve_round, run_detective_loop
 from .serializers import serialize_loop_event, serialize_public_state
 from .session import GAMES, create_game
@@ -147,6 +147,39 @@ async def mrx_move_route(request: Request) -> JSONResponse:
         return JSONResponse(serialize_public_state(session))
 
 
+async def turn_ack_route(request: Request) -> JSONResponse:
+    """
+    The client reporting that a detective's pawn has finished moving (ADR-0010), which is what
+    releases the next detective's turn.
+
+    Deliberately does NOT take `session.lock`: the lock is held for the entire duration of the
+    detective loop by round_stream_route, and this request exists precisely to unblock that
+    loop from the inside. Waiting on the lock would deadlock the round against itself.
+
+    Always returns 200 with whether the ack was actually applied. A mismatched or late ack is a
+    normal race (the loop may already have timed out and moved on), not a client error - there
+    is nothing useful for the client to do about it, and nothing it should retry.
+    """
+    session = _get_session(request)
+    if session is None:
+        return _error("Game not found.", 404)
+
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return _error("Malformed request - body is not valid JSON.", 400)
+
+    try:
+        ack = TurnAckRequest(**body) if isinstance(body, dict) else TurnAckRequest()
+    except ValidationError as e:
+        return _validation_error(e)
+    except TypeError:
+        return _error("Malformed request - body must be a JSON object.", 400)
+
+    applied = session.acknowledge_pawn_settled(ack.round_number, ack.detective)
+    return JSONResponse({"applied": applied})
+
+
 async def round_stream_route(request: Request):
     session = _get_session(request)
     if session is None:
@@ -183,8 +216,14 @@ async def round_stream_route(request: Request):
                     return
 
                 async for event in run_detective_loop(session):
-                    if event["type"] == "stage_started":
-                        payload = {"type": "stage_started", "stage": event["stage"]}
+                    if event["type"] == "turn_event":
+                        # One LLM call's worth of a detective's turn, streamed the moment it
+                        # completed. agents.py names the event ("turn_started",
+                        # "turn_proposal", "turn_response", "turn_decision"); the SSE event
+                        # name is taken from that so the client can register one listener per
+                        # kind, exactly as it does for the node-level events below.
+                        turn_event = dict(event["payload"])
+                        payload = {"type": turn_event.pop("event"), **turn_event}
                     else:
                         payload = serialize_loop_event(event["node"], event["update"])
                     yield {"event": payload["type"], "data": json.dumps(payload)}
@@ -220,6 +259,7 @@ app = Starlette(
         Route("/games/{game_id}/mrx/legal-moves", mrx_legal_moves_route, methods=["GET"]),
         Route("/games/{game_id}/mrx/move", mrx_move_route, methods=["POST"]),
         Route("/games/{game_id}/round/stream", round_stream_route, methods=["GET"]),
+        Route("/games/{game_id}/turn-ack", turn_ack_route, methods=["POST"]),
     ],
     middleware=[
         Middleware(

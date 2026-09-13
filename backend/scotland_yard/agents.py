@@ -1,17 +1,51 @@
+"""
+One detective's turn, as driven by graph.py's `turn` node.
+
+Play is turn-wise (ADR-0009): Mr. X moves, then the five detectives take their turns one at a
+time in DETECTIVE_IDS order. A single turn is three phases and six LLM calls:
+
+    1. The mover proposes a destination for itself and broadcasts it.          (1 call)
+    2. Every other detective responds once, sequentially, in cyclic order      (4 calls)
+       starting from the mover's immediate successor. Each response is
+       ADVISORY - a responder states its own current preference but reserves
+       nothing and is free to decide differently on its own turn.
+    3. The mover, having heard all four, commits its final destination.        (1 call)
+
+The move is then APPLIED immediately - the detective physically moves, its ticket transfers to
+Mr. X, and capture is checked - so the next detective deliberates against a board that already
+reflects it (rules.md section 2: "A full Round consists of Mr. X moving first, followed by
+Detectives 1 through 5 moving in sequential order", and "At the start of each turn, the active
+AI agent receives the current board state"). The turn then waits for the client to finish
+animating that pawn before returning, so the next detective does not start deliberating over a
+board that is still visibly rearranging itself. See ADR-0010.
+
+Nothing here trusts the model's output: every node the LLM names is re-checked against a
+legal-move set this module computed itself, and a failed check is resolved deterministically
+rather than retried indefinitely.
+"""
 import asyncio
 import json
 import logging
-from collections import defaultdict
 from typing import Optional
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, Field
 
 from .game_master import compute_distances_to_zone, compute_mrx_zone, compute_valid_moves
 from .llm_client import get_debate_llm, get_detective_llm
-from .rules_constants import AGENT_DISPLAY_NAMES, DETECTIVE_IDS, MAX_DEBATE_LOOPS, VOTE_THRESHOLD
+from .rules_constants import (
+    AGENT_DISPLAY_NAMES,
+    COLLABORATION_TIERS,
+    DETECTIVE_IDS,
+    LLM_CALL_DEADLINE_SECONDS,
+    MAX_ROUND,
+    NUM_DETECTIVES,
+    TURN_ACK_TIMEOUT_SECONDS,
+)
 from .state import ScotlandYardState
+from .transport import determine_move_transport
 
 logger = logging.getLogger(__name__)
 
@@ -21,22 +55,31 @@ def agent_names(det_ids) -> str:
     return ", ".join(AGENT_DISPLAY_NAMES[d] for d in det_ids)
 
 
-def fetch_legal_moves(state: ScotlandYardState, det_ids: list, reserved_nodes: set) -> tuple[dict, dict]:
+def responders_for(mover_id: str) -> list[str]:
     """
-    The legal target nodes each detective in `det_ids` can reach this turn, as both a
+    The order the other four detectives respond in during `mover_id`'s turn: cyclic
+    DETECTIVE_IDS order starting from the mover's immediate successor, so Agent Green's turn is
+    answered by Orange, Purple, Red, Blue. Every non-mover responds exactly once.
+    """
+    start = DETECTIVE_IDS.index(mover_id)
+    return [DETECTIVE_IDS[(start + offset) % NUM_DETECTIVES] for offset in range(1, NUM_DETECTIVES)]
+
+
+def fetch_legal_moves(state: ScotlandYardState, det_ids: list) -> tuple[dict, dict]:
+    """
+    The legal target nodes each detective in `det_ids` can reach right now, as both a
     displayable list (for prompt text) and a set (for validating LLM output against).
 
-    Shared by propose_node and vote_node deliberately. These were previously two separate
-    `fetch_moves` closures, and they had silently drifted: propose_node excluded
-    `reserved_nodes` (destinations already locked by an earlier debate loop) while vote_node
-    did not, so from loop 2 onward a still-pending detective could legally be voted onto a
-    node another detective had already locked. The resulting duplicate destination survived
-    all the way to resolve_round, which then silently forfeited the second detective's turn.
-    See docs/issues/known_issues.md ISSUE-025.
+    Occupancy is simply every OTHER detective's current node. That is the whole collision
+    guarantee, and it is exact rather than approximate because a detective's move is applied
+    the moment its turn ends (ADR-0010): by the time the next detective asks this question, an
+    earlier mover is genuinely standing on its new node and has genuinely vacated its old one.
 
-    `reserved_nodes` is the set of already-locked destinations. A locked detective is still
-    physically standing on their OLD node until the round is finalized, so their destination
-    has to be excluded explicitly - it does not show up in the occupied-node set.
+    This used to need a `reserved_nodes` argument. Moves were committed during the turn but not
+    applied until the round finalized, so a committed detective was still physically on its old
+    node and its destination had to be excluded by hand - and that node stayed blocked for the
+    rest of the round even though nobody was on it any more, which rules.md never asked for.
+    Applying per turn removes both the extra argument and that phantom occupancy.
 
     Board legality is computed in-process via game_master.compute_valid_moves rather than
     over MCP: these are lookups this code makes on the agents' behalf, not model-initiated
@@ -47,7 +90,7 @@ def fetch_legal_moves(state: ScotlandYardState, det_ids: list, reserved_nodes: s
     legal_move_sets = {}
     for det_id in det_ids:
         d_info = state["detectives"][det_id]
-        occupied = list((all_detective_nodes - {d_info["node_id"]}) | reserved_nodes)
+        occupied = list(all_detective_nodes - {d_info["node_id"]})
         moves = compute_valid_moves(
             d_info["node_id"], d_info["taxi_tickets"], d_info["bus_tickets"],
             d_info["metro_tickets"], black_tickets=0, occupied_nodes=occupied,
@@ -64,52 +107,94 @@ def annotate_zone_distances(legal_moves_context: dict, distances_to_zone: dict) 
             move["distance_to_mrx_zone"] = distances_to_zone.get(move["target_node"])
 
 
-# --- DYNAMIC SCHEMAS FOR STRUCTURED LLM OUTPUT ---
-# Built fresh each loop from only the still-undecided ("pending") detectives, so once a
-# detective's move locks, the LLM is never even asked to fill in a field for them again -
-# this is what actually saves the call/token cost, on top of skipping locked *voters*.
-def build_strategy_schema(pending_targets: list) -> type[BaseModel]:
-    fields = {
-        "rationale": (str, Field(description="Crisp rationale focusing on team win and your selfish goals"))
-    }
-    for det_id in pending_targets:
-        fields[f"{det_id}_move"] = (
-            int, Field(description=f"Must be selected from {AGENT_DISPLAY_NAMES[det_id]}'s legal moves")
-        )
-    return create_model("StrategyProposal", **fields)
-
-def build_ballot_schema(pending_targets: list) -> type[BaseModel]:
-    fields = {
-        f"{det_id}_vote": (
-            int, Field(description=f"Target node you vote for {AGENT_DISPLAY_NAMES[det_id]} to take")
-        )
-        for det_id in pending_targets
-    }
-    return create_model("VotingBallot", **fields)
-
-def build_debate_position_schema(pending_targets: list) -> type[BaseModel]:
+def other_detective_nodes(state: ScotlandYardState, exclude_det_id: str) -> list:
     """
-    ISSUE-004 fix: gives each debate speaker's single LLM call a structured stance alongside
-    its free-text pitch, at no extra call cost. Previously the only record of a speaker's
-    position was the pitch's prose, which vote_node's cast_ballot never even saw - voters had
-    to infer "what everyone landed on after debate" from a 2-3 sentence paraphrase (or nothing,
-    before ISSUE-003 was fixed). "{det_id}_position" is that speaker's own current preferred
-    node for det_id, given everything argued so far - not a proposal for the team, just their
-    stated stance, the same way build_ballot_schema's "{det_id}_vote" works for voting.
+    Where the other four detectives are standing right now.
+
+    Positions are live under per-turn application (ADR-0010), so this needs no projection: a
+    detective that has already moved this round is already on its new node. It previously had
+    to merge in `committed_moves` by hand, because a committed detective had not physically
+    moved yet.
     """
-    fields = {
-        "pitch": (str, Field(description="Your 2-3 sentence pitch/argument for this turn"))
-    }
-    for det_id in pending_targets:
-        fields[f"{det_id}_position"] = (
-            int, Field(description=f"Your current preferred node for {AGENT_DISPLAY_NAMES[det_id]}, given the debate so far")
-        )
-    return create_model("DebatePosition", **fields)
+    return [
+        info["node_id"]
+        for det_id, info in state["detectives"].items()
+        if det_id != exclude_det_id
+    ]
+
+
+def annotate_onward_options(
+    state: ScotlandYardState, det_id: str, legal_moves_context: dict
+) -> None:
+    """
+    Adds "onward_moves_after" to every candidate: how many distinct nodes `det_id` would still
+    be able to reach NEXT round from that destination, with the ticket it would have spent
+    getting there already deducted.
+
+    This is what keeps a detective from stranding itself - a candidate whose
+    onward_moves_after is 0 is a dead end, and one that costs the last metro ticket to reach a
+    metro-only junction shows up as a sharply lower number than its neighbours. Computed
+    deterministically here rather than left to the model to reason out, for the same reason
+    distance_to_mrx_zone is (ISSUE-005): it is a cheap board lookup, and asking a small model
+    to simulate ticket arithmetic is exactly the kind of thing it gets quietly wrong.
+
+    Which ticket a move spends is resolved by transport.determine_move_transport - the same
+    helper resolve_round uses to actually deduct it - so this can never disagree with what the
+    move will really cost. Costs one integer per candidate in prompt text.
+    """
+    detective = state["detectives"][det_id]
+    occupied_now = other_detective_nodes(state, det_id)
+    onward_cache: dict[int, Optional[int]] = {}
+
+    for move in legal_moves_context.get(det_id, []):
+        target = move.get("target_node")
+        if target is None:
+            continue
+        if target not in onward_cache:
+            transport = determine_move_transport(detective, target, occupied_now)
+            if transport is None:
+                onward_cache[target] = None
+            else:
+                remaining = dict(detective)
+                remaining[f"{transport}_tickets"] -= 1
+                onward = compute_valid_moves(
+                    target, remaining["taxi_tickets"], remaining["bus_tickets"],
+                    remaining["metro_tickets"], black_tickets=0,
+                    # This detective has vacated its old node by then, so only the other four
+                    # constrain it. Detectives later in the turn order will move again before
+                    # this lookahead comes true, so it is a snapshot, not a guarantee.
+                    occupied_nodes=occupied_now,
+                )
+                onward_cache[target] = len({m["target_node"] for m in onward if "target_node" in m})
+        move["onward_moves_after"] = onward_cache[target]
+
+
+# --- STRUCTURED LLM OUTPUT SCHEMAS ---
+# Fixed, not built per call. Under the old simultaneous design every call had to name a node
+# for all five detectives, so the schemas were generated dynamically from whichever ones were
+# still undecided. Turn-wise play means each call decides exactly one node, which makes these
+# static - and makes each structured response small enough that the reasoning-budget
+# truncation failure documented in ISSUE-006/007 has far less room to occur.
+class MoveChoice(BaseModel):
+    """The mover's own destination, used for both its opening proposal and its final decision."""
+    target_node: int = Field(description="The node YOU will move to. Must be one of your legal moves.")
+    rationale: str = Field(description="Crisp rationale - 2-3 sentences - for this destination")
+
+
+class TurnResponseChoice(BaseModel):
+    """One non-mover's advisory answer to the mover's proposal."""
+    response: str = Field(
+        description="Your 2-3 sentence response to the proposal on the table - agree, or say why it is wrong"
+    )
+    preferred_node: int = Field(
+        description="The node YOU would take on your own turn, given everything argued so far. Must be one of YOUR legal moves."
+    )
+
 
 # --- MR. X POSSIBLE-ZONE CONTEXT (docs/issues/known_issues.md ISSUE-005) ---
 # Server-side board-topology computation injected directly as prompt text - no extra
-# LLM/tool round-trip, which is what keeps this from compounding the latency issues already
-# logged for propose/vote (ISSUE-006/007/009).
+# LLM/tool round-trip, which matters more than ever now that every call in a round is
+# sequential and pays its latency directly (ISSUE-009, ADR-0009).
 MRX_ZONE_LIST_THRESHOLD = 20  # show the literal node list only up to this many possible nodes
 
 def compute_mrx_zone_context(state: ScotlandYardState) -> Optional[dict]:
@@ -123,6 +208,16 @@ def compute_mrx_zone_context(state: ScotlandYardState) -> Optional[dict]:
     docs/map/map.json), so a larger cap would add cost without adding useful information. This
     also cleanly absorbs the one asymmetric surfacing gap (round 18 -> round 24 is 6 rounds,
     not 5): the rounds that would otherwise compute 5 hops are already "saturated" at 4 anyway.
+
+    Recomputed at the start of every turn rather than memoized once per round. Its occupancy
+    input is no longer constant across a round: detectives physically move as their turns end
+    (ADR-0010), so the nodes the BFS is blocked through change five times per round. A
+    round-start snapshot would show a later detective paths blocked through nodes its teammates
+    had since vacated. Five BFS pairs per round instead of one is nothing next to 30 LLM calls.
+
+    Still ticket-blind - the zone is a strict superset of where Mr. X could really be, because
+    the BFS does not check that his remaining inventory could actually pay for a given path.
+    See ISSUE-015; narrowing this using his travel log is deliberately a separate change.
     """
     mr_x = state["mr_x"]
     last_known_node = mr_x.get("last_known_node")
@@ -141,32 +236,13 @@ def compute_mrx_zone_context(state: ScotlandYardState) -> Optional[dict]:
         "distances_to_zone": compute_distances_to_zone(zone.keys()),
     }
 
-def get_mrx_zone_context(state: ScotlandYardState) -> tuple[Optional[dict], dict]:
-    """
-    Memoizes compute_mrx_zone_context() for the current round. Its inputs (last_known_node/
-    round, round_number, detectives' occupied nodes) are identical across propose/debate/vote
-    and every debate-loop iteration within one round - graph.py loops up to 3 times, so calling
-    it fresh from each of the 3 nodes meant up to 9 redundant BFS runs per round. Presence of
-    "mrx_zone_context" on state (not just truthiness - it's legitimately None pre-reveal) is
-    what marks it as already computed this round; build_next_round_state omits the key so each
-    new round starts with a cache miss.
-
-    Returns (zone_context, state_update): callers must merge state_update into their own
-    returned dict so later nodes/loops in the same round see the cached value instead of
-    recomputing it.
-    """
-    if "mrx_zone_context" in state:
-        return state["mrx_zone_context"], {}
-    zone_context = compute_mrx_zone_context(state)
-    return zone_context, {"mrx_zone_context": zone_context}
-
 def format_mrx_zone_block(zone_context: Optional[dict]) -> str:
     """
-    Renders compute_mrx_zone_context()'s result into the fixed prompt block shared by
-    propose_node/debate_node/vote_node. Below MRX_ZONE_LIST_THRESHOLD nodes, the zone is small
-    enough to be a useful, specific hint, so it's listed outright; above it, only the count is
-    shown - past that size the zone covers most of the board anyway, and enumerating it would
-    just be token cost with no real narrowing-down value.
+    Renders compute_mrx_zone_context()'s result into the fixed prompt block every call in a turn
+    shares. Below MRX_ZONE_LIST_THRESHOLD nodes, the zone is small enough to be a useful,
+    specific hint, so it's listed outright; above it, only the count is shown - past that size
+    the zone covers most of the board anyway, and enumerating it would just be token cost with
+    no real narrowing-down value.
     """
     if zone_context is None:
         return "Mr. X has not surfaced yet this game - no location data is available yet."
@@ -185,86 +261,67 @@ def format_mrx_zone_block(zone_context: Optional[dict]) -> str:
         f"        {location_line}"
     )
 
-def zone_distances_for_moves(moves_by_detective: dict, distances_to_zone: dict) -> dict:
-    """{detective_id: hops_to_nearest_possible_mr_x_location} for a {detective_id: node_id} map."""
-    return {det_id: distances_to_zone.get(node_id) for det_id, node_id in moves_by_detective.items()}
-
-def build_annotated_proposals(
-    state: ScotlandYardState, distances_to_zone: dict, pending_targets: Optional[list] = None
-) -> dict:
-    """
-    {proposer_id: {"proposed_board_moves", "distance_to_mrx_zone_per_move", "rationale"}} for
-    every proposer in state["proposed_strategies"]. Shared by debate_node and vote_node
-    (ISSUE-004) so both phases see an identical projection of the same underlying proposals,
-    rather than two independently hand-built views that can silently drift apart.
-
-    When pending_targets is given, each proposer's proposed_board_moves (and its distance
-    annotation) is filtered down to just those targets - locked targets are already shown
-    separately wherever this is used (the "Already Locked Moves" line), so including them here
-    too would just be duplicated noise scaled by every proposer's full 5-target board.
-    """
-    result = {}
-    for proposer_id, strategy in state["proposed_strategies"].items():
-        moves = strategy.get("proposed_board_moves", {})
-        if pending_targets is not None:
-            moves = {det_id: moves[det_id] for det_id in pending_targets if det_id in moves}
-        result[proposer_id] = {
-            "proposed_board_moves": moves,
-            "distance_to_mrx_zone_per_move": zone_distances_for_moves(moves, distances_to_zone),
-            "rationale": strategy.get("rationale"),
-        }
-    return result
-
-# --- PROPOSAL CONFLICT DETECTION (used to decide whether to retry a proposer) ---
-def find_proposal_conflicts(strategy_obj, pending_targets: list, legal_move_sets: dict) -> list[str]:
-    """
-    Checks one proposer's raw strategy_obj for (b) out-of-bounds destinations and (c)
-    duplicate destinations across the targets in this same call. Does not fix anything -
-    just reports human-readable conflicts so the caller can decide whether a retry is
-    worthwhile. (Locked-destination violations, rule (d), can't occur here: locked nodes
-    are already excluded from legal_move_sets before this is called, so they show up as an
-    ordinary out-of-bounds conflict.)
-    """
-    conflicts = []
-    claimed = {}
-    for target_id in pending_targets:
-        node = getattr(strategy_obj, f"{target_id}_move")
-        legal_for_target = legal_move_sets.get(target_id, set())
-        if node not in legal_for_target:
-            conflicts.append(
-                f"{AGENT_DISPLAY_NAMES[target_id]}: proposed Node {node} is not one of its legal "
-                f"moves {sorted(legal_for_target)}"
-            )
-        elif node in claimed:
-            conflicts.append(
-                f"{AGENT_DISPLAY_NAMES[target_id]}: proposed Node {node} duplicates "
-                f"{AGENT_DISPLAY_NAMES[claimed[node]]}'s destination - every detective in this "
-                f"proposal needs a distinct node"
-            )
-        else:
-            claimed[node] = target_id
-    return conflicts
 
 # --- PSYCHOLOGY & GOALS INJECTOR ---
+# The three motivations are unchanged from the simultaneous-debate design; what changed is the
+# ladder underneath them. It used to be a 3-step DESPERATION scale whose job was to make the
+# vote converge before the loop cap. There is no vote and no loop cap any more, so the ladder
+# now expresses COLLABORATION TENDENCY instead: how much weight a detective gives a teammate's
+# argument relative to its own Selfish Glory goal. See ADR-0009.
+COLLABORATION_BEHAVIOR = {
+    "MINIMUM": (
+        "You are arrogant and certain, and it is far too early to share the glory. Treat a "
+        "teammate's argument as noise unless it proves your own plan is illegal or suicidal."
+    ),
+    "LOW": (
+        "You are still chasing personal glory. Push back hard on any plan that does not set "
+        "YOU up for the catch, and say so plainly."
+    ),
+    "MEDIUM": (
+        "The net is tightening. Genuinely weigh a teammate's argument against your own read, "
+        "and coordinate where doing so costs you little."
+    ),
+    "HIGH": (
+        "Time is running short. Defer to a teammate's plan unless you have a concrete, "
+        "board-based reason it fails."
+    ),
+    "MAXIMUM": (
+        "Panic. Deprioritize your selfish goal almost entirely and back whatever plan best "
+        "guarantees Mr. X is trapped, whoever gets to land on him."
+    ),
+}
+
+
+def get_collaboration_tier(round_number: int) -> tuple[int, str]:
+    """
+    (percentage, label) for the given round, from rules_constants.COLLABORATION_TIERS.
+
+    Rounds past MAX_ROUND cannot occur in a real game (resolve_round ends it at 24), but the
+    final tier is returned for any such value rather than raising - a prompt helper is the
+    wrong place to enforce a rules invariant.
+    """
+    for upper_bound, percentage, label in COLLABORATION_TIERS:
+        if round_number <= upper_bound:
+            return percentage, label
+    return COLLABORATION_TIERS[-1][1], COLLABORATION_TIERS[-1][2]
+
+
 def get_psychology_prompt(round_number: int, det_id: str) -> str:
-    """Injects the 3 goals and controls how selfish they act based on the round."""
-    if round_number <= 12:
-        behavior = "LOW DESPERATION (Early Game). You are arrogant and selfish. You want the glory of catching Mr. X yourself. DO NOT easily agree with others. Criticize their plans if they don't position YOU for the final catch."
-    elif round_number <= 18:
-        behavior = "MEDIUM DESPERATION (Mid Game). Start compromising, but still try to maneuver yourself into the best position."
-    else:
-        behavior = "HIGH DESPERATION (Late Game). Panic! Deprioritize your selfish goals. Agree to whatever plan guarantees Mr. X is trapped."
-    
+    """Injects the 3 goals plus the round's collaboration tendency, stated as a literal number."""
+    percentage, label = get_collaboration_tier(round_number)
+
     return f"""
     YOUR 3 MOTIVATIONS:
     1. MOST IMPORTANT: Catch Mr. X (Team Win).
     2. 2ND IMPORTANT: YOU ({AGENT_DISPLAY_NAMES[det_id]}) must be the one who lands on him (Selfish Glory).
     3. 3RD IMPORTANT: Catch him in the fewest turns possible (Efficiency).
-    
-    Current Mindset: {behavior}
-    
-    STRICT RULE: NO TWO DETECTIVES CAN OCCUPY THE SAME NODE. Never propose or vote for a node
-    another detective is already using or already locked into this round.
+
+    COLLABORATION TENDENCY: {label} ({percentage}%). Round {round_number} of {MAX_ROUND}.
+    {COLLABORATION_BEHAVIOR[label]}
+    Weigh a teammate's argument at roughly {percentage}% against your own read of the board.
+
+    STRICT RULE: NO TWO DETECTIVES CAN OCCUPY THE SAME NODE. Never name a node another
+    detective is already standing on or has already committed to this round.
 
     STRICT RULE: Use ONLY the data given to you in this prompt (board state, legal moves, Mr.
     X's possible zone, distances). Do not attempt to call any tool, browse, or otherwise seek
@@ -272,454 +329,436 @@ def get_psychology_prompt(round_number: int, det_id: str) -> str:
     already been provided.
     """
 
-# --- AGENT NODES ---
 
-async def propose_node(state: ScotlandYardState) -> dict:
-    logger.info("--- DEBATE LOOP %d / %d: STRATEGY PROPOSAL ---",
-                state.get("debate_loop_count", 0) + 1, MAX_DEBATE_LOOPS)
+# --- SHARED PROMPT BLOCKS ---
 
-    locked = state.get("locked_moves", {})
-    pending_targets = [d for d in DETECTIVE_IDS if d not in locked]
-
-    if not pending_targets:
-        # Everyone already locked this round - nothing left to propose.
-        return {"proposed_strategies": {}, "messages": []}
-
-    llm = await get_detective_llm()
-    # Schema only asks about still-undecided targets - locked detectives are never
-    # re-asked about, which is what actually saves tokens/call complexity each loop.
-    structured_llm = llm.with_structured_output(build_strategy_schema(pending_targets))
-
-    # The legal target nodes each still-undecided detective can reach. Computed in-process
-    # (ADR-0001) and enforcing the board's node-occupancy rule server-side, rather than
-    # relying on the LLM to honor a prompt instruction. reserved_nodes carries destinations
-    # already locked by an earlier debate loop - see fetch_legal_moves' own docstring.
-    legal_moves_context, legal_move_sets = fetch_legal_moves(
-        state, pending_targets, reserved_nodes=set(locked.values())
-    )
-
-    # Mr. X possible-zone context (ISSUE-005): annotate each legal-move candidate with its own
-    # hop-distance to the nearest node he could plausibly be standing on, and give each
-    # still-undecided detective's CURRENT position the same, as a baseline for comparison.
-    zone_context, zone_state_update = get_mrx_zone_context(state)
-    zone_block = format_mrx_zone_block(zone_context)
-    distances_to_zone = zone_context["distances_to_zone"] if zone_context else {}
-    annotate_zone_distances(legal_moves_context, distances_to_zone)
-    current_distances_to_zone = {
-        d_id: distances_to_zone.get(state["detectives"][d_id]["node_id"])
-        for d_id in pending_targets
-    }
-
-    # (c) Proactive collision hint: nodes reachable by more than one still-undecided
-    # detective this turn. Naming these explicitly to the proposer is far more effective
-    # at preventing duplicates up front than a generic "don't duplicate" instruction.
-    contested_nodes = defaultdict(list)
-    for target_id in pending_targets:
-        for node in legal_move_sets.get(target_id, set()):
-            contested_nodes[node].append(target_id)
-    contested_nodes = {node: dets for node, dets in contested_nodes.items() if len(dets) > 1}
-    contested_note = ""
-    if contested_nodes:
-        contested_lines = "\n".join(
-            f"- Node {node}: reachable by {agent_names(dets)} this turn - assign AT MOST ONE of them here"
-            for node, dets in contested_nodes.items()
-        )
-        contested_note = (
-            "\n\n        NODES MORE THAN ONE DETECTIVE CAN REACH THIS TURN (pick at most one "
-            f"detective per node below):\n{contested_lines}"
-        )
-
-    strategies = {}
-    board_state = json.dumps(state["detectives"], indent=2)
-
-    # Every detective proposes every loop, even one whose OWN move already locked -
-    # they still have a voice on where the remaining, still-undecided detectives should go.
-    # Proposals are blind/independent of each other (nobody sees anyone else's proposal
-    # before making their own), so fetch all 5 concurrently instead of sequentially.
-    async def get_proposal(det_id):
-        prompt = f"""
-        You are {AGENT_DISPLAY_NAMES[det_id]}.
-        {get_psychology_prompt(state['round_number'], det_id)}
-
-        Board State: {board_state}
+def format_board_block(state: ScotlandYardState, zone_block: str, committed: dict) -> str:
+    """
+    The situation block every one of a turn's six calls opens with, so the mover and the four
+    responders are demonstrably reasoning about the same board rather than two hand-built views
+    that can drift apart.
+    """
+    return f"""
+        Board State: {json.dumps(state["detectives"], indent=2)}
         Mr. X's Ticket Log (transport types used so far - NOT his location): {state['mr_x']['transport_history']}
 
         Mr. X's Possible Zone:
         {zone_block}
-        Each still-undecided detective's CURRENT distance (in hops) to the nearest node in that
-        zone, for comparison: {json.dumps(current_distances_to_zone)}
 
-        Already Locked Moves This Round (FINAL - these detectives are done, do not send anyone
-        else to their nodes): {json.dumps(locked, indent=2)}
+        Detectives who have ALREADY MOVED this round (their turn is over; the Board State above
+        already shows them on their new nodes): {json.dumps(committed, indent=2)}
+    """
 
-        The only detectives who still need a move decided this round are: {agent_names(pending_targets)}.
-        CRITICAL: Here are the ONLY legal target nodes each of them can reach this turn (already
-        excludes nodes currently occupied by other detectives and nodes already locked as
-        someone else's destination this round). Each option's "distance_to_mrx_zone" is its own
-        hop-distance to the nearest node in Mr. X's possible zone above - 0 means that
-        destination IS one of his possible current locations; lower is generally better if you
-        want the team closing in on him, compare it against the CURRENT distances above to see
-        whether a move is actually progress: {json.dumps(legal_moves_context, indent=2)}{contested_note}
 
-        Task: Propose a target node ONLY for the still-undecided detectives listed above
-        ({agent_names(pending_targets)}). YOU MUST ONLY SELECT FROM THE LEGAL MOVES PROVIDED ABOVE.
-        CRITICAL: Every destination you propose must be a DIFFERENT node from every other
-        detective's destination in this same response - two detectives can never be sent to
-        the same node.
+def format_options_block(det_id: str, state: ScotlandYardState, legal_moves_context: dict,
+                         distances_to_zone: dict) -> str:
+    """
+    One detective's own position, tickets, and annotated candidate destinations.
+
+    Each candidate carries two deterministic annotations the model is told how to read:
+    "distance_to_mrx_zone" (0 means the node IS one of Mr. X's possible current locations) and
+    "onward_moves_after" (how many moves would remain from there next round, after paying for
+    this one - a 0 is a dead end).
+    """
+    detective = state["detectives"][det_id]
+    tickets = {k: v for k, v in detective.items() if k.endswith("_tickets")}
+    return f"""
+        {AGENT_DISPLAY_NAMES[det_id]} is standing on Node {detective['node_id']} \
+({distances_to_zone.get(detective['node_id'])} hops from the nearest node in Mr. X's zone).
+        {AGENT_DISPLAY_NAMES[det_id]}'s remaining tickets: {json.dumps(tickets)}
+        {AGENT_DISPLAY_NAMES[det_id]}'s ONLY legal destinations this turn (this list already
+        excludes nodes occupied by another detective and nodes committed earlier this round):
+        {json.dumps(legal_moves_context.get(det_id, []), indent=2)}
+    """
+
+
+# --- LLM CALL PLUMBING ---
+
+async def _invoke(structured_llm, prompt: str, label: str):
+    """
+    One structured LLM call, bounded by a real wall-clock deadline, returning None on any
+    failure so the caller can resolve the outcome deterministically.
+
+    llm_client.py's `timeout=45` is enforced by the HTTP client as an IDLE-GAP timeout, reset
+    by every streamed chunk - it kills a genuinely stuck call but not a merely slow one, and
+    calls lasting many minutes have been observed to complete without tripping it (ISSUE-009).
+    That was tolerable while propose/vote fired five calls concurrently and a straggler
+    overlapped its siblings. Turn-wise play makes all 30 of a round's calls sequential, so one
+    slow call adds its full duration to the round. asyncio.wait_for is the wall-clock cap the
+    idle-gap timeout never was.
+
+    Timeouts and errors are logged at WARNING, not raised: a round must always produce a legal
+    move for every detective, and every caller here has a deterministic fallback.
+    """
+    try:
+        return await asyncio.wait_for(
+            structured_llm.ainvoke([HumanMessage(content=prompt)]),
+            timeout=LLM_CALL_DEADLINE_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("[TIMEOUT] %s exceeded the %ds per-call deadline - falling back.",
+                       label, LLM_CALL_DEADLINE_SECONDS)
+        return None
+    except Exception as e:
+        logger.warning("[LLM ERROR] %s failed: %s", label, e)
+        return None
+
+
+def _enforce_legal_node(proposed_node: Optional[int], det_id: str, legal_set: set,
+                        state: ScotlandYardState, context: str) -> int:
+    """
+    Deterministic backup enforcement: the node this detective will actually be recorded as
+    choosing, whatever the model said.
+
+    Never trusts the LLM's raw output - a small model can still ignore a prompt instruction,
+    and under turn-wise play an out-of-bounds node would otherwise flow straight into
+    committed_moves with no vote tally left to discard it. `legal_set` already excludes every
+    destination committed earlier this round, so the occupancy rule is enforced here too.
+
+    Falls back to the detective's own lowest-numbered legal move rather than leaving it
+    stationary: a detective must move whenever a legal move is available to it. Staying put is
+    only correct when it genuinely has none.
+    """
+    if proposed_node is not None and proposed_node in legal_set:
+        return proposed_node
+
+    remaining = sorted(legal_set)
+    if remaining:
+        logger.warning(
+            "[VALIDATION] %s's %s (Node %s) is not one of its legal moves %s. Reassigned to Node %s.",
+            det_id, context, proposed_node, remaining, remaining[0])
+        return remaining[0]
+
+    current_node = state["detectives"][det_id]["node_id"]
+    logger.warning(
+        "[VALIDATION] %s's %s (Node %s) is illegal and it has no free legal move to fall back "
+        "to. Staying at Node %s.", det_id, context, proposed_node, current_node)
+    return current_node
+
+
+async def _choose_move(structured_llm, prompt: str, det_id: str, legal_set: set,
+                       state: ScotlandYardState, phase: str) -> tuple[int, str]:
+    """
+    A mover's node choice (proposal or final decision), with one self-correction retry before
+    deterministic enforcement takes over.
+
+    The retry is best-effort and only reduces how often `_enforce_legal_node` has to intervene;
+    it is not what guarantees correctness. It costs one extra sequential call when it fires,
+    which is why it only fires on an actually-illegal answer.
+    """
+    label = f"{det_id} {phase}"
+    choice = await _invoke(structured_llm, prompt, label)
+
+    if choice is not None and choice.target_node not in legal_set and legal_set:
+        retry_prompt = prompt + f"""
+
+        YOUR PREVIOUS ANSWER (Node {choice.target_node}) IS NOT A LEGAL MOVE FOR YOU.
+        Choose again, using ONLY the legal destinations listed above: {sorted(legal_set)}.
         """
-        try:
-            strategy_obj = await structured_llm.ainvoke([HumanMessage(content=prompt)])
-        except Exception as e:
-            return det_id, None, e
+        retried = await _invoke(structured_llm, retry_prompt, f"{label} (retry)")
+        if retried is not None:
+            choice = retried
 
-        # Best-effort self-correction: give the proposer exactly one chance to fix its own
-        # conflicts before we fall back to deterministic resolution below. Ideally this retry
-        # is rarely needed, but a small model can still slip - the deterministic pass is what
-        # guarantees correctness either way, this just reduces how often it has to intervene.
-        conflicts = find_proposal_conflicts(strategy_obj, pending_targets, legal_move_sets)
-        if conflicts:
-            retry_prompt = prompt + f"""
-
-        YOUR PREVIOUS PROPOSAL HAD THE FOLLOWING CONFLICTS - FIX THEM:
-        {chr(10).join(f'- {c}' for c in conflicts)}
-
-        Provide a corrected proposal for ALL still-undecided detectives ({agent_names(pending_targets)})
-        that resolves every conflict above, still only using each detective's legal moves listed
-        earlier, with no two detectives sharing a destination.
-        """
-            try:
-                strategy_obj = await structured_llm.ainvoke([HumanMessage(content=retry_prompt)])
-            except Exception:
-                pass  # Keep the pre-retry proposal; deterministic backup will fix what's left.
-
-        return det_id, strategy_obj, None
-
-    # Signal the stage as actually starting only now - right as the first LLM calls are about
-    # to fire - not earlier (pending-target computation, MCP legal-move lookups, and zone-context
-    # prep above are bookkeeping, not "creating a proposal" from the frontend's point of view).
-    get_stream_writer()({"stage": "proposal"})
-    proposal_results = await asyncio.gather(*[get_proposal(det_id) for det_id in DETECTIVE_IDS])
-
-    # Process in fixed DETECTIVE_IDS order (asyncio.gather preserves input order in its
-    # results regardless of which call actually finished first) so console output stays
-    # readable even though the calls above ran concurrently.
-    for det_id, strategy_obj, error in proposal_results:
-        if error is not None:
-            strategies[det_id] = {"proposed_board_moves": dict(locked), "rationale": "Fallback due to parser error."}
-            continue
-
-        proposed_moves = dict(locked)  # locked detectives keep their final node
-        claimed = set(locked.values())
-
-        # Deterministic backup enforcement (never trust the LLM's raw output, since a
-        # small/local model can still ignore prompt instructions) - processed in fixed
-        # DETECTIVE_IDS order so conflicts resolve in favor of the earlier detective:
-        #   (b) destination must be in target_id's own legal-move set
-        #       (this set already excludes locked destinations, so (d) is enforced here too)
-        #   (c) destination must not already be claimed by an earlier target this call
-        #   (a) if the raw proposal fails (b) or (c), prefer reassigning target_id to one of
-        #       ITS OWN remaining legal+unclaimed moves over leaving them stationary - a
-        #       detective must move whenever a legal move is actually available to them.
-        #       Staying put is only correct when no such move exists (rare: either they had
-        #       no legal moves at all this turn, or every one was claimed by an earlier target).
-        for target_id in pending_targets:
-            proposed_node = getattr(strategy_obj, f"{target_id}_move")
-            legal_for_target = legal_move_sets.get(target_id, set())
-
-            if proposed_node in legal_for_target and proposed_node not in claimed:
-                final_node = proposed_node
-            else:
-                remaining = sorted(legal_for_target - claimed)
-                if remaining:
-                    final_node = remaining[0]
-                    reason = "a duplicate destination" if proposed_node in claimed else "an illegal destination"
-                    logger.warning(
-                        "[VALIDATION] %s's proposal for %s (Node %s) was %s. Reassigned %s to Node %s.",
-                        det_id, target_id, proposed_node, reason, target_id, final_node)
-                else:
-                    final_node = state["detectives"][target_id]["node_id"]
-                    logger.warning(
-                        "[VALIDATION] %s's proposal for %s (Node %s) has no free legal move to "
-                        "fall back to. Reverting %s to stay at Node %s.",
-                        det_id, target_id, proposed_node, target_id, final_node)
-
-            proposed_moves[target_id] = final_node
-            claimed.add(final_node)
-
-        strategies[det_id] = {
-            "proposed_board_moves": proposed_moves,
-            "rationale": strategy_obj.rationale
-        }
-        logger.info("[%s PROPOSAL] %s", det_id.upper(), strategy_obj.rationale)
-        logger.info("[%s PROPOSAL] moves: %s", det_id.upper(),
-                    strategies[det_id]["proposed_board_moves"])
-
-    return {"proposed_strategies": strategies, "messages": [], **zone_state_update}
+    node = _enforce_legal_node(
+        choice.target_node if choice is not None else None, det_id, legal_set, state, phase,
+    )
+    rationale = choice.rationale if choice is not None else "No rationale (the call failed)."
+    return node, rationale
 
 
-async def debate_node(state: ScotlandYardState) -> dict:
-    logger.info("--- SEQUENTIAL DEBATE ---")
-    # No tools bound here (ISSUE-003, fixed): this is a text-only pitch task with no tool-
-    # execution loop, so a tool-bound LLM could return an empty .content when it chose to call
-    # a tool instead of answering in prose.
-    llm = await get_debate_llm()
+def apply_detective_move(state: ScotlandYardState, det_id: str, target_node: int) -> dict:
+    """
+    Physically moves one detective and pays for it, returning the fields to merge into state.
 
-    transcript = []
-    locked = state.get("locked_moves", {})
-    pending_targets = [d for d in DETECTIVE_IDS if d not in locked]
+    Applied the moment a turn ends rather than batched at the end of the round (ADR-0010), so
+    the next detective reasons about - and the board shows - a position that is already real.
+    rules.md section 2 describes exactly this ordering ("Detectives 1 through 5 moving in
+    sequential order"), and section 3's occupancy rule then falls out for free: the node this
+    detective vacates is genuinely unoccupied for whoever moves next.
 
-    # Mr. X possible-zone context (ISSUE-005): annotate each proposer's already-proposed
-    # destinations with their hop-distance to Mr. X's possible zone, so debaters can argue
-    # about whether a plan actually closes in on him, not just where it sends people.
-    zone_context, zone_state_update = get_mrx_zone_context(state)
-    zone_block = format_mrx_zone_block(zone_context)
-    distances_to_zone = zone_context["distances_to_zone"] if zone_context else {}
-    current_distances_to_zone = {
-        d_id: distances_to_zone.get(d_info["node_id"])
-        for d_id, d_info in state["detectives"].items()
-    }
-    # ISSUE-004: scoped to pending_targets only - locked targets are already shown via
-    # "Already Locked Moves" below, so a proposer's full 5-target board would just duplicate them.
-    annotated_proposals = build_annotated_proposals(state, distances_to_zone, pending_targets)
-    proposals_context = json.dumps(annotated_proposals, indent=2)
+    Legality is re-derived here rather than trusted from the turn that chose it - the same
+    posture resolve_round has always taken toward the graph's output. A target that is not
+    actually reachable is a forfeit (rules.md section 3: no ticket spent, no ticket
+    transferred), not a crash, and is logged at WARNING because it always means an upstream bug.
 
-    # ISSUE-004: every speaker's single call now also yields a structured "position" per
-    # pending target (their own current preferred node, given the debate so far) alongside the
-    # free-text pitch - no extra call cost, since with_structured_output still runs in one shot.
-    # This is the actual post-debate signal vote_node needs; the pitch alone is a lossy
-    # paraphrase of it. pending_targets is guaranteed non-empty here (the graph's router sends
-    # an all-locked round to "finalize", never back to "propose"/"debate") - the empty-list
-    # fallback below exists only for symmetry with vote_node's own such guard.
-    structured_llm = llm.with_structured_output(build_debate_position_schema(pending_targets)) \
-        if pending_targets else None
-    debate_positions = {}
+    Returns {"detectives", "mr_x", "from_node", "transport", "captured"}.
+    """
+    detective = dict(state["detectives"][det_id])
+    mr_x = dict(state["mr_x"])
+    from_node = detective["node_id"]
 
-    # Debate is sequential (Agent Red speaks first), so this genuinely marks "the first
-    # detective starts their debate" - unlike propose/vote's concurrent gather, there's no
-    # earlier moment where multiple calls could already be in flight.
-    get_stream_writer()({"stage": "debate"})
-    for det_id in DETECTIVE_IDS:
-        transcript_history = "\n".join(transcript) if transcript else "No one has spoken yet."
-
-        prompt = f"""
-        You are {AGENT_DISPLAY_NAMES[det_id]}.
-        {get_psychology_prompt(state['round_number'], det_id)}
-
-        Mr. X's Possible Zone:
-        {zone_block}
-        Each detective's CURRENT distance (in hops) to the nearest node in that zone, for
-        comparison: {json.dumps(current_distances_to_zone)}
-
-        Initial Proposals (pending targets only - "distance_to_mrx_zone_per_move" is that
-        destination's hop-distance to the nearest node in Mr. X's possible zone above - 0 means
-        it IS one of his possible current locations): {proposals_context}
-        Already Locked Moves: {locked}
-
-        Debate Transcript so far:
-        {transcript_history}
-
-        Task: If no one has spoken yet, pitch your plan aggressively. Otherwise, DO NOT just
-        agree. Point out why the previous speakers' plans are bad for YOU. Counter-propose your
-        own plan and demand votes. Keep your pitch to 2-3 sentences. Also state your current
-        preferred node for each still-undecided detective ({agent_names(pending_targets)}), given
-        everything argued so far.
-        """
-
-        if structured_llm is not None:
-            try:
-                position_obj = await structured_llm.ainvoke([HumanMessage(content=prompt)])
-                pitch = position_obj.pitch
-                debate_positions[det_id] = {
-                    target_id: getattr(position_obj, f"{target_id}_position")
-                    for target_id in pending_targets
-                }
-            except Exception as e:
-                pitch = ""
-                logger.warning("[%s] Failed to produce a structured debate turn: %s", det_id, e)
+    transport = None
+    if target_node != from_node:
+        transport = determine_move_transport(
+            detective, target_node, other_detective_nodes(state, det_id))
+        if transport is None:
+            logger.warning(
+                "%s could not legally move from Node %s to Node %s - forfeiting the turn.",
+                det_id, from_node, target_node)
         else:
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
-            pitch = response.content
-
-        logger.info("[%s] %s", det_id.upper(), pitch)
-        # This is what the frontend's Chat Log actually renders (agents.py streams the raw
-        # transcript text verbatim), so the display name - not the internal id - belongs here.
-        transcript.append(f"[{AGENT_DISPLAY_NAMES[det_id]}]: {pitch}")
+            ticket_key = f"{transport}_tickets"
+            detective[ticket_key] -= 1
+            mr_x[ticket_key] += 1  # Rules: a detective's spent ticket transfers to Mr. X.
+            detective["node_id"] = target_node
 
     return {
-        "messages": [AIMessage(content="\n".join(transcript))],
-        "debate_positions": debate_positions,
-        **zone_state_update,
+        "detectives": {**state["detectives"], det_id: detective},
+        "mr_x": mr_x,
+        "from_node": from_node,
+        "transport": transport,
+        # Checked here, the instant this detective lands, because the rules end the game at
+        # that moment - the detectives still to move this round never get their turn.
+        "captured": detective["node_id"] == mr_x["current_node"],
     }
 
-async def vote_node(state: ScotlandYardState) -> dict:
-    logger.info("--- VOTING PHASE ---")
 
-    current_locked = state.get("locked_moves", {})
-    pending_targets = [d for d in DETECTIVE_IDS if d not in current_locked]
+# --- THE TURN NODE ---
 
-    if not pending_targets:
-        # Nothing left to vote on this round.
-        current_loop = state.get("debate_loop_count", 0) + 1
-        return {"locked_moves": {}, "debate_loop_count": current_loop}
+async def turn_node(state: ScotlandYardState, config: RunnableConfig) -> dict:
+    """
+    Runs the whole turn for whichever detective `state["turn_index"]` points at, applies its
+    move, and waits for the board to finish animating that move before returning.
 
-    llm = await get_detective_llm()
-    # Ballot only asks about still-undecided targets - locked detectives are never
-    # re-voted on, which is what actually saves tokens/call complexity each loop.
-    structured_llm = llm.with_structured_output(build_ballot_schema(pending_targets))
+    Emits a custom stream event per LLM call rather than one per node. Under the old design a
+    stage's five calls landed on the client as a single blob once the last of them finished;
+    here each of the six calls is surfaced the moment it completes, which is what lets the
+    Chat Log read as a conversation unfolding rather than three bursts per loop.
 
-    # Recompute legal targets for still-undecided detectives so an illegal vote can be
-    # discarded before it reaches the tally, and so voters can see the actual candidates and
-    # their distance to Mr. X's possible zone.
-    #
-    # reserved_nodes is passed here for the same reason propose_node passes it, and its
-    # absence here used to be ISSUE-025: from debate loop 2 onward a pending detective could
-    # be voted onto a node another detective locked in loop 1, because that destination was
-    # still absent from the occupied set (its owner is standing on their OLD node until the
-    # round finalizes). The duplicate then survived to resolve_round, which silently forfeited
-    # whichever detective came second in DETECTIVE_IDS order.
-    legal_moves_context, legal_move_sets = fetch_legal_moves(
-        state, pending_targets, reserved_nodes=set(current_locked.values())
-    )
+    `config` carries the GameSession under "configurable"/"session" (round_resolver passes it),
+    used only for the end-of-turn pawn-animation handshake. A session is absent whenever the
+    graph is driven directly (tests, the -m llm runners), and the turn then simply does not
+    wait - the handshake is presentation timing, never correctness.
 
-    # Mr. X possible-zone context (ISSUE-005): same annotation propose_node applies.
-    zone_context, zone_state_update = get_mrx_zone_context(state)
+    The RunnableConfig annotation is load-bearing, not decoration: LangGraph decides whether to
+    hand a node the config by inspecting that annotation, and a plain `dict` hint silently gets
+    nothing passed at all rather than failing.
+    """
+    mover = DETECTIVE_IDS[state["turn_index"]]
+    mover_name = AGENT_DISPLAY_NAMES[mover]
+    committed = dict(state.get("committed_moves", {}))
+    round_number = state["round_number"]
+    logger.info("--- ROUND %d: %s'S TURN (%d/%d) ---",
+                round_number, mover_name.upper(), state["turn_index"] + 1, NUM_DETECTIVES)
+
+    writer = get_stream_writer()
+    session = (config or {}).get("configurable", {}).get("session")
+
+    # Recomputed per turn, not memoized per round: detectives physically move as their turns
+    # end, so the occupancy this BFS is blocked through genuinely differs between turns.
+    zone_context = compute_mrx_zone_context(state)
     zone_block = format_mrx_zone_block(zone_context)
     distances_to_zone = zone_context["distances_to_zone"] if zone_context else {}
+
+    # Options are needed for the mover AND for every responder that has not moved yet, since a
+    # responder argues about its own next move as well as the mover's. Detectives that already
+    # moved are excluded: they have no move left to make this round, so computing options for
+    # them would be both wasted work and actively misleading to put in front of them.
+    # One pass, so all six calls see the same board.
+    still_to_move = [det_id for det_id in DETECTIVE_IDS if det_id not in committed]
+    legal_moves_context, legal_move_sets = fetch_legal_moves(state, still_to_move)
     annotate_zone_distances(legal_moves_context, distances_to_zone)
-    current_distances_to_zone = {
-        d_id: distances_to_zone.get(state["detectives"][d_id]["node_id"])
-        for d_id in pending_targets
-    }
+    for det_id in still_to_move:
+        annotate_onward_options(state, det_id, legal_moves_context)
 
-    # ISSUE-004: ballots previously only saw the (lossy, prose) debate transcript, never the
-    # structured proposal data propose_node's and debate_node's own prompts already include.
-    # Both pieces below are scoped to pending_targets, mirroring legal_moves_context above.
-    annotated_proposals = build_annotated_proposals(state, distances_to_zone, pending_targets)
-    proposals_context = json.dumps(annotated_proposals, indent=2)
-    # Each debate speaker's structured post-debate stance (agents.py:debate_node) - the actual
-    # "what did everyone land on after arguing" signal, distinct from their frozen pre-debate
-    # proposal above and from the free-text transcript below.
-    debate_positions_context = json.dumps(state.get("debate_positions", {}), indent=2)
+    board_block = format_board_block(state, zone_block, committed)
+    mover_options = format_options_block(mover, state, legal_moves_context, distances_to_zone)
 
-    debate_transcript = state["messages"][-1].content if state["messages"] else ""
+    # --- PHASE 1: the mover proposes, and broadcasts it ---
+    writer({"event": "turn_started", "detective": mover})
+    detective_llm = await get_detective_llm()
+    move_llm = detective_llm.with_structured_output(MoveChoice)
 
-    # 1. Collect Votes - every detective votes, including ones already locked, since they
-    # still have a stake in where the remaining, still-undecided detectives end up. Ballots
-    # are cast simultaneously/independently against the same finished debate transcript (no
-    # voter sees another's ballot), so cast all 5 concurrently instead of sequentially.
-    async def cast_ballot(det_id):
-        psychology_context = get_psychology_prompt(state['round_number'], det_id)
+    proposal_prompt = f"""
+        You are {mover_name}. It is YOUR turn to move this round.
+        {get_psychology_prompt(round_number, mover)}
+        {board_block}
+        {mover_options}
 
-        prompt = f"""
-        You are {AGENT_DISPLAY_NAMES[det_id]}.
+        Task: Choose the destination YOU will move to, and explain why in 2-3 sentences. This
+        is a PROPOSAL you are broadcasting to the rest of the team - they will each respond to
+        it, and you will get to revise it afterwards. Prefer destinations that close the
+        distance to Mr. X's possible zone ("distance_to_mrx_zone"; 0 means that node IS one of
+        his possible locations) without stranding yourself ("onward_moves_after" is how many
+        moves you would have left next round - never pick 0 if you have an alternative).
+        YOU MUST CHOOSE FROM THE LEGAL DESTINATIONS LISTED ABOVE.
+    """
+    proposed_node, proposal_rationale = await _choose_move(
+        move_llm, proposal_prompt, mover, legal_move_sets[mover], state, "proposal")
+    logger.info("[%s PROPOSAL] Node %s - %s", mover.upper(), proposed_node, proposal_rationale)
+    writer({
+        "event": "turn_proposal", "detective": mover,
+        "target_node": proposed_node, "rationale": proposal_rationale,
+    })
 
-        {psychology_context}
+    # --- PHASE 2: the other four respond, sequentially ---
+    debate_llm = await get_debate_llm()
+    response_llm = debate_llm.with_structured_output(TurnResponseChoice)
+    responses = []
+    transcript = []
 
-        Based on the debate:
-        {debate_transcript}
-
-        Structured Proposals going into this debate (pending targets only - "rationale" is the
-        proposer's own reasoning, "distance_to_mrx_zone_per_move" is each destination's
-        hop-distance to Mr. X's possible zone): {proposals_context}
-
-        Each Detective's Stated Position AFTER Debate (pending targets only - what they said
-        they now favor, having heard everyone's arguments): {debate_positions_context}
-
-        Mr. X's Possible Zone:
-        {zone_block}
-        Each still-undecided detective's CURRENT distance (in hops) to the nearest node in that
-        zone, for comparison: {json.dumps(current_distances_to_zone)}
-
-        Already Locked Moves This Round (FINAL - these detectives are done, do not send anyone
-        else to their nodes): {json.dumps(current_locked, indent=2)}
-
-        The only detectives who still need a vote this round are: {agent_names(pending_targets)}.
-        Each candidate's legal target nodes, with "distance_to_mrx_zone" (0 means that node IS
-        one of Mr. X's possible current locations; lower is generally better if you want the
-        team closing in on him). This list already excludes nodes occupied by another detective
-        and nodes locked as someone else's destination this round:
-        {json.dumps(legal_moves_context, indent=2)}
-
-        Task: Cast your final vote ONLY for the exact node each of those still-undecided
-        detectives should move to.
-        Apply your current Desperation Level to your voting strategy:
-        - If LOW/MEDIUM: Be stubborn. Vote for the plan that positions YOU to catch Mr. X, even if it risks failing the vote.
-        - If HIGH: Compromise. Vote for the plan with the most momentum in the debate to ensure a move passes.
-        """
-        try:
-            ballot = await structured_llm.ainvoke([HumanMessage(content=prompt)])
-            votes = {target_id: getattr(ballot, f"{target_id}_vote") for target_id in pending_targets}
-            return det_id, votes, None
-        except Exception as e:
-            return det_id, None, e
-
-    # Same rationale as propose_node: signal only once the actual voting LLM calls are about
-    # to fire, not during the legal-move/zone-context prep above.
-    get_stream_writer()({"stage": "vote"})
-    ballot_results = await asyncio.gather(*[cast_ballot(det_id) for det_id in DETECTIVE_IDS])
-
-    # Process in fixed DETECTIVE_IDS order (asyncio.gather preserves input order in its
-    # results regardless of which call actually finished first) so console output stays
-    # readable even though the calls above ran concurrently.
-    all_votes = []
-    for det_id, votes, error in ballot_results:
-        if error is not None:
-            logger.warning("[%s] Failed to cast a valid vote: %s", det_id, error)
-            continue
-        all_votes.append({"voter": det_id, "votes": votes})
-
-    # 2. Print Individual Votes
-    logger.info("[INDIVIDUAL VOTES CAST]")
-    for ballot_record in all_votes:
-        voter = ballot_record["voter"]
-        vote_summary = ", ".join([f"{det}: {node}" for det, node in ballot_record["votes"].items()])
-        logger.info("%s voted for -> %s", voter.upper(), vote_summary)
-
-    # 3. Tally Votes (ballots only ever contain still-undecided targets). A single vote is
-    # discarded, never counted, if it's illegal OR if it duplicates a node this same voter
-    # already voted for a different detective within this same ballot - never trust the LLM's
-    # raw output for either. Targets are checked in the ballot's fixed insertion order (==
-    # pending_targets, i.e. DETECTIVE_IDS order), so within one voter's ballot the
-    # earlier-listed detective keeps its vote and a later duplicate is dropped. Unlike
-    # propose_node, a discarded vote has no fallback to reassign - it's simply not counted,
-    # since nothing requires every voter to vote for every target.
-    vote_counts = {det: defaultdict(int) for det in pending_targets}
-    for ballot_record in all_votes:
-        voter = ballot_record["voter"]
-        claimed_nodes = set()
-        for det_id, node in ballot_record["votes"].items():
-            if node not in legal_move_sets.get(det_id, set()):
-                logger.warning("[VALIDATION] %s's vote for %s (Node %s) is illegal and was discarded.",
-                               voter, det_id, node)
-                continue
-            if node in claimed_nodes:
-                logger.warning(
-                    "[VALIDATION] %s's vote for %s (Node %s) duplicates another detective's vote "
-                    "within the same ballot and was discarded.", voter, det_id, node)
-                continue
-            claimed_nodes.add(node)
-            vote_counts[det_id][node] += 1
-
-    # 4. Determine Pass/Fail and Print Tally
-    logger.info("[FINAL TALLY & RESULTS]")
-    newly_locked = {}
-
-    for det_id, counts in vote_counts.items():
-        if counts:
-            distribution = ", ".join([f"Node {node} ({cnt} votes)" for node, cnt in counts.items()])
-            logger.info("%s move tally: %s", det_id.upper(), distribution)
-            
-            top_node = max(counts, key=counts.get)
-            top_votes = counts[top_node]
-            
-            if top_votes >= VOTE_THRESHOLD:
-                newly_locked[det_id] = top_node
-                logger.info("  -> PASS: %s moves to Node %s (%d votes)", det_id, top_node, top_votes)
-            else:
-                logger.info("  -> FAIL: %s max votes was %d/%d for Node %s (needs %d)",
-                            det_id, top_votes, len(all_votes), top_node, VOTE_THRESHOLD)
+    for responder in responders_for(mover):
+        responder_name = AGENT_DISPLAY_NAMES[responder]
+        # A responder that already took its turn this round has nothing left to decide. Showing
+        # it a menu of destinations and asking what it "would take on its own turn" would be
+        # straightforwardly false - its turn is over and its node is locked in. It still gets a
+        # voice on where the mover goes, which is the point of it being asked at all.
+        has_moved = responder in committed
+        if has_moved:
+            own_position_block = (
+                f"        You have ALREADY taken your turn this round and moved to Node "
+                f"{committed[responder]}. You are standing there now and have no move left to "
+                f"make this round. Argue from where you actually are."
+            )
+            preference_task = (
+                f"Answer with Node {committed[responder]} - the node you are standing on - as "
+                "your preferred_node, since your move this round is already made."
+            )
         else:
-            logger.warning("%s: no valid votes received.", det_id.upper())
+            own_position_block = format_options_block(
+                responder, state, legal_moves_context, distances_to_zone)
+            preference_task = (
+                "Then state which node YOU would take on your own turn, chosen from YOUR legal "
+                "destinations above. Your answer is advisory: it reserves nothing and you may "
+                "decide differently when your own turn comes."
+            )
+        # Only what was said EARLIER IN THIS TURN (ADR-0009): each turn's transcript starts
+        # fresh, so the last responder's prompt is no larger than the first's and per-round
+        # token cost stays flat across all five turns. What earlier turns decided is still
+        # visible - as committed moves on the board, which is the part that actually binds.
+        transcript_so_far = "\n".join(transcript) if transcript else "You are the first to respond."
 
-    current_loop = state.get("debate_loop_count", 0) + 1
-    return {"locked_moves": newly_locked, "debate_loop_count": current_loop, **zone_state_update}
+        response_prompt = f"""
+        You are {responder_name}. It is {mover_name}'s turn to move, not yours - you are
+        responding to their proposal.
+        {get_psychology_prompt(round_number, responder)}
+        {board_block}
+
+        {mover_name.upper()}'S PROPOSAL: move to Node {proposed_node}.
+        Their reasoning: {proposal_rationale}
+        The full set of destinations {mover_name} could have chosen from:
+        {json.dumps(legal_moves_context.get(mover, []), indent=2)}
+
+        YOUR OWN POSITION (for deciding what YOU would do next):
+        {own_position_block}
+
+        Responses already given to {mover_name} this turn:
+        {transcript_so_far}
+
+        Task: Respond to {mover_name}'s proposal in 2-3 sentences - back it, or say concretely
+        why a different destination from their list would serve the team (or you) better. Do
+        not simply repeat what an earlier responder said. {preference_task}
+        """
+
+        answer = await _invoke(response_llm, response_prompt, f"{responder} response to {mover}")
+        if answer is None:
+            text = "(no response - the call failed)"
+            preferred = None
+        else:
+            text = answer.response
+            preferred = answer.preferred_node
+            if has_moved:
+                # Nothing for it to state - its move is already settled. Its own committed node
+                # is the truth regardless of what it answered, so use that rather than trusting
+                # the model to echo it back correctly.
+                preferred = committed[responder]
+            elif preferred not in legal_move_sets.get(responder, set()):
+                # An advisory preference is discarded rather than reassigned when it is illegal.
+                # The old vote tally took the same line with a bad ballot entry: rewriting it to
+                # the lowest-numbered legal node would manufacture an opinion the detective never
+                # held, and that invented node would then feed into the mover's decision prompt.
+                logger.warning(
+                    "[VALIDATION] %s's stated preference (Node %s) is not one of its legal "
+                    "moves and was dropped from the transcript.", responder, preferred)
+                preferred = None
+
+        responses.append({"responder": responder, "response": text, "preferred_node": preferred})
+        if preferred is None:
+            intent = ""
+        elif has_moved:
+            intent = f" (already committed to Node {preferred})"
+        else:
+            intent = f" (would take Node {preferred} itself)"
+        transcript.append(f"[{responder_name}]: {text}{intent}")
+        logger.info("[%s -> %s] %s%s", responder.upper(), mover.upper(), text, intent)
+        writer({
+            "event": "turn_response", "detective": responder, "responding_to": mover,
+            "response": text, "preferred_node": preferred,
+        })
+
+    # --- PHASE 3: the mover decides ---
+    decision_prompt = f"""
+        You are {mover_name}. It is YOUR turn to move, and you must now commit.
+        {get_psychology_prompt(round_number, mover)}
+        {board_block}
+        {mover_options}
+
+        YOUR OWN PROPOSAL WAS: Node {proposed_node} - {proposal_rationale}
+
+        WHAT THE REST OF THE TEAM SAID ABOUT IT:
+        {chr(10).join(transcript)}
+
+        Task: Commit to the destination you will actually move to, and explain why in 2-3
+        sentences. Keep your original proposal or change it - apply your COLLABORATION
+        TENDENCY above when deciding how much weight the responses deserve against your own
+        read. This decision is FINAL and takes effect immediately; the detectives who have not
+        moved yet will have to work around it.
+        YOU MUST CHOOSE FROM THE LEGAL DESTINATIONS LISTED ABOVE.
+    """
+    committed_node, decision_rationale = await _choose_move(
+        move_llm, decision_prompt, mover, legal_move_sets[mover], state, "final decision")
+
+    # --- APPLY: the detective physically moves, and pays for it ---
+    applied = apply_detective_move(state, mover, committed_node)
+    from_node = applied["from_node"]
+    transport = applied["transport"]
+    final_node = applied["detectives"][mover]["node_id"]
+    logger.info("[%s MOVED] Node %s -> Node %s via %s - %s",
+                mover.upper(), from_node, final_node, transport, decision_rationale)
+    if applied["captured"]:
+        logger.info("[%s CAPTURED MR. X] at Node %s - the round ends here.", mover.upper(), final_node)
+
+    # Arm the handshake BEFORE the client can possibly answer it: the ack is a reply to the
+    # event emitted on the very next line, and arming afterwards would race a fast client.
+    if session is not None:
+        session.expect_pawn_ack(round_number, mover)
+    writer({
+        "event": "turn_decision", "detective": mover,
+        "from_node": from_node, "target_node": final_node,
+        "transport": transport, "rationale": decision_rationale,
+        "captured": applied["captured"],
+    })
+
+    # Hold the turn open until that pawn has finished moving on the board, so the next
+    # detective does not start deliberating over a board that is still rearranging itself.
+    # Bounded (ADR-0010): nobody may be watching, so this must never be able to stall a round.
+    if session is not None:
+        acked = await session.await_pawn_settled(TURN_ACK_TIMEOUT_SECONDS)
+        if not acked:
+            logger.info(
+                "No pawn-settled ack for %s within %.1fs - continuing without it (no client "
+                "watching, or its tweens are throttled).", mover, TURN_ACK_TIMEOUT_SECONDS)
+
+    turn_record = {
+        "proposed_node": proposed_node,
+        "proposal_rationale": proposal_rationale,
+        "responses": responses,
+        "from_node": from_node,
+        "committed_node": final_node,
+        "transport": transport,
+        "decision_rationale": decision_rationale,
+    }
+    turn_summary = "\n".join(
+        [f"[{mover_name} proposes Node {proposed_node}]: {proposal_rationale}"]
+        + transcript
+        + [f"[{mover_name} moves to Node {final_node}]: {decision_rationale}"]
+    )
+
+    return {
+        "detectives": applied["detectives"],
+        "mr_x": applied["mr_x"],
+        "committed_moves": {mover: final_node},
+        "turn_records": {mover: turn_record},
+        "turn_index": state["turn_index"] + 1,
+        "captured_by": mover if applied["captured"] else None,
+        "messages": [AIMessage(content=turn_summary)],
+    }

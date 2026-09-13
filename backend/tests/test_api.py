@@ -201,3 +201,57 @@ class TestCorsPolicy:
             f"/games/{game_id}", headers={"Origin": "http://evil.example.com"}
         )
         assert response.headers.get("access-control-allow-origin") not in ("*", "http://evil.example.com")
+
+
+class TestTurnAck:
+    """
+    POST /games/{id}/turn-ack - the client reporting that a detective's pawn finished animating
+    (ADR-0010). Malformed acks are rejected at the boundary like every other request body; a
+    well-formed one that simply does not match what the turn loop is waiting on is NOT an error,
+    since that is an ordinary race the client can do nothing about.
+    """
+
+    def test_an_unmatched_ack_is_accepted_but_reports_it_did_nothing(self, client, game):
+        game_id, _ = game
+        response = client.post(
+            f"/games/{game_id}/turn-ack",
+            json={"round_number": 1, "detective": "agent_red"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {"applied": False}
+
+    def test_a_matching_ack_reports_that_it_applied(self, client, game):
+        game_id, _ = game
+        server.GAMES[game_id].expect_pawn_ack(1, "agent_blue")
+
+        response = client.post(
+            f"/games/{game_id}/turn-ack",
+            json={"round_number": 1, "detective": "agent_blue"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {"applied": True}
+
+    def test_an_unknown_game_is_404(self, client):
+        response = client.post(
+            "/games/does-not-exist/turn-ack",
+            json={"round_number": 1, "detective": "agent_red"},
+        )
+        assert response.status_code == 404
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"round_number": 1},                                   # missing detective
+            {"detective": "agent_red"},                            # missing round_number
+            {"round_number": 1, "detective": "agent_pink"},        # not a real detective
+            {"round_number": 0, "detective": "agent_red"},         # rounds start at 1
+            {"round_number": 99, "detective": "agent_red"},        # past MAX_ROUND
+            {"round_number": "one", "detective": "agent_red"},     # wrong type
+            {"round_number": 1, "detective": "agent_red", "x": 1},  # extra field
+        ],
+    )
+    def test_malformed_acks_are_rejected_with_a_field_level_message(self, client, game, body):
+        game_id, _ = game
+        response = client.post(f"/games/{game_id}/turn-ack", json=body)
+        assert response.status_code == 400, response.text
+        assert "Malformed request" in response.json()["error"]

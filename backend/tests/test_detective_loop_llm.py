@@ -9,6 +9,7 @@ from uuid import UUID
 from langchain_core.callbacks import AsyncCallbackHandler
 from scotland_yard.graph import build_next_round_state
 from scotland_yard.round_resolver import detective_graph
+from scotland_yard.rules_constants import DETECTIVE_IDS, NUM_DETECTIVES
 
 import pytest
 
@@ -17,7 +18,7 @@ pytestmark = pytest.mark.llm
 
 LOG_PATH = Path(__file__).resolve().parent.parent / "llm_io_log.txt"
 
-# agents.py's propose/debate/vote prompts all open with "You are {detective_id}." -
+# agents.py's proposal/response/decision prompts all open with "You are {display_name}." -
 # recovering the speaker from that line lets us attribute every call without touching
 # agents.py, since none of its ainvoke() calls thread through explicit tags/metadata.
 DETECTIVE_ID_PATTERN = re.compile(r"You are (Agent \w+)")
@@ -27,10 +28,9 @@ class LLMTranscriptLogger(AsyncCallbackHandler):
     """
     Records every detective LLM call's raw input messages and raw output, in the exact
     chronological order the callback manager fires them, and appends each as a
-    timestamped entry to LOG_PATH. Calls made concurrently (propose_node/vote_node fire
-    all 5 detectives via asyncio.gather) are ordered by call-start order and labeled with
-    a matching call number so a START/END pair can still be matched up even when several
-    calls are in flight at once.
+    timestamped entry to LOG_PATH. Turn-wise play (ADR-0009) issues all 30 of a round's calls
+    sequentially, so the log reads in true chronological order - but the call-number labeling
+    is kept regardless, so a START/END pair stays matchable if concurrency is reintroduced.
     """
 
     def __init__(self, log_path: Path):
@@ -137,14 +137,14 @@ llm_logger = LLMTranscriptLogger(LOG_PATH)
 GRAPH_CONFIG = {"callbacks": [llm_logger]}
 
 
-async def run_test_round():
-    print("\n=== STARTING PHASE 3 END-TO-END TEST ===")
-    print("Initializing Game State (Round 3 - Mr. X Revealed at Node 13)...")
-
-    # Mock starting state for Round 3
-    initial_state = {
+def build_round_3_state() -> dict:
+    """
+    A round-3 board with Mr. X freshly revealed at Node 13 and the detectives spread out, so
+    the possible-zone context is populated and every detective has real options to argue over.
+    """
+    return {
         "round_number": 3,
-        "debate_loop_count": 0,
+        "turn_index": 0,
         "mr_x": {
             "last_known_node": 13,
             "last_known_round": 3,
@@ -153,21 +153,29 @@ async def run_test_round():
             "bus_tickets": 8,
             "metro_tickets": 4,
             "black_tickets": 5,
-            "double_tickets": 2
+            "double_tickets": 2,
         },
         # Spread the detectives out across the map
         "detectives": {
             "agent_red": {"node_id": 29, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
             "agent_blue": {"node_id": 50, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
             "agent_green": {"node_id": 91, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
-            "agent_yellow": {"node_id": 117, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
+            "agent_orange": {"node_id": 117, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
             "agent_purple": {"node_id": 123, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
         },
         "messages": [],
-        "proposed_strategies": {},
-        "locked_moves": {},
-        "final_moves": {}
+        "committed_moves": {},
+        "turn_records": {},
+        "final_moves": {},
     }
+
+
+async def run_test_round():
+    print("\n=== TURN-WISE ROUND END-TO-END TEST ===")
+    print("Initializing Game State (Round 3 - Mr. X Revealed at Node 13)...")
+
+    # Mock starting state for Round 3
+    initial_state = build_round_3_state()
 
     print("\nFiring up the LangGraph Multi-Agent Engine...")
 
@@ -182,51 +190,29 @@ async def run_test_round():
 
 async def run_multi_round_reset_test():
     """
-    Verifies the fix for Critical Issue 3: locked_moves/debate_loop_count/proposed_strategies
-    must reset between rounds, or detectives locked in round 1 stay permanently locked and
-    stop proposing/voting for the rest of the game.
+    Verifies that the per-round turn fields reset between rounds. Left unreset, turn_index
+    would already be at NUM_DETECTIVES when round 2 starts, so the graph would route straight
+    to finalize and replay round 1's committed nodes as every future round's move.
     """
     print("\n=== MULTI-ROUND RESET TEST ===")
 
-    initial_state = {
-        "round_number": 3,
-        "debate_loop_count": 0,
-        "mr_x": {
-            "last_known_node": 13,
-            "last_known_round": 3,
-            "transport_history": ["taxi", "taxi", "bus"],
-            "taxi_tickets": 10,
-            "bus_tickets": 8,
-            "metro_tickets": 4,
-            "black_tickets": 5,
-            "double_tickets": 2
-        },
-        "detectives": {
-            "agent_red": {"node_id": 29, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
-            "agent_blue": {"node_id": 50, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
-            "agent_green": {"node_id": 91, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
-            "agent_yellow": {"node_id": 117, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
-            "agent_purple": {"node_id": 123, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
-        },
-        "messages": [],
-        "proposed_strategies": {},
-        "locked_moves": {},
-        "final_moves": {}
-    }
+    initial_state = build_round_3_state()
 
     print("\n--- Running ROUND 1 ---")
     round_1_result = await detective_graph.ainvoke(initial_state, config=GRAPH_CONFIG)
-    print(f"\nRound 1 finished. locked_moves={round_1_result['locked_moves']}, "
-          f"debate_loop_count={round_1_result['debate_loop_count']}, "
+    print(f"\nRound 1 finished. committed_moves={round_1_result['committed_moves']}, "
+          f"turn_index={round_1_result['turn_index']}, "
           f"final_moves={round_1_result['final_moves']}")
+    assert round_1_result["turn_index"] == NUM_DETECTIVES, "Every detective must have taken a turn"
+    assert set(round_1_result["turn_records"]) == set(DETECTIVE_IDS)
 
     round_2_initial_state = build_next_round_state(round_1_result)
-    assert round_2_initial_state["locked_moves"] == {}, "Round 2 must start with no locked moves"
-    assert round_2_initial_state["debate_loop_count"] == 0, "Round 2 must start at loop 0"
-    assert round_2_initial_state["proposed_strategies"] == {}, "Round 2 must start with no stale proposals"
+    assert round_2_initial_state["turn_index"] == 0, "Round 2 must start at Agent Red's turn"
+    assert round_2_initial_state["committed_moves"] == {}, "Round 2 must start with nothing committed"
+    assert round_2_initial_state["turn_records"] == {}, "Round 2 must start with no stale turn records"
     print(f"\nBuilt Round 2 initial state: round_number={round_2_initial_state['round_number']}, "
-          f"locked_moves={round_2_initial_state['locked_moves']} (reset), "
-          f"debate_loop_count={round_2_initial_state['debate_loop_count']} (reset)")
+          f"turn_index={round_2_initial_state['turn_index']} (reset), "
+          f"committed_moves={round_2_initial_state['committed_moves']} (reset)")
 
     print("\n--- Running ROUND 2 ---")
     round_2_result = await detective_graph.ainvoke(round_2_initial_state, config=GRAPH_CONFIG)

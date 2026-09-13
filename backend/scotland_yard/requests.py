@@ -17,6 +17,8 @@ from typing import Annotated, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from .rules_constants import DETECTIVE_IDS, MAX_ROUND
+
 
 class Hop(BaseModel):
     """One leg of a Mr. X move: where to, and which ticket pays for it."""
@@ -58,6 +60,20 @@ MrXMoveRequest = Annotated[
     Field(discriminator="move_type"),
 ]
 MR_X_MOVE_ADAPTER = TypeAdapter(MrXMoveRequest)
+
+
+class TurnAckRequest(BaseModel):
+    """
+    The client reporting that it finished animating one detective's pawn move (ADR-0010).
+
+    Both fields are required and are checked against what the turn loop is actually waiting on,
+    so a late ack for an earlier turn cannot release the current one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    round_number: int = Field(ge=1, le=MAX_ROUND)
+    detective: Literal[tuple(DETECTIVE_IDS)]  # type: ignore[valid-type]
 
 
 class Hop2PreviewQuery(BaseModel):

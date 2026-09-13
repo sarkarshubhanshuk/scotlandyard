@@ -27,6 +27,7 @@ const publicDir = resolve(here, "../public");
 const copies = [
   ["board/board.svg", "board/board.svg"],
   ["ui/pawn.svg", "pawn/pawn.svg"],
+  ["ui/pawn_last_known.svg", "pawn/pawn_last_known.svg"],
   ["ui/game_logo.jpg", "game_logo.jpg"],
   ["tickets", "tickets"],
 ];

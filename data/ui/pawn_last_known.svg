@@ -1,0 +1,17 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    Mr. X's "last known location" marker: the exact same pawn silhouette as pawn.svg, traced as
+    a dashed, unfilled outline rather than a solid shape - shown at mr_x.last_known_node whenever
+    that is meaningfully different information from what his real pawn already shows (see
+    BoardScene.ts:renderLastKnownGhost and ADR-0012).
+
+    Geometry is a literal copy of pawn.svg's own stroke group (see that file's own comment on why
+    its two groups share identical paths), so this ghost and the real pawn always trace the exact
+    same shape - only fill:none and stroke-dasharray were added. Always black: unlike pawn.svg,
+    there is no per-instance recoloring here, since this marker is never tinted per player.
+  -->
+  <g fill="none" stroke="#000000" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="8 6">
+    <circle cx="50" cy="24" r="13"/>
+    <path d="M38 40 C38 40 30 46 27 58 C24 70 20 82 20 88 C20 92 24 94 28 94 L72 94 C76 94 80 92 80 88 C80 82 76 70 73 58 C70 46 62 40 62 40 C58 44 42 44 38 40 Z"/>
+  </g>
+</svg>

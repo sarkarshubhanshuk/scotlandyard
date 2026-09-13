@@ -1,10 +1,11 @@
 # Scotland Yard
 
 A digital adaptation of the board game Scotland Yard. **Mr. X is played by a human**; the 5
-detectives are played by LLM agents that propose, debate, and vote on their moves each round
-via a LangGraph multi-agent system.
+detectives are played by LLM agents that take turns each round via a LangGraph multi-agent
+system. On its turn, a detective proposes a move, the other four respond to it one at a time,
+and then it commits.
 
-The agents never decide a move unsupervised: every proposal, every ballot, and the final
+The agents never decide a move unsupervised: every proposal, every response, and the final
 applied move are re-derived and validated against the board graph server-side in plain Python,
 so an LLM cannot hallucinate an illegal move into the game state.
 

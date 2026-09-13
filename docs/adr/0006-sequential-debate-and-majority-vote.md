@@ -1,7 +1,19 @@
 # ADR-0006 — Sequential debate, 3/5 majority vote, 3-loop cap
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR-0009](0009-turn-wise-detective-play.md)
 - **Area:** `backend/scotland_yard/agents.py`, `graph.py`, `rules_constants.py`
+
+## Superseded
+
+Detectives no longer decide simultaneously. ADR-0009 replaced the propose/debate/vote
+consensus loop with turn-wise play — one detective at a time, each committing its own move —
+because fifteen messages arriving at once, three times a round, was not something the human
+player could follow. The record below stands as written; nothing in it was wrong at the time.
+
+Worth keeping in mind if this is ever revisited: the strict-majority threshold argued for
+below was load-bearing for *correctness*, not just legitimacy. Turn-wise play does not need it
+because sequential commitment makes the collision it ruled out structurally impossible — but
+any return to simultaneous decisions would need that argument back.
 
 ## Context
 

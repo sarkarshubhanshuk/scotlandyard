@@ -5,7 +5,7 @@ export const DETECTIVE_LABELS: Record<DetectiveId, string> = {
   agent_red: "Agent Red",
   agent_blue: "Agent Blue",
   agent_green: "Agent Green",
-  agent_yellow: "Agent Yellow",
+  agent_orange: "Agent Orange",
   agent_purple: "Agent Purple",
 };
 
@@ -15,16 +15,33 @@ export const AGENT_LABEL_TO_ID: Record<string, DetectiveId> = Object.fromEntries
   DETECTIVE_IDS.map((id) => [DETECTIVE_LABELS[id], id]),
 );
 
+// Mirrors DETECTIVE_LABELS without the "Agent " prefix - used only by the sidebar's "Ongoing
+// actions" line (useRoundStream.ts/GameScreen.tsx), which names detectives by callsign alone
+// ("Red's turn - ...") rather than the full "Agent Red" ChatLog and tooltips use everywhere else.
+export const DETECTIVE_SHORT_LABELS: Record<DetectiveId, string> = {
+  agent_red: "Red",
+  agent_blue: "Blue",
+  agent_green: "Green",
+  agent_orange: "Orange",
+  agent_purple: "Purple",
+};
+
+// Reverse of DETECTIVE_SHORT_LABELS ("Red" -> "agent_red") - same purpose as AGENT_LABEL_TO_ID,
+// scoped to the short form.
+export const AGENT_SHORT_LABEL_TO_ID: Record<string, DetectiveId> = Object.fromEntries(
+  DETECTIVE_IDS.map((id) => [DETECTIVE_SHORT_LABELS[id], id]),
+);
+
 // Kept here (not in board/BoardScene.ts, which imports Phaser) so both the Phaser board and plain
 // React components (TicketInventory, ChatLog) can use the same per-agent colors without pulling
 // Phaser into the main bundle - see boardDimensions.ts for the same rationale re: board sizing.
-// Standard CSS named-color hex values, matching each agent's own display name.
+// Specific hex values chosen for this project, not plain CSS named colors.
 export const AGENT_COLORS: Record<DetectiveId, number> = {
-  agent_red: 0xff0000,
-  agent_blue: 0x0000ff,
-  agent_green: 0x008000,
-  agent_yellow: 0xffff00,
-  agent_purple: 0x800080,
+  agent_red: 0xe0115f,
+  agent_blue: 0x00e5ff,
+  agent_green: 0x2e8b57,
+  agent_orange: 0xf28500,
+  agent_purple: 0x9966cc,
 };
 
 export function toCssColor(hex: number): string {

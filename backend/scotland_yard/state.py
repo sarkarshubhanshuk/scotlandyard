@@ -44,10 +44,33 @@ class MrXState(TypedDict):
     black_tickets: int
     double_tickets: int
 
-class DetectiveStrategy(TypedDict):
-    """Stores a detective's global strategy (moves for everyone + rationale)"""
-    proposed_board_moves: Dict[str, int]
-    rationale: str
+class TurnResponse(TypedDict):
+    """One non-moving detective's advisory response to the current mover's proposal."""
+    responder: str
+    response: str
+    preferred_node: int      # The responder's own stated preference for ITSELF - advisory only
+                             # (ADR-0009): it is never reserved, and the responder is free to
+                             # decide differently when its own turn comes round.
+
+
+class TurnRecord(TypedDict):
+    """
+    Everything one detective's turn produced, in the order it happened: that detective's
+    opening proposal, the four responses to it, and the final move it committed to.
+
+    This is the round's whole narrative - it is what the frontend Chat Log renders, and (for
+    the current turn only) what gets fed back into the mover's final-decision prompt.
+    """
+    proposed_node: int
+    proposal_rationale: str
+    responses: List[TurnResponse]
+    from_node: int           # Where the detective stood before this turn. Recorded because the
+                             # move is applied immediately (ADR-0010), so by the time anything
+                             # downstream reads this, detectives[det]["node_id"] is already the
+                             # destination and the origin is no longer derivable from state.
+    committed_node: int
+    transport: Optional[str]  # The ticket actually spent; None if the detective could not move.
+    decision_rationale: str
 
 class ScotlandYardState(TypedDict):
     """
@@ -56,40 +79,41 @@ class ScotlandYardState(TypedDict):
     # Game Progress Tracking
     round_number: int
 
-    # Tracks the 1-3 voting loops
-    debate_loop_count: int
-
-    # Per-round memoization of agents.py:compute_mrx_zone_context() - identical inputs across
-    # propose/debate/vote and every debate-loop iteration within one round, so it's computed
-    # once (by whichever of those nodes runs first) and reused for the rest of the round. Key
-    # absence (not just None, which is a legitimate pre-reveal value) means "not yet computed
-    # this round" - build_next_round_state omits this field so each new round starts fresh.
-    mrx_zone_context: Optional[dict]
+    # Which detective is taking its turn right now, as an index into DETECTIVE_IDS. Starts at
+    # 0 (Agent Red) and is advanced by graph.py's router until it reaches NUM_DETECTIVES, at
+    # which point every detective has committed and the round finalizes.
+    turn_index: int
 
     # Mr. X Status & Travel Log
     mr_x: MrXState
     
     # Detective Statuses (Keys: rules_constants.py's DETECTIVE_IDS - "agent_red",
-    # "agent_blue", "agent_green", "agent_yellow", "agent_purple")
+    # "agent_blue", "agent_green", "agent_orange", "agent_purple"). Updated DURING a round, as
+    # each detective's turn ends and its move is applied (ADR-0010) - not only at round
+    # resolution, which is what it used to be.
     detectives: Dict[str, Detective]
     
-    # Shared Debate History
-    # Using Annotated with operator.add appends new messages rather than replacing history
+    # Append-only log of each turn's rendered transcript, one AIMessage per completed turn.
+    # Using Annotated with operator.add appends rather than replacing.
     messages: Annotated[List[BaseMessage], operator.add]
     
-    # Each detective proposes moves for ALL detectives
-    proposed_strategies: Annotated[Dict[str, DetectiveStrategy], update_dict]
+    # {detective_id: node_id} for every detective that has already taken its turn this round.
+    # Its entry is where that detective is now actually standing - the move was applied the
+    # moment its turn ended (ADR-0010), so this is a record of who has moved, not a set of
+    # reservations waiting to be honoured. Two detectives sharing a destination is impossible
+    # because the second one is simply never offered a node the first is standing on.
+    committed_moves: Annotated[Dict[str, int], update_dict]
 
-    # Each debate speaker's structured post-debate stance (ISSUE-004):
-    # {speaker_id: {target_id: preferred_node}}, pending targets only. Plain overwrite field -
-    # no memoization needed like mrx_zone_context, since debate_node always runs immediately
-    # before vote_node reads it, every loop and every round, so it's never stale when read.
-    debate_positions: Optional[Dict[str, Dict[str, int]]]
+    # Set to the detective that landed on Mr. X, the instant it happens. The rules end the game
+    # at that moment, so the router reads this to skip every remaining turn in the round rather
+    # than letting four more detectives deliberate over a finished game.
+    captured_by: Optional[str]
 
-    # Moves that have passed the 3-vote threshold
-    locked_moves: Annotated[Dict[str, int], update_dict]
+    # {detective_id: TurnRecord} for every turn taken so far this round - see TurnRecord.
+    turn_records: Annotated[Dict[str, TurnRecord], update_dict]
     
-    # Final Locked Moves agreed upon after debate consensus
+    # The round's destination for every detective, assembled by finalize_round_node from
+    # committed_moves once all five turns are done.
     final_moves: Annotated[Dict[str, int], update_dict]
 
     # graph.py:finalize_round_node's Chat-Log preview of final_moves - per detective,

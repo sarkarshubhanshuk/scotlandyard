@@ -17,9 +17,9 @@ TRANSPORT_PRIORITY = {
 def pick_transport(available_transports: List[str], ticket_counts: dict) -> str:
     """
     Deterministic apply-time transport choice for a detective's move. Detectives never choose
-    this themselves - agents.py's build_strategy_schema/build_ballot_schema only ever ask for a
-    target node, never a transport type, since a node pair can legally be connected by more than
-    one transport simultaneously (e.g. map.json's node 1 <-> node 46 via both bus and metro).
+    this themselves - agents.py's MoveChoice schema only ever asks for a target node, never a
+    transport type, since a node pair can legally be connected by more than one transport
+    simultaneously (e.g. map.json's node 1 <-> node 46 via both bus and metro).
     """
     def sort_key(transport):
         return (ticket_counts.get(f"{transport}_tickets", 0), TRANSPORT_PRIORITY[transport])

@@ -9,11 +9,42 @@ import { TravelLog } from "../components/TravelLog";
 import { useMrXMoveWizard } from "../hooks/useMrXMoveWizard";
 import { useRoundStream } from "../hooks/useRoundStream";
 import { GameLayout } from "../layout/GameLayout";
+import { AGENT_COLORS, AGENT_SHORT_LABEL_TO_ID, toCssColor } from "../labels";
 import type { MapData, PublicGameState } from "../types";
 
 // Lazy-loaded so Phaser (the bulk of the production bundle - see Vite's own chunk-size warning)
 // only ever downloads once a game is actually entered, not on the home screen.
 const BoardCanvas = lazy(() => import("../board/BoardCanvas").then((m) => ({ default: m.BoardCanvas })));
+
+// Matches any detective's short callsign ("Red", "Blue", ...) wherever it appears in the
+// sidebar's "Ongoing actions" label, so that name can be colored to match its pawn - mirrors
+// ChatLog's own AGENT_NAME_PATTERN/ColoredLine, scoped to the short form this label uses instead
+// of the full "Agent Red" display name ChatLog/tooltips use.
+const AGENT_SHORT_NAME_PATTERN = new RegExp(
+  `\\b(${Object.keys(AGENT_SHORT_LABEL_TO_ID)
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|")})\\b`,
+  "g",
+);
+
+// The label never mentions more than one detective (whichever one's turn it currently is), but
+// splits generically on any of the five names rather than assuming that, so it stays correct if
+// a future phase ever names more than one.
+function OngoingActionText({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(AGENT_SHORT_NAME_PATTERN).map((part, i) => {
+        const agentId = AGENT_SHORT_LABEL_TO_ID[part];
+        if (!agentId) return part;
+        return (
+          <span key={i} style={{ color: toCssColor(AGENT_COLORS[agentId]) }}>
+            {part}
+          </span>
+        );
+      })}
+    </>
+  );
+}
 
 export function GameScreen() {
   const { gameId } = useParams<{ gameId: string }>();
@@ -86,7 +117,16 @@ export function GameScreen() {
   // accumulated chat log entries) starts fresh for every distinct game, rather than carrying
   // over stale in-progress picks or a previous game's debate history.
   return (
-    <LoadedGame key={gameId} gameId={gameId} mapData={mapData} gameState={gameState} onGameStateChange={setGameState} />
+    <LoadedGame
+      key={gameId}
+      gameId={gameId}
+      mapData={mapData}
+      gameState={gameState}
+      // setGameState's own state is PublicGameState | null, but LoadedGame only ever renders
+      // once it is non-null and only ever sets a real snapshot, so the updater it passes can
+      // safely assume a non-null previous value.
+      onGameStateChange={setGameState as LoadedGameProps["onGameStateChange"]}
+    />
   );
 }
 
@@ -94,12 +134,46 @@ interface LoadedGameProps {
   gameId: string;
   mapData: MapData;
   gameState: PublicGameState;
-  onGameStateChange: (gameState: PublicGameState) => void;
+  // Accepts an updater as well as a plain snapshot: useRoundStream applies each detective's move
+  // as it streams in (ADR-0010), and those land against whatever the previous turn left behind
+  // rather than against the state of the render that opened the stream.
+  onGameStateChange: (
+    update: PublicGameState | ((prev: PublicGameState) => PublicGameState),
+  ) => void;
 }
 
 function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGameProps) {
   const wizard = useMrXMoveWizard(gameId, gameState, onGameStateChange);
   const roundStream = useRoundStream(gameId, gameState, onGameStateChange);
+
+  // Whose pawn the board's "active turn" halo belongs on right now - cycling Mr. X -> Agent Red
+  // -> ... -> Agent Purple -> (next round) Mr. X, same order the backend actually plays in.
+  // gameState.status is the source of truth for "is it Mr. X's turn": the halo belongs on him
+  // for the whole time status is "awaiting_mr_x_move", with no event needed to turn it on (it's
+  // simply true the instant a fresh round starts) or off (submitting his move flips status away
+  // immediately, before the round stream even opens). While detectives are moving, ownership
+  // comes from roundStream's own turn_started/turn_decision tracking instead - gated on status
+  // here too, so a detective from a round that has already ended can never leak through.
+  const activeTurnPawnId =
+    gameState.status === "awaiting_mr_x_move"
+      ? "mr_x"
+      : gameState.status === "detective_loop_running"
+        ? roundStream.activeTurnDetective
+        : null;
+
+  // The sidebar's "Ongoing actions" line. wizard.movingHop takes priority over gameState.status
+  // whenever it's set: a double-move's intermediate hop deliberately holds status back at
+  // "awaiting_mr_x_move" until its second leg lands (see useMrXMoveWizard's own comment on why),
+  // so status alone can't tell "still picking a move" apart from "first hop already animating" -
+  // movingHop can. Once it clears (both for a single move and after a double-move's second leg),
+  // this falls through to whatever gameState.status/roundStream actually says next.
+  const ongoingActionLabel = wizard.movingHop
+    ? `Mr. X's turn - Mr. X is moving from ${wizard.movingHop.from} to ${wizard.movingHop.to}`
+    : gameState.status === "awaiting_mr_x_move"
+      ? `Mr. X's turn - Waiting for user input, currently at ${gameState.mr_x.current_node}`
+      : gameState.status === "detective_loop_running"
+        ? roundStream.stageLabel
+        : gameState.status.replaceAll("_", " ");
 
   return (
     <>
@@ -109,7 +183,13 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
       <GameLayout
         board={
           <Suspense fallback={<div style={{ padding: 24 }}>Loading board...</div>}>
-            <BoardCanvas mapData={mapData} gameState={gameState} wizard={wizard} />
+            <BoardCanvas
+              mapData={mapData}
+              gameState={gameState}
+              wizard={wizard}
+              onPawnSettled={roundStream.handlePawnSettled}
+              activeTurnPawnId={activeTurnPawnId}
+            />
           </Suspense>
         }
         sidebar={
@@ -117,13 +197,22 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
             {/* Header + Ticket Inventory grouped with their own tighter gap, distinct from the
                 sidebar's regular section-to-section gap (set on GameLayout's outer flex column). */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <h2 style={{ margin: 0 }}>
-                Round {gameState.round_number}{" "}
-                <span style={{ color: "var(--color-text-muted)", fontWeight: 400 }}>
-                  -{" "}
-                  {gameState.status === "detective_loop_running"
-                    ? roundStream.stageLabel
-                    : gameState.status.replaceAll("_", " ")}
+              <h2 style={{ margin: 0, display: "flex", alignItems: "center" }}>
+                {/* Round number stays at h2's own (larger, bold-by-default) size; the ongoing-
+                    action label gets its own smaller, constant size regardless of phase, so a
+                    longer phase (e.g. "is finalizing their move from 70") still reads as one
+                    line rather than wrapping. display:flex + alignItems:center is what actually
+                    centers the shorter span against the taller one - vertical-align is defined
+                    relative to the parent line box's own baseline/x-height, not to a sibling's
+                    box, so setting it on just one span (as this used to) doesn't align it to the
+                    OTHER span at all. The separating space lives inside the second span's own
+                    text (rather than as a bare text node between the two spans) because a flex
+                    container drops a whitespace-only text node entirely, which would have closed
+                    the gap and shifted this label left. */}
+                <span style={{ fontWeight: 700 }}>Round {gameState.round_number}</span>
+                <span style={{ fontSize: 13, fontWeight: 400, color: "var(--color-text-muted)" }}>
+                  {" - "}
+                  <OngoingActionText text={ongoingActionLabel} />
                 </span>
               </h2>
               <TicketInventory gameState={gameState} />

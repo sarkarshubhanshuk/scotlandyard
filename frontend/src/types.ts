@@ -55,7 +55,7 @@ export interface PublicDetective {
 
 // Mirrors backend/agents.py's DETECTIVE_IDS - the internal identifier for each detective. Their
 // human-readable callsigns ("Agent Red" etc.) live in labels.ts's DETECTIVE_LABELS.
-export const DETECTIVE_IDS = ["agent_red", "agent_blue", "agent_green", "agent_yellow", "agent_purple"] as const;
+export const DETECTIVE_IDS = ["agent_red", "agent_blue", "agent_green", "agent_orange", "agent_purple"] as const;
 export type DetectiveId = (typeof DETECTIVE_IDS)[number];
 
 export interface PublicGameState {
@@ -72,35 +72,62 @@ export interface LegalMove {
   ticket_options: TicketType[];
 }
 
-// Mirrors backend/serializers.py:serialize_loop_event's payload shapes - the SSE events
-// GET /games/{id}/round/stream emits, one named event per detective_graph step.
-export interface DetectiveStrategy {
-  proposed_board_moves: Record<string, number>;
+// The SSE events GET /games/{id}/round/stream emits. Most of them are agents.py's own
+// per-LLM-call stream-writer payloads, relayed verbatim by server.py:round_stream_route - one
+// event per call rather than one per graph node, so a turn's six messages arrive as they
+// happen instead of landing together once the whole turn has finished. Only round_finalized
+// and round_result come from serializers.py:serialize_loop_event.
+
+// A detective's turn is beginning. Nothing has been decided yet.
+export interface TurnStartedEvent {
+  type: "turn_started";
+  detective: DetectiveId;
+}
+
+// The mover's opening proposal, broadcast to the other four before any of them answer.
+export interface TurnProposalEvent {
+  type: "turn_proposal";
+  detective: DetectiveId;
+  target_node: number;
   rationale: string;
 }
 
-export interface ProposalEvent {
-  type: "proposal";
-  proposed_strategies: Record<string, DetectiveStrategy>;
+// One non-mover's answer to the proposal on the table. preferred_node is that responder's own
+// stated intent for its own turn and is advisory only (ADR-0009) - it reserves nothing. It is
+// null when the response call failed, or when the node named wasn't one of the responder's own
+// legal moves and was dropped rather than silently rewritten (see agents.py:turn_node).
+export interface TurnResponseEvent {
+  type: "turn_response";
+  detective: DetectiveId;
+  responding_to: DetectiveId;
+  response: string;
+  preferred_node: number | null;
 }
 
-export interface DebateEvent {
-  type: "debate";
-  transcript: string;
+// The mover's final choice, ALREADY APPLIED on the server (ADR-0010) - this detective has
+// moved, spent its ticket, and every detective still to move this round sees it there. The
+// client mirrors the same change locally so the board animates the pawn and the ticket counts
+// stay live; round_result re-syncs against server truth at the end of the round regardless.
+//
+// transport is null only if the detective could not legally move at all and stayed put, in
+// which case from_node === target_node and no ticket changed hands.
+export interface TurnDecisionEvent {
+  type: "turn_decision";
+  detective: DetectiveId;
+  from_node: number;
+  target_node: number;
+  transport: TicketType | null;
+  rationale: string;
+  // True if this detective landed on Mr. X. The game ends here and the detectives behind it in
+  // the turn order never move - see graph.py's router.
+  captured: boolean;
 }
 
-// Fired the moment a stage's first LLM call actually goes out (agents.py's get_stream_writer()
-// calls) - distinct from the proposal/debate/vote_tally events below, which only arrive once the
-// ENTIRE stage (all 5 detectives) has finished.
-export interface StageStartedEvent {
-  type: "stage_started";
-  stage: "proposal" | "debate" | "vote";
-}
-
-export interface VoteTallyEvent {
-  type: "vote_tally";
-  locked_moves: Record<string, number>;
-  loop_number: number;
+// The graph's turn node finished - a boundary marker, since every message it produced has
+// already been streamed by the four events above.
+export interface TurnFinishedEvent {
+  type: "turn_finished";
+  detective: DetectiveId | null;
 }
 
 // Mirrors backend/transport.py:determine_move_transport's output shape - the same transport
