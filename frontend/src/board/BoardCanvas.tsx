@@ -167,7 +167,7 @@ export function BoardCanvas({ mapData, gameState, wizard }: BoardCanvasProps) {
             bottom: 12,
             left: 12,
             right: 12,
-            background: wizard.error ? "#b00020" : "#222",
+            background: wizard.error ? "var(--color-error)" : "#222",
             color: "#fff",
             padding: "6px 10px",
             borderRadius: 4,

@@ -1,5 +1,5 @@
 """
-One-off extraction script: derives docs/map/node_positions.json from docs/map/board.svg.
+One-off extraction script: derives data/board/node_positions.json from data/board/board.svg.
 
 board.svg already draws a small numbered <text> label directly on top of each node's <circle>
 marker, and both the circle-marker group and the text-label group share the exact same
@@ -15,9 +15,9 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-BOARD_SVG = BASE_DIR / "docs" / "map" / "board.svg"
-MAP_JSON = BASE_DIR / "docs" / "map" / "map.json"
-OUTPUT = BASE_DIR / "docs" / "map" / "node_positions.json"
+BOARD_SVG = BASE_DIR / "data" / "board" / "board.svg"
+MAP_JSON = BASE_DIR / "data" / "board" / "map.json"
+OUTPUT = BASE_DIR / "data" / "board" / "node_positions.json"
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
 

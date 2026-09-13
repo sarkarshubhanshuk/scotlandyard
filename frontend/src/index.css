@@ -1,6 +1,32 @@
+/*
+ * Global styles and design tokens.
+ *
+ * The colour and spacing literals below were previously repeated inline across components
+ * (#b00020 in two error blocks, #666 / #ddd / #f4f1ea in several places), so a palette change
+ * meant hunting through JSX. Components still use inline styles for genuinely dynamic values -
+ * agent colours, popup positioning - but shared constants belong here, where a theme can
+ * actually be changed in one place.
+ */
 :root {
   color-scheme: light dark;
   font-family: system-ui, "Segoe UI", Roboto, sans-serif;
+
+  /* Palette */
+  --color-board-bg: #f4f1ea;
+  --color-text-muted: #666;
+  --color-border: #ddd;
+  --color-border-strong: #999;
+  --color-error: #b00020;
+  --color-surface: #fff;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 20px;
+  --space-5: 24px;
+
+  --radius: 6px;
 }
 
 * {
@@ -15,4 +41,33 @@ body,
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+/*
+ * Every interactive element gets a visible focus ring. The app is keyboard-navigable in
+ * principle (buttons, the double-move checkbox), but nothing indicated focus, so tabbing
+ * through it was invisible.
+ */
+:where(button, a, input, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-error);
+  outline-offset: 2px;
+}
+
+.sy-error {
+  color: var(--color-error);
+  padding: var(--space-5);
+}
+
+.sy-button {
+  padding: 10px var(--space-5);
+  font-size: 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  cursor: pointer;
+}
+
+.sy-button:disabled {
+  cursor: default;
+  opacity: 0.6;
 }

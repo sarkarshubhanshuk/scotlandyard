@@ -8,8 +8,11 @@ for, the following:
 
 - `docs/rules/rules.md` — the official Scotland Yard rules. States *what* is allowed. Immutable
   source of truth (see `.cursorrules`).
-- `docs/map/map.json` — the board graph. Immutable source of truth.
+- `data/board/map.json` — the board graph. Immutable source of truth.
 - `CLAUDE.md` — high-level project history, phase status, and architecture summary.
+- `docs/adr/` — Architecture Decision Records. Where this file explains *how* a mechanic works,
+  an ADR explains *why that approach and not the alternatives*. Several sections below now link
+  out to one instead of restating the argument inline.
 
 This file goes one level deeper than `CLAUDE.md`: it's where new contributors (human or AI)
 should look to understand exactly how a given mechanic works before touching the code that
@@ -32,7 +35,7 @@ Every mechanic below is documented as its own `##` section, using this fixed tem
 - **Overview** — one or two sentences on what the mechanic does.
 - **Trigger** — what invokes it, and how often.
 - **Flow** — the actual step-by-step sequence.
-- **State Involved** — which `ScotlandYardState` fields (`backend/state.py`) it reads/writes.
+- **State Involved** — which `ScotlandYardState` fields (`backend/scotland_yard/state.py`) it reads/writes.
 - **Implementation References** — `file.py:function` pointers. Code is not duplicated here;
   if the doc and the code disagree, the code wins and this doc needs updating.
 - **Design Rationale** — the *why* behind non-obvious choices.
@@ -63,7 +66,7 @@ undecided detectives fall back to their own last self-proposed move.
 ### Trigger
 
 Runs once per round, orchestrated by the `detective_graph` LangGraph state machine
-(`backend/graph.py`). The graph is invoked fresh per round (it has no memory between separate
+(`backend/scotland_yard/graph.py`). The graph is invoked fresh per round (it has no memory between separate
 `.astream()`/`.ainvoke()` calls); chaining rounds is done externally via `build_next_round_state`
 (see Round Boundaries below).
 
@@ -77,7 +80,8 @@ START -> propose -> debate -> vote -> [router] -> propose (loop) OR finalize -> 
 - Every detective (all 5, regardless of lock status) independently proposes a move for every
   *still-undecided* detective. A detective whose own move already locked earlier this round
   keeps proposing — they still have a stake in where the remaining detectives go.
-- Before proposing, the node calls the `get_valid_moves` MCP tool (`backend/game_master.py`)
+- Before proposing, the node calls `game_master.compute_valid_moves` in-process (ADR-0001 —
+  this used to be an MCP tool round-trip)
   for each still-undecided detective, passing `occupied_nodes` = every detective's current
   position **plus every node already in `locked_moves`**. This returns the true legal move set
   (ticket-legal, unoccupied, *and* not already claimed as a locked detective's destination),
@@ -156,7 +160,7 @@ START -> propose -> debate -> vote -> [router] -> propose (loop) OR finalize -> 
   Moves", so including them again in every proposer's board would just be duplicated noise),
   annotated with `distance_to_mrx_zone_per_move` (see "Mr. X Possible-Zone Context" above), so
   debaters can argue about whether a plan actually closes in on him.
-- Uses `mcp_client.py:get_debate_llm()` — a dedicated `ChatOpenAI` instance with **no** MCP
+- Uses `llm_client.py:get_debate_llm()` — a dedicated `ChatOpenAI` instance with **no**
   tools bound, separate from the tool-bound instance `propose_node`/`vote_node` share via
   `get_detective_llm()`. This is a text-only 2-3 sentence pitch task with no tool-execution loop
   to handle a tool-call response, so it must never be able to emit one — see
@@ -205,16 +209,26 @@ START -> propose -> debate -> vote -> [router] -> propose (loop) OR finalize -> 
   *themselves* (`proposed_strategies[det_id]["proposed_board_moves"][det_id]`).
 - If even that's missing (e.g. every proposal attempt for them errored), the emergency fallback
   is to stay at their current node.
+- Also computes `final_move_details` — per detective, `{from_node, to_node, transport}` — via
+  `backend/scotland_yard/transport.py:determine_move_transport`, the same legality/tie-break helper §2's
+  `resolve_round` itself calls to actually apply moves. This exists purely so the frontend Chat
+  Log's "Final Moves" line can show what's about to happen (e.g. "Agent Red moves from Node 13 to
+  Node 46 via Metro") the moment this node's own SSE event fires — `resolve_round` isn't called
+  until the whole `detective_graph` run finishes (see §2), so without this preview the Chat Log
+  would have nothing to show at this point. Using the identical helper on both ends guarantees
+  the preview can never disagree with what `resolve_round` later actually deducts. `transport` is
+  `None` only if `from_node == to_node` (the rare "stayed put" emergency-fallback case above).
 
 ### Round Boundaries
 
 `locked_moves`, `proposed_strategies`, and `debate_loop_count` are intentionally cumulative
 *within* a round (that's how the loop tracks who's already decided). They do **not** reset
 themselves — `detective_graph` has no cross-invocation memory, so resetting is the caller's
-responsibility. `build_next_round_state()` (`backend/graph.py`) takes a completed round's final
+responsibility. `build_next_round_state()` (`backend/scotland_yard/graph.py`) takes a completed round's final
 state and returns a fresh `initial_state` for the next round: `round_number` incremented,
 `debate_loop_count: 0`, `locked_moves: {}`, `proposed_strategies: {}`, `final_moves: {}`,
-`messages: []`, while carrying `detectives` and `mr_x` forward unchanged. `mrx_zone_context` is
+`final_move_details: {}`, `messages: []`, while carrying `detectives` and `mr_x` forward
+unchanged. `mrx_zone_context` is
 deliberately omitted (not set to `None`) so the per-round memoization described above starts
 each new round with a cache miss. `debate_positions` needs no such handling — it's a plain
 overwrite field that `debate_node` always repopulates immediately before `vote_node` reads it,
@@ -230,6 +244,7 @@ does **not** apply `final_moves` to positions or deduct tickets — see Known Li
 | `locked_moves` | `Dict[str, int]` | Detective → node, accumulates within a round |
 | `proposed_strategies` | `Dict[str, DetectiveStrategy]` | Latest proposal per proposer, incl. rationale |
 | `final_moves` | `Dict[str, int]` | Output of `finalize_round_node`; the round's resolved moves |
+| `final_move_details` | `Dict[str, dict]` | `finalize_round_node`'s from/to/transport preview per detective, for the frontend Chat Log - see Phase 4 above |
 | `messages` | `List[BaseMessage]` | Debate transcript (one `AIMessage` per loop) |
 | `detectives` | `Dict[str, Detective]` | Current positions/tickets; read-only input to this cycle |
 | `mrx_zone_context` | `Optional[dict]` | Per-round memoized Mr. X possible-zone context (see above); key absent = not yet computed this round |
@@ -237,44 +252,50 @@ does **not** apply `final_moves` to positions or deduct tickets — see Known Li
 
 ### Implementation References
 
-- `backend/agents.py:DETECTIVE_IDS` — the 5 detectives' internal identifiers (`agent_red`,
+- `backend/scotland_yard/rules_constants.py:DETECTIVE_IDS` — the 5 detectives' internal identifiers (`agent_red`,
   `agent_blue`, `agent_green`, `agent_yellow`, `agent_purple`); `AGENT_DISPLAY_NAMES`/`agent_names`
   map them to their human-readable callsigns ("Agent Red", etc.) used anywhere a detective's
   identity appears in LLM-facing prompt text or the debate transcript, so the agents' own
   reasoning refers to itself/peers by callsign rather than the internal id. Dict keys, schema
   field names (e.g. `agent_red_move`), and console logs still use the raw id.
-- `backend/agents.py:get_psychology_prompt` — round-based desperation curve (arrogant/selfish
+- `backend/scotland_yard/agents.py:get_psychology_prompt` — round-based desperation curve (arrogant/selfish
   through round 12, compromising through round 18, panicked/consensus-seeking after)
-- `backend/agents.py:build_strategy_schema`, `build_ballot_schema`, `build_debate_position_schema`
+- `backend/scotland_yard/agents.py:build_strategy_schema`, `build_ballot_schema`, `build_debate_position_schema`
   — dynamic per-loop schemas
-- `backend/agents.py:build_annotated_proposals` — proposal-annotation logic shared by
+- `backend/scotland_yard/agents.py:build_annotated_proposals` — proposal-annotation logic shared by
   `debate_node` and `vote_node` (ISSUE-004), optionally scoped to `pending_targets`
-- `backend/agents.py:find_proposal_conflicts` — detects (b)/(c) violations in a raw proposal,
+- `backend/scotland_yard/agents.py:find_proposal_conflicts` — detects (b)/(c) violations in a raw proposal,
   used to decide whether a proposer gets its one retry
-- `backend/agents.py:propose_node`, `debate_node`, `vote_node`
-- `backend/graph.py:check_vote_status`, `finalize_round_node`, `build_next_round_state`
-- `backend/game_master.py:get_valid_moves` — ticket + occupancy legality, server-side
-- `backend/mcp_client.py:get_detective_llm` — cached, tool-bound LLM used by `propose_node`/
+- `backend/scotland_yard/agents.py:propose_node`, `debate_node`, `vote_node`
+- `backend/scotland_yard/graph.py:build_detective_graph` (and its `check_vote_status` router), `finalize_round_node`, `_resolve_fallback_moves`, `build_next_round_state`
+- `backend/scotland_yard/game_master.py:compute_valid_moves` — ticket + occupancy legality, server-side
+- `backend/scotland_yard/agents.py:fetch_legal_moves` — the single legal-move lookup shared by
+  `propose_node`, `vote_node` and `finalize_round_node` (ISSUE-025)
+- `backend/scotland_yard/llm_client.py:get_detective_llm` — cached LLM used by `propose_node`/
   `vote_node`
-- `backend/mcp_client.py:get_debate_llm`, `_build_chat_llm` — `debate_node`'s cached, non-tool-
+- `backend/scotland_yard/llm_client.py:get_debate_llm`, `_build_chat_llm` — `debate_node`'s cached, non-tool-
   bound LLM instance (see ISSUE-003) and the shared OpenRouter config helper both LLM getters
   build on
-- `backend/game_master.py:compute_mrx_zone`, `compute_distances_to_zone` — the board-topology
+- `backend/scotland_yard/game_master.py:compute_mrx_zone`, `compute_distances_to_zone` — the board-topology
   BFS behind the Mr. X Possible-Zone Context described above
-- `backend/agents.py:compute_mrx_zone_context`, `format_mrx_zone_block`, `zone_distances_for_moves`
+- `backend/scotland_yard/agents.py:compute_mrx_zone_context`, `format_mrx_zone_block`, `zone_distances_for_moves`
   — builds and renders that context into each of the three prompts
-- `backend/agents.py:get_mrx_zone_context` — per-round memoization wrapper around
+- `backend/scotland_yard/agents.py:get_mrx_zone_context` — per-round memoization wrapper around
   `compute_mrx_zone_context`; all three nodes call this instead of the raw function
+- `backend/scotland_yard/transport.py:pick_transport`, `determine_move_transport` — the transport
+  legality/tie-break logic shared by `finalize_round_node`'s Chat-Log preview (here) and §2's
+  `resolve_round` (which actually applies the move) - extracted from `round_resolver.py` into
+  its own module specifically so both callers share one implementation
 
 ### Design Rationale
 
 - **3-vote majority threshold**: matches "most of the team agrees" without requiring full
   unanimity, which would make consensus nearly impossible with 5 independently-motivated agents.
-- **Server-side legality (MCP)**: the LLM cannot be trusted to reliably honor prompt-only
+- **Server-side legality (in-process; see ADR-0001)**: the LLM cannot be trusted to reliably honor prompt-only
   constraints, so both ticket legality and node-occupancy are computed by `get_valid_moves` and
   re-validated in code after every LLM response, rather than relied upon as prompted behavior.
   (Current model: `deepseek/deepseek-v4-flash-0731` via OpenRouter — see `CLAUDE.md`.)
-- **Reasoning-token cap on every detective-facing LLM instance**: `mcp_client.py:_build_chat_llm`
+- **Reasoning-token cap on every detective-facing LLM instance** (full evidence in ADR-0004): `llm_client.py:_build_chat_llm`
   sets `max_tokens=4000` and `extra_body={"reasoning": {"max_tokens": 2000}}` (OpenRouter's
   reasoning-budget extension — not part of the standard OpenAI schema, hence `extra_body` rather
   than a typed field), shared by both `get_detective_llm()` and `get_debate_llm()`. Derived from
@@ -318,7 +339,7 @@ does **not** apply `final_moves` to positions or deduct tickets — see Known Li
   rules (a)-(d) hold, independent of which LLM is behind `get_detective_llm`.
 - **One scalar per move, not a full distance matrix, for the Mr. X zone context**: an earlier
   design pass considered giving every candidate move its distance to *every* node Mr. X could
-  possibly be at, but a real check against `docs/map/map.json` showed the zone can cover up to
+  possibly be at, but a real check against `data/board/map.json` showed the zone can cover up to
   ~84% of the board at 4 hops — a full matrix would run to thousands of numbers per call in the
   worst case, adding real cost and complexity right on top of already-logged latency/reliability
   issues (`known_issues.md` ISSUE-006/007/009). A single "distance to the *nearest* possible
@@ -342,10 +363,10 @@ actually talk to.
 
 ### Trigger
 
-One full round = Mr. X's human-submitted turn (`backend/mrx_turn.py`), then the detective
-decision cycle (§1, `detective_graph`), then round resolution (`backend/round_resolver.py`).
-Orchestrated per-game by a `GameSession` (`backend/session.py`) and driven externally via the
-Starlette API (`backend/server.py`).
+One full round = Mr. X's human-submitted turn (`backend/scotland_yard/mrx_turn.py`), then the detective
+decision cycle (§1, `detective_graph`), then round resolution (`backend/scotland_yard/round_resolver.py`).
+Orchestrated per-game by a `GameSession` (`backend/scotland_yard/session.py`) and driven externally via the
+Starlette API (`backend/scotland_yard/server.py`).
 
 ### Flow
 
@@ -378,17 +399,25 @@ Starlette API (`backend/server.py`).
   layer uses to know the round-stream endpoint is now live.
 
 **Detective loop + resolution** (`round_resolver.run_detective_loop`, `round_resolver.resolve_round`)
-- `run_detective_loop` drives `detective_graph.astream(state, stream_mode=["updates", "values"])`
-  — `"updates"` chunks identify which node just ran for event labeling, the last `"values"`
-  chunk becomes the new `session.state` directly, reusing `state.py`'s own reducers rather than
-  reimplementing them.
+- `run_detective_loop` drives `detective_graph.astream(state, stream_mode=["updates", "values",
+  "custom"])`: `"updates"` chunks identify which node just ran for event labeling, the last
+  `"values"` chunk becomes the new `session.state` directly (reusing `state.py`'s own reducers
+  rather than reimplementing them), and `"custom"` chunks are `agents.py`'s own
+  `get_stream_writer()` calls - fired the moment a node's first LLM call actually goes out (not
+  when the node merely starts, which could still be doing zone-context prep), yielded as
+  `{"type": "stage_started", "stage": ...}` so the frontend can show "Detectives are
+  debating..."-style status text as each stage *begins*, not only once `"updates"` reports the
+  whole node finished.
 - `resolve_round` applies `final_moves` to each detective (agents.py's `DETECTIVE_IDS`) **sequentially, in fixed order**,
   never trusting the graph's output for legality (re-derived via `game_master.compute_valid_moves`
   — the same posture §1 already applies to every LLM response). When a target node is reachable
   via more than one transport type (verified real case: map.json's node 1 ↔ node 46 via both bus
-  and metro), `pick_transport` deterministically prefers whichever type the detective holds the
+  and metro), `transport.py:determine_move_transport` (which wraps `pick_transport`)
+  deterministically prefers whichever type the detective holds the
   most tickets of, tie-broken taxi > bus > metro — a server-side apply-time decision, not
-  something detectives ever choose themselves (see Design Rationale).
+  something detectives ever choose themselves (see Design Rationale). §1's
+  `finalize_round_node` calls the same helper to preview this same decision one step earlier, for
+  the frontend Chat Log.
 - **Capture is checked after EVERY individual detective's move**, not once at the end — the
   instant a detective's new node equals Mr. X's real `current_node`, the round stops and the
   remaining detectives never move.
@@ -397,7 +426,7 @@ Starlette API (`backend/server.py`).
   `round_number == 24` was just completed (Mr. X wins). Otherwise calls `build_next_round_state`
   (§1) unchanged and sets `status = "awaiting_mr_x_move"` for the next round.
 
-**API layer** (`backend/server.py`, `backend/serializers.py`)
+**API layer** (`backend/scotland_yard/server.py`, `backend/scotland_yard/serializers.py`)
 - `POST /games`, `GET /games/{id}`, `GET /games/{id}/mrx/legal-moves`,
   `POST /games/{id}/mrx/move`, `GET /games/{id}/round/stream` (SSE via `sse_starlette`, chosen
   over WebSocket since this is one-directional server→client data once opened).
@@ -407,6 +436,12 @@ Starlette API (`backend/server.py`).
   human-facing client is the one played BY Mr. X; the detectives are backend-only LangGraph/LLM
   agents with no access to this or any client. If a detective-facing client is ever added,
   `current_node` must be excluded from whatever serialization *that* client receives.
+- `serializers.serialize_loop_event` translates each `run_detective_loop` chunk into one named
+  SSE event: `stage_started` (stage beginning - see above), `proposal`, `debate`, `vote_tally`
+  (one per node's `"updates"` chunk), and `round_finalized` — whose `final_moves` field carries
+  `finalize_round_node`'s `final_move_details` (from/to/transport per detective), not the raw
+  `final_moves` int map, since that's what the frontend Chat Log actually renders. The API layer
+  itself appends a final `round_result` event once `resolve_round` has run (see Flow above).
 
 ### State Involved
 
@@ -420,16 +455,18 @@ Starlette API (`backend/server.py`).
 
 ### Implementation References
 
-- `backend/state.py` — `MrXState.current_node` (additive field)
-- `backend/game_master.py:compute_valid_moves` — pure function extracted from the `get_valid_moves`
+- `backend/scotland_yard/state.py` — `MrXState.current_node` (additive field)
+- `backend/scotland_yard/game_master.py:compute_valid_moves` — pure function extracted from the `get_valid_moves`
   MCP tool so server-side code can call it in-process, without the MCP stdio subprocess round-trip
   that only LLM tool-calling actually needs
-- `backend/session.py:GameSession`, `create_game`
-- `backend/mrx_turn.py:get_mr_x_legal_moves`, `submit_mr_x_move`
-- `backend/round_resolver.py:pick_transport`, `run_detective_loop`, `resolve_round`
-- `backend/serializers.py:serialize_public_state`, `serialize_loop_event`
-- `backend/server.py` — the Starlette app and its routes
-- `backend/test_phase4_resolve.py`, `backend/test_api_smoke.py` — verification (see Known
+- `backend/scotland_yard/session.py:GameSession`, `create_game`
+- `backend/scotland_yard/mrx_turn.py:get_mr_x_legal_moves`, `submit_mr_x_move`
+- `backend/scotland_yard/round_resolver.py:run_detective_loop`, `resolve_round`
+- `backend/scotland_yard/transport.py:pick_transport`, `determine_move_transport` — see §1's own reference to
+  the same module
+- `backend/scotland_yard/serializers.py:serialize_public_state`, `serialize_loop_event`
+- `backend/scotland_yard/server.py` — the Starlette app and its routes
+- `backend/tests/test_round_resolution.py`, `backend/tests/test_api.py` — verification (see Known
   Limitations for what these do *not* cover)
 
 ### Design Rationale
@@ -441,14 +478,20 @@ Starlette API (`backend/server.py`).
   specific ticket spent to get there. `pick_transport`'s "most remaining tickets, tie-broken
   taxi > bus > metro" rule is a reasonable default that conserves the scarce metro allotment; it
   can be revisited if ticket-economy strategy ever becomes a design priority.
-- **Starlette, not FastAPI**: `starlette`, `uvicorn`, `sse-starlette`, and `websockets` were
-  already present as transitive installs; FastAPI was not, and there is no
-  `requirements.txt`/`pyproject.toml` anywhere pinning either. For this small, fixed route set,
-  FastAPI's main value-adds (auto request validation / OpenAPI docs) weren't worth a new
-  dependency.
+- **`pick_transport`/`determine_move_transport` live in their own `transport.py` module, not
+  inline in `round_resolver.py`**: once §1's `finalize_round_node` also needed this exact
+  decision (to preview it for the Chat Log one step before `resolve_round` actually applies it),
+  keeping two independently-maintained copies would risk them silently drifting apart - a shared
+  module guarantees the preview and the real, ticket-deducting application always agree.
+- **Starlette, not FastAPI**: see [ADR-0002](../adr/0002-starlette-over-fastapi.md). Note that
+  the original "nothing pins dependencies anyway" part of that reasoning no longer applies —
+  `backend/pyproject.toml` now pins everything exactly — but the decision stands on the route
+  count. Request validation is explicit, in `backend/scotland_yard/requests.py`.
 - **A single atomic request for a double-move**: avoids a cross-request "pending double-move"
   state machine entirely. The client (a human, unlike the detectives) decides both hops itself
   before submitting; nothing commits unless the whole thing validates.
-- **No persistence / session TTL**: accepted non-goal — matches "refreshing the page discards
-  the game" from the project's own UI design decisions.
+- **No persistence**: accepted non-goal — matches "refreshing the page discards the game".
+  Sessions ARE now TTL-evicted, though; see
+  [ADR-0005](../adr/0005-in-memory-session-store.md) for why those are two separate decisions
+  and only the first was deliberate.
 

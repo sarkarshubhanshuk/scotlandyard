@@ -23,13 +23,13 @@ export function GameLayout({ board, sidebar }: GameLayoutProps) {
           flex: 1,
           minWidth: 0,
           height: "100%",
-          padding: 16,
+          padding: "var(--space-3)",
           overflowY: "auto",
           overflowX: "hidden",
           display: "flex",
           flexDirection: "column",
-          gap: 20,
-          borderLeft: "1px solid #ddd",
+          gap: "var(--space-4)",
+          borderLeft: "1px solid var(--color-border)",
         }}
       >
         {sidebar}

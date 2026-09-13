@@ -1,0 +1,68 @@
+# Python project manifest for the Scotland Yard backend.
+#
+# Versions are pinned EXACTLY, not to ranges. The LangChain/LangGraph ecosystem ships
+# frequent breaking minor releases, and several findings recorded in
+# docs/issues/known_issues.md (notably ISSUE-006/007's reasoning-budget experiment) are
+# only reproducible against the specific client versions they were observed on. An
+# unpinned reconstruction of this environment would very likely not behave identically.
+#
+# The dependency list below is derived from the backend's actual imports, NOT from a
+# `pip freeze` of the historical venv - that venv still carries langchain-google-genai
+# and langchain-groq, abandoned when the project moved to OpenRouter (see CLAUDE.md's
+# LLM Configuration section and docs/adr/0004-openrouter-deepseek-llm-provider.md).
+# Freezing it would have enshrined dependencies nothing imports.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scotland-yard-backend"
+version = "1.0.0"
+description = "Multi-agent LangGraph backend for a digital Scotland Yard, with 5 LLM detectives and a human Mr. X"
+# No `readme`: the project README lives at the repository root, and setuptools refuses to read
+# a file outside the project directory. See ../README.md.
+requires-python = ">=3.12"
+license = { text = "MIT" }
+
+dependencies = [
+    # --- Agent orchestration -------------------------------------------------
+    "langgraph==1.0.1",
+    "langchain-core==1.6.1",
+    "langchain-openai==1.6.0",      # OpenRouter is OpenAI-API-compatible; see ADR-0004.
+
+    # --- MCP Game Master server ----------------------------------------------
+    "fastmcp==3.4.7",
+
+    # --- HTTP / SSE API layer ------------------------------------------------
+    "starlette==1.6.0",             # Deliberately not FastAPI; see ADR-0002.
+    "sse-starlette==3.4.8",
+    "uvicorn==0.52.4",
+
+    # --- Support -------------------------------------------------------------
+    "pydantic==2.13.4",
+    "python-dotenv==1.2.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "httpx==0.28.1",                # Required by starlette.testclient.TestClient.
+]
+
+[project.scripts]
+scotland-yard-server = "scotland_yard.server:main"
+
+[tool.setuptools.packages.find]
+include = ["scotland_yard*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# Tests that call a real LLM are opt-in: they cost money, need a live
+# OPENROUTER_API_KEY, and are non-deterministic. Run them with `pytest -m llm`.
+addopts = "-m 'not llm' --strict-markers"
+markers = [
+    "llm: requires a live OPENROUTER_API_KEY and makes real, billable LLM calls (deselected by default)",
+]

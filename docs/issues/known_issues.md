@@ -412,10 +412,11 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   that was never a hybrid-reasoning model to begin with, and the candidates here may still offer
   better non-reasoning quality/latency/cost than DeepSeek v4 flash running reasoning-off.
 
-### ISSUE-009 — `timeout=45` in `mcp_client.py` does not bound observed call latency; its own comment is stale
+### ISSUE-009 — `timeout=45` does not bound observed call latency; its own comment was stale
 
-- **Status**: Open
-- **Area**: `backend/mcp_client.py:get_detective_llm`
+- **Status**: Partially Fixed (2026-09-13) — the stale comment is corrected; whether a real
+  wall-clock deadline is wanted remains open
+- **Area**: `backend/scotland_yard/llm_client.py:_build_chat_llm` (was `mcp_client.py`)
 - **Logged**: 2026-09-02
 - **Description**: The `ChatOpenAI(..., timeout=45, ...)` call site's own comment claims 45s
   "comfortably clears every observed successful call's latency" — but calls up to 11m 27s were
@@ -425,9 +426,13 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   call sails through it. The comment should either be corrected to describe this behavior
   accurately, or the timeout strategy revisited if a real wall-clock cap is actually wanted.
 - **Evidence**: same as ISSUE-006.
-- **Proposed Fix**: Update the comment to describe the timeout's actual (idle-gap) semantics;
-  separately decide whether a real hard deadline is wanted for this workload and add one
-  explicitly if so.
+- **Fix (partial)**: `_build_chat_llm`'s comment now describes the timeout's actual idle-gap
+  semantics rather than claiming a wall-clock bound it does not provide, and ADR-0004 records
+  why the timeout must exist at all (without it, a hung request blocks forever and neither the
+  SDK's retry nor `agents.py`'s per-call fallback ever runs).
+- **Still open**: whether this workload actually wants a hard wall-clock deadline. Adding one
+  means wrapping each call in `asyncio.wait_for`, which would need a decision about what a
+  timed-out detective does — fall back to its previous proposal, or abstain from the round.
 
 ---
 
@@ -439,16 +444,25 @@ subsection.
 
 ### ISSUE-010 — No cross-voter, cross-tally collision detection within a single vote loop
 
-- **Status**: Open
+- **Status**: Fixed (2026-09-13) — shown to be arithmetically impossible, and the invariant it
+  rests on is now asserted rather than accidental
 - **Area**: `backend/agents.py:vote_node`
 - **Logged**: 2026-09-02 (migrated from `game_mechanics.md` §1)
 - **Description**: `vote_node` does not check whether two *different* detectives' tallies both
   reach majority for the same node in the same loop — each detective's tally is computed
   independently. This is a cross-voter, cross-tally case, distinct from the within-one-ballot
   duplicate check `vote_node` already performs.
-- **Proposed Fix**: Worth revisiting alongside ISSUE-013 below (both are about the same
-  underlying gap: nothing currently guarantees two *locked* moves can't collide, only that a
-  single proposal or a single ballot can't).
+- **Fix**: Investigated rather than patched, and the conclusion is that this specific case
+  cannot occur at the current settings. Each individual ballot is already de-duplicated, so for
+  two different targets' tallies to both reach `VOTE_THRESHOLD` on the same node you would need
+  `VOTE_THRESHOLD * 2` = 6 distinct ballots from 5 voters. What was genuinely wrong is that
+  this safety rested on an unstated relationship between two bare literals. Both are now named
+  constants in `rules_constants.py`, which asserts `VOTE_THRESHOLD * 2 > NUM_DETECTIVES` at
+  import — so retuning either value fails loudly instead of silently reopening this. See
+  ADR-0006, and `tests/test_move_consensus.py::test_vote_threshold_is_a_strict_majority`.
+- **Note**: the *cross-loop* variant of this — a pending detective being voted onto a node
+  locked in an EARLIER loop — was a real and reachable bug, and is tracked separately as
+  ISSUE-025.
 
 ### ISSUE-011 — React/Phaser frontend does not exist yet
 
@@ -520,13 +534,22 @@ subsection.
 
 ### ISSUE-014 — No defensive check in `resolve_round` for two detectives' final moves colliding
 
-- **Status**: Open
-- **Area**: `backend/round_resolver.py:resolve_round`
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/scotland_yard/round_resolver.py:resolve_round`, `graph.py:finalize_round_node`
 - **Logged**: 2026-09-02 (migrated from `game_mechanics.md` §2)
-- **Description**: No detection exists for two *different* detectives' final moves colliding on
-  the same node. This would only be possible if §1's own proposal/vote uniqueness enforcement
-  had a bug, since `final_moves` is supposed to already be collision-free by construction —
-  `resolve_round` does not add an extra defensive check for this. Related to ISSUE-010.
+- **Description**: No detection existed for two *different* detectives' final moves colliding on
+  the same node.
+- **Correction (2026-09-13)**: this entry's original premise was **wrong** and worth recording
+  as such. It claimed a collision "would only be possible if §1's own proposal/vote uniqueness
+  enforcement had a bug, since `final_moves` is supposed to already be collision-free by
+  construction". That holds only for the fully-locked path. Two other paths produced collisions
+  by construction, and both were live: ISSUE-025 (cross-loop vote) and ISSUE-026 (the fallback).
+  The defensive check was not belt-and-braces — it was the only thing that would have caught
+  two real bugs.
+- **Fix**: `finalize_round_node` now raises `AssertionError` if `final_moves` contains two
+  detectives moving to the same node, and `resolve_round` logs at ERROR if one somehow reaches
+  it anyway. Both underlying causes are fixed independently (ISSUE-025, ISSUE-026), so the
+  assertion should never fire — which is exactly why it is worth having.
 
 ---
 
@@ -685,3 +708,224 @@ architecture). Several were caught and fixed in the same session they were intro
   double-invoke cleanly, or confirm whether a newer Phaser 4.x release handles
   create-during-async-boot teardown more robustly. Low urgency given the confirmed
   production-build scope, but worth fixing for dev-mode testing reliability.
+
+---
+
+## Group E: Architecture Audit (2026-09-13)
+
+Issues found during a full-codebase architecture and code-quality audit. Several are
+*corrections* to earlier entries in this log rather than new discoveries — where that is the
+case, the original entry has been updated too, rather than left to contradict this one.
+
+### ISSUE-025 — `vote_node` did not reserve already-locked destinations, so a later loop could vote two detectives onto one node
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/scotland_yard/agents.py` (`propose_node`, `vote_node`)
+- **Logged**: 2026-09-13
+- **Description**: `propose_node` and `vote_node` each had their own `fetch_moves` closure
+  computing which nodes a still-pending detective could legally reach. The two had silently
+  drifted: `propose_node` computed occupancy as
+  `all_detective_nodes - {self} | reserved_nodes`, where `reserved_nodes = set(locked.values())`;
+  `vote_node` computed `all_detective_nodes - {self}` and **omitted `reserved_nodes` entirely**.
+
+  A locked detective is still physically standing on their OLD node until the round finalizes,
+  so their reserved *destination* never appears in the occupied-node set — it has to be excluded
+  explicitly. From debate loop 2 onward, therefore, a still-pending detective's ballot options
+  legitimately included a node another detective had locked in loop 1, and `vote_node`'s tally
+  validation (`node not in legal_move_sets.get(det_id)`) accepted it.
+
+  Compounding it: the vote prompt was the only one of the three that never rendered an "Already
+  Locked Moves" line, so voters were not even told which nodes were taken.
+
+  The resulting duplicate in `final_moves` was then **silent**: `resolve_round` applies moves in
+  `DETECTIVE_IDS` order, so the first detective moved, and `determine_move_transport` for the
+  second found the target now occupied, returned `None`, and fell through to the forfeit branch.
+  A detective lost their turn with no error and no log line — while the Chat Log's "Final Moves"
+  entry, computed against pre-move positions, cheerfully reported the move as having happened.
+- **Relationship to ISSUE-010**: distinct. ISSUE-010 is the *cross-tally, same-loop* case, which
+  turns out to be arithmetically impossible. This is the *cross-loop* case, which was reachable —
+  and was not a tally subtlety at all, just a missing argument at one of two call sites.
+- **Fix**: Both call sites now share one `agents.py:fetch_legal_moves` helper taking
+  `reserved_nodes` explicitly, so they cannot drift again. The vote prompt gained the "Already
+  Locked Moves" block for parity with propose and debate. Covered by
+  `tests/test_move_consensus.py::TestFetchLegalMoves`.
+
+### ISSUE-026 — `finalize_round_node`'s fallback path produced colliding destinations by construction
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/scotland_yard/graph.py:finalize_round_node`
+- **Logged**: 2026-09-13
+- **Description**: When a detective's move never locked after the loop cap, `finalize_round_node`
+  fell back to `proposals[det_id]["proposed_board_moves"][det_id]` — that detective's own
+  self-proposal. Each *proposer's* strategy object is internally de-duplicated, but two unlocked
+  detectives draw their fallbacks from two **different** proposers' strategy objects, generated
+  concurrently and independently. Nothing prevented Agent Red's proposal saying Red → 50 while
+  Agent Blue's said Blue → 50.
+
+  This is more likely than ISSUE-025, not less: the fallback fires precisely when the agents
+  failed to converge — the disorderly case. The downstream failure was the same silent forfeit.
+- **Also invalidated**: the claim, repeated in `CLAUDE.md`, `graph.py` and `transport.py`, that
+  `final_move_details` "can never disagree with what's really deducted". It could. The preview is
+  computed against pre-move positions, so both colliding detectives got a plausible-looking
+  "moves from X to Y via Taxi" line, and then `resolve_round` silently dropped the second one.
+  The claim is true of the *transport choice* (both call the same helper) but was never true of
+  the *move actually being applied*.
+- **Fix**: Fallbacks are now resolved by `graph.py:_resolve_fallback_moves` in fixed
+  `DETECTIVE_IDS` order against a running `claimed` set, mirroring `propose_node`'s own
+  deterministic backup enforcement — an illegal or already-claimed self-proposal is reassigned to
+  that detective's own lowest-numbered free legal move, and only stays put if it genuinely has
+  none. `finalize_round_node` then asserts uniqueness outright (see ISSUE-014). Covered by
+  `tests/test_move_consensus.py::TestFallbackResolution`.
+
+### ISSUE-027 — `round/stream`'s status check sat outside the lock, so two subscribers ran the detective loop twice
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/scotland_yard/server.py:round_stream_route`
+- **Logged**: 2026-09-13
+- **Description**: The route checked `session.status != "detective_loop_running"` and returned 409
+  **before** acquiring `session.lock`, then acquired the lock inside the event generator. Two
+  concurrent requests both passed the check; the second blocked on the lock, and once the first
+  completed — having run the whole detective loop *and* called `resolve_round`, which advances the
+  round and flips status back to `awaiting_mr_x_move` — the second went on to run a second full
+  detective loop against the **next** round's state, with Mr. X having never moved.
+
+  A textbook check-then-act race, but not a theoretical one: `main.tsx` wraps the app in
+  `<StrictMode>` and `useRoundStream` opens an `EventSource` with no mount guard, so React 19's
+  dev-mode double-invoke opened exactly two streams every round. Each spurious loop is ~15
+  billable LLM calls and desynchronizes the authoritative game state. Two browser tabs on the
+  same game reproduce it without StrictMode involved at all.
+- **Relationship to ISSUE-024**: same trigger (StrictMode's double-invoke), different victim —
+  ISSUE-024 is the duplicated Phaser canvas, which remains open.
+- **Fix**: The status check is now repeated **inside** the lock, and a subscriber that arrives
+  after the round has already been resolved receives a terminal `round_already_resolved` event
+  carrying a fresh state snapshot (so it can resynchronize) instead of re-running the loop. The
+  cheap outer check is kept, but only as an early rejection of an obviously-wrong request; its
+  comment now says explicitly that it is not sufficient on its own. Covered by
+  `tests/test_round_stream_concurrency.py`.
+- **Note**: mutual exclusion was never the missing piece — the lock worked correctly. What was
+  missing was *idempotency*: knowing that this round had already been driven by someone else.
+
+### ISSUE-028 — Structurally malformed requests returned 500 instead of 400
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/scotland_yard/server.py`, `requests.py`, `mrx_turn.py`
+- **Logged**: 2026-09-13
+- **Description**: `IllegalMoveError` covered *semantically* illegal moves well, with client-facing
+  messages. Nothing covered *structurally* malformed ones. `await request.json()` had no guard, so
+  a non-JSON body raised out of the route. `submit_mr_x_move` indexed `move_request["target_node"]`
+  and friends directly, so a missing key raised `KeyError` — which the route's
+  `except IllegalMoveError` did not catch. `int(from_node)` on an unvalidated query param raised
+  `ValueError` on `?from_node=abc`. All three surfaced as an opaque 500 with an HTML stack trace,
+  which `frontend/src/api/client.ts`'s `ApiError` could not extract a message from, so the UI
+  showed "Internal Server Error" for what was squarely a client-side mistake.
+- **Fix**: Added `requests.py` with Pydantic models (`SingleMoveRequest`/`DoubleMoveRequest`,
+  discriminated on `move_type`, plus `Hop2PreviewQuery`), validated at the route boundary and
+  rendered into a single readable `Malformed request - <field>: <problem>` string. Added a
+  catch-all Starlette exception handler so any genuinely unexpected failure still returns
+  structured JSON rather than HTML. Covered by `tests/test_api.py::TestMalformedRequests`.
+
+### ISSUE-029 — `round_result`'s SSE payload omitted the `type` field every other event carries
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/scotland_yard/server.py`, `frontend/src/types.ts`
+- **Logged**: 2026-09-13
+- **Description**: Every SSE payload from `serialize_loop_event` carries a `"type"` discriminator,
+  and `frontend/src/types.ts`'s `RoundResultEvent` declares `type: "round_result"`. But the
+  terminal payload was assembled by spreading `RoundResult` (`status`/`winner`/`round_number`)
+  plus `state`, and never actually included `type`. Harmless in practice — `useRoundStream`
+  dispatches on the SSE *event name*, not the payload field — but the declared contract was
+  wrong, which is exactly the drift a hand-maintained `types.ts` invites (see ADR-0002).
+- **Fix**: `round_result`'s payload now includes `"type": "round_result"`.
+
+### ISSUE-030 — Repository hygiene: vendored dependencies committed, and no Python manifest at all
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: repository root, `backend/`
+- **Logged**: 2026-09-13
+- **Description**: 749 of 829 tracked files (90%) were vendored dependencies and build output:
+  738 under `backend/node_modules/` and 11 `.pyc` files under `backend/__pycache__/`. The
+  `node_modules` tree belonged to a TypeScript/`tsx`/`esbuild` toolchain sitting in a pure-Python
+  directory that no source file consumed. Separately — and more seriously — there was **no Python
+  dependency manifest of any kind**: no `requirements.txt`, no `pyproject.toml`, no lockfile. The
+  only record of what the project depended on was the contents of the (correctly untracked)
+  `backend/venv/`, which also still carried `langchain-google-genai` and `langchain-groq` from the
+  pre-OpenRouter era. The project was one venv deletion away from being unreconstructable.
+- **Fix**: Rewrote `.gitignore` with proper Python/Node sections; untracked both trees; deleted
+  the unused Node toolchain and the two empty scaffold `package.json` files. Added
+  `backend/pyproject.toml` with exactly-pinned dependencies derived from actual imports (not from
+  `pip freeze`, which would have enshrined the abandoned ones), plus a `dev` extra and pytest
+  configuration. Tracked file count went from 829 to 76.
+
+### ISSUE-031 — No setup or run instructions existed anywhere in the repository
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `README.md`, `backend/.env.example`, `frontend/README.md`
+- **Logged**: 2026-09-13
+- **Description**: The only place a reader could learn how to start this project was an **error
+  message string inside two React components** ("is `uvicorn server:app --reload` running?").
+  `README.md` was 15 lines of description and links. There were no prerequisites, no install
+  steps, no run order, no port documentation, and no `backend/.env.example` — even though the
+  backend holds the one *required* secret. (The frontend, which needs no secret, had one.)
+  `frontend/README.md` was unmodified Vite template boilerplate whose banner still read
+  "Phase 4, not yet started" long after Phase 4 shipped.
+- **Fix**: Rewrote `README.md` with prerequisites, per-half setup, the two-terminal run order,
+  testing commands, and a project-structure map. Added `backend/.env.example`. Replaced
+  `frontend/README.md` with real frontend documentation.
+
+### ISSUE-032 — Backend was a flat module soup, runnable only from one directory
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/`
+- **Logged**: 2026-09-13
+- **Description**: All backend modules imported each other as top-level modules
+  (`from session import GAMES`), with no `__init__.py` and no package. The application therefore
+  only imported correctly when the working directory was `backend/` — which is why every
+  reference to running it was `uvicorn server:app` rather than a module path, and why `pytest`
+  could not collect from the repository root. Game data and art also lived under `docs/`
+  (`docs/map/map.json` was loaded at import by `game_master.py`), so a documentation-directory
+  reshuffle could stop the server booting, and the art was hand-duplicated into
+  `frontend/public/` with nothing detecting drift between the copies.
+- **Fix**: Moved the modules into a `backend/scotland_yard/` package with relative imports and a
+  module-map docstring; tests into `backend/tests/`. Moved runtime game data and art to a
+  top-level `data/` directory (`.cursorrules`' immutability directive updated to match), leaving
+  `docs/` for prose only. `frontend/scripts/sync-assets.mjs`, wired to `predev`/`prebuild`, now
+  copies art from `data/` into `public/` as a build step, and those copies are gitignored as
+  generated output. Entry points are now `python -m scotland_yard.server` and
+  `python -m scotland_yard.game_master`.
+
+### ISSUE-033 — `print()` was the only logging mechanism in the backend
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/scotland_yard/` (all modules)
+- **Logged**: 2026-09-13
+- **Description**: `agents.py` and `graph.py` emitted ~30 `print()` calls, including the
+  `[VALIDATION]` lines that fire whenever deterministic enforcement had to override an LLM's
+  output. Those lines are the single most useful signal in the system — they are the metric for
+  whether the prompts are working and whether the model has degraded — and as unlevelled stdout
+  writes they could not be filtered, routed, or aggregated. There was also no correlation id, so
+  with two concurrent games the interleaved output was unreadable. Only `game_master.py`
+  maintained any discipline here, routing its startup banner to stderr for MCP stdio safety.
+- **Fix**: Added `logging_config.py` with per-module loggers, stderr-only output (preserving
+  `game_master.py`'s MCP constraint for the whole package), a `LOG_LEVEL` environment variable,
+  and a `game_log_context` contextvar that binds a game id into every line emitted inside a
+  request — chosen over threading a logger through every LangGraph node signature for a logging
+  concern. `[VALIDATION]` lines and LLM-call failures now log at WARNING; stage narration at INFO.
+
+### ISSUE-034 — Comment drift: several comments described behavior the code no longer had
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/scotland_yard/state.py`, `server.py`, `agents.py`; `CLAUDE.md`
+- **Logged**: 2026-09-13
+- **Description**: In a codebase that leans this heavily on comments as its primary documentation
+  medium, comment drift is disproportionately costly — the comments *are* the docs. Four had
+  drifted: (1) `state.py`'s `current_node` field said "NEVER exposed to detectives" and "must
+  never be read by any detective-facing code path", directly contradicting `serializers.py`'s
+  deliberate decision to publish it — two descriptions of the same disclosure boundary
+  disagreeing; (2) `server.py`'s CORS comment described a browser frontend as a "known near-term
+  consumer", a future that had long since arrived; (3) ISSUE-009's stale `timeout=45` comment;
+  (4) `agents.py` still carried a conversational artifact, `# Fulfilling your request to see the
+  individual strategies BEFORE debate!`.
+- **Fix**: `state.py` now points at ADR-0007 rather than restating a now-false absolute; the CORS
+  comment describes the actual current policy; the timeout comment is corrected (ISSUE-009); the
+  conversational artifact is gone. The rationale these comments carried was mostly good enough to
+  *relocate* into ADRs rather than rewrite — which is what `docs/adr/` largely consists of.

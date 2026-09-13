@@ -115,7 +115,7 @@ export function ChatLog({ entries, connectionError, onRetry }: ChatLogProps) {
       </div>
       {connectionError && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
-          <p style={{ fontSize: 12, color: "#b00020", margin: 0 }}>{connectionError}</p>
+          <p style={{ fontSize: 12, color: "var(--color-error)", margin: 0 }}>{connectionError}</p>
           <button onClick={onRetry}>Retry</button>
         </div>
       )}
