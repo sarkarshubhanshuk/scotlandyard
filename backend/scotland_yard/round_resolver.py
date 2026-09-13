@@ -2,7 +2,8 @@
 Drives one full round of the detective decision cycle and applies its outcome to the board.
 
 `run_detective_loop` streams the LangGraph run for an API layer to relay; `resolve_round`
-then applies the resulting moves, transfers tickets, and evaluates every win condition.
+then evaluates the round's win conditions. Moves and ticket transfers are NOT applied here any
+more - each happens at the end of its own detective's turn (ADR-0010).
 """
 import logging
 from typing import AsyncIterator, Optional, TypedDict
@@ -12,7 +13,6 @@ from .graph import build_detective_graph, build_next_round_state
 from .rules_constants import DETECTIVE_IDS, MAX_ROUND
 from .session import GameSession
 from .state import ScotlandYardState
-from .transport import determine_move_transport
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,13 @@ async def run_detective_loop(session: GameSession) -> AsyncIterator[dict]:
     session.status = "detective_loop_running"
     last_values = session.state
 
+    # The session travels with the run so turn_node can arm and await the pawn-animation
+    # handshake (ADR-0010) - LangGraph passes `config` through to any node that accepts it,
+    # which keeps a live orchestration object out of the serializable graph state.
     async for mode, chunk in detective_graph.astream(
-        session.state, stream_mode=["updates", "values", "custom"]
+        session.state,
+        stream_mode=["updates", "values", "custom"],
+        config={"configurable": {"session": session}},
     ):
         if mode == "values":
             last_values = chunk
@@ -80,60 +85,24 @@ async def run_detective_loop(session: GameSession) -> AsyncIterator[dict]:
 
 def resolve_round(session: GameSession) -> RoundResult:
     """
-    Applies session.state["final_moves"] (produced by detective_graph) to the board: moves each
-    detective in fixed DETECTIVE_IDS order, deducting/transferring tickets, and checking for
-    capture after EVERY individual move - not just once at the end - since the rules end the
-    game the instant any detective lands on Mr. X's real node; the remaining detectives never
-    get to move once that happens.
+    Evaluates the round's outcome. It no longer MOVES anyone: each detective's move was applied
+    the moment its own turn ended (agents.py:apply_detective_move, ADR-0010), so positions and
+    ticket inventories are already current by the time this runs. What is left is the set of
+    win conditions that can only be judged once the whole round is over.
 
-    Never trusts detective_graph's final_moves for legality (same "trust nothing coming out of
-    an LLM loop" posture agents.py already applies to every LLM response) - re-derives the
-    detective's actual legal moves via compute_valid_moves before applying anything.
+    Capture is the exception, and it is already decided: a detective landing on Mr. X ends the
+    game at that instant, so turn_node records it on state["captured_by"] and the graph's router
+    skips every remaining turn. This only has to read the verdict.
     """
     state = session.state
-    final_moves = state.get("final_moves", {})
     mr_x = state["mr_x"]
 
-    # Defence in depth for ISSUE-014/ISSUE-026. finalize_round_node already asserts this, so
-    # reaching here with a duplicate means final_moves came from somewhere else entirely.
-    # Log it rather than silently forfeiting a turn deep inside the apply loop below, which is
-    # exactly how this class of bug used to hide.
-    moving_destinations = [
-        node for det_id, node in final_moves.items()
-        if node != state["detectives"][det_id]["node_id"]
-    ]
-    if len(moving_destinations) != len(set(moving_destinations)):
-        logger.error(
-            "Colliding destinations in final_moves for game %s round %s: %s. "
-            "Applying in DETECTIVE_IDS order; later detectives will forfeit.",
-            session.game_id, state["round_number"], final_moves)
+    captured_by = state.get("captured_by")
+    if captured_by:
+        logger.info("%s landed on Mr. X at Node %s.", captured_by, mr_x["current_node"])
+        return _game_over(session, "detectives")
 
-    for det_id in DETECTIVE_IDS:
-        detective = state["detectives"][det_id]
-        target_node = final_moves.get(det_id, detective["node_id"])
-
-        if target_node != detective["node_id"]:
-            occupied = _other_detective_nodes(state, det_id)
-            transport = determine_move_transport(detective, target_node, occupied)
-
-            if transport is not None:
-                ticket_key = f"{transport}_tickets"
-                detective[ticket_key] -= 1
-                mr_x[ticket_key] += 1  # Rules: a detective's spent ticket transfers to Mr. X.
-                detective["node_id"] = target_node
-            else:
-                # final_moves named a destination that isn't actually legal right now. Should
-                # be unreachable given propose/vote/finalize's own enforcement, but it is not
-                # trusted blindly - treated as a forfeit rather than crashing the round, and
-                # logged at WARNING because it always indicates a real upstream bug.
-                logger.warning(
-                    "%s could not legally move from Node %s to Node %s - forfeiting the turn.",
-                    det_id, detective["node_id"], target_node)
-
-        if detective["node_id"] == mr_x["current_node"]:
-            return _game_over(session, "detectives")
-
-    # No capture this round - check the two remaining win conditions before continuing.
+    # No capture this round - check the three remaining win conditions before continuing.
     new_detective_nodes = [d["node_id"] for d in state["detectives"].values()]
 
     mr_x_legal_moves = compute_valid_moves(

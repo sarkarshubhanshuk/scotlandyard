@@ -3,9 +3,10 @@ The LangGraph state machine driving one round's detective decision cycle:
 
     turn -> (loop back to turn, once per detective) -> finalize
 
-Each `turn` is one detective's whole six-call turn (agents.py:turn_node), after which the
-router advances until all five have committed. See ADR-0009 for why this replaced the
-propose/debate/vote consensus loop.
+Each `turn` is one detective's whole six-call turn (agents.py:turn_node), which also applies
+that detective's move and waits for the board to finish animating it (ADR-0010). The router
+advances until all five have moved, or stops early if one of them caught Mr. X. See ADR-0009
+for why this replaced the propose/debate/vote consensus loop.
 """
 import logging
 
@@ -14,7 +15,6 @@ from langgraph.graph import END, START, StateGraph
 from .agents import turn_node
 from .rules_constants import DETECTIVE_IDS, NUM_DETECTIVES
 from .state import ScotlandYardState
-from .transport import determine_move_transport
 
 logger = logging.getLogger(__name__)
 
@@ -23,58 +23,59 @@ def finalize_round_node(state: ScotlandYardState) -> dict:
     """
     ROUND CLEANUP.
 
-    Produces `final_moves` (one destination per detective) plus `final_move_details`, the
-    from/to/transport preview the frontend's Chat Log renders before resolve_round actually
-    runs. The preview uses the same determine_move_transport() resolve_round itself calls,
-    so the two cannot disagree about which ticket a move spends.
+    Produces `final_moves` (where each detective ended up) plus `final_move_details`, the
+    from/to/transport summary the frontend's Chat Log renders as the round's recap. Both are a
+    record of moves that have already happened, not a preview of moves about to happen - which
+    is what they were before ADR-0010 made each move take effect at the end of its own turn.
 
-    There is no fallback resolution left to do here. Under the old simultaneous design this
-    node had to assign a destination to every detective whose move never reached the vote
-    threshold, drawing on self-proposals that were generated independently and could therefore
-    collide (ISSUE-014/ISSUE-026). Turn-wise play has no unlocked detectives: every turn ends
-    in a committed move, already validated against a legal-move set that excluded everything
-    committed before it.
+    There is no fallback resolution and no move application left to do here. Every turn ends
+    in a move that agents.py:apply_detective_move has already made real, so this node only
+    summarises what happened - both values are read straight out of turn_records rather than
+    recomputed, since the detectives have already left the nodes they started from.
+
+    A round cut short by a capture finalizes with only the turns that actually happened. That
+    is the rules-correct outcome, not a gap: once a detective lands on Mr. X the game is over
+    and the detectives behind it in the turn order never move.
     """
     logger.info("--- FINALIZING ROUND MOVES ---")
-    committed = state.get("committed_moves", {})
+    records = state.get("turn_records", {})
+    captured_by = state.get("captured_by")
 
-    missing = [det_id for det_id in DETECTIVE_IDS if det_id not in committed]
-    if missing:
-        raise AssertionError(
-            f"finalize_round_node reached with no committed move for {missing}. Every detective "
-            "takes a turn and every turn commits (agents.py:turn_node)."
-        )
+    if captured_by is None:
+        missing = [det_id for det_id in DETECTIVE_IDS if det_id not in records]
+        if missing:
+            raise AssertionError(
+                f"finalize_round_node reached with no turn record for {missing}. Every detective "
+                "takes a turn unless the round ended in a capture (agents.py:turn_node)."
+            )
 
-    final_moves = {det_id: committed[det_id] for det_id in DETECTIVE_IDS}
+    moved = [det_id for det_id in DETECTIVE_IDS if det_id in records]
+    final_moves = {det_id: records[det_id]["committed_node"] for det_id in moved}
+    final_move_details = {
+        det_id: {
+            "from_node": records[det_id]["from_node"],
+            "to_node": records[det_id]["committed_node"],
+            "transport": records[det_id]["transport"],
+        }
+        for det_id in moved
+    }
 
     # The uniqueness invariant every downstream consumer assumes, asserted rather than hoped
-    # for. Each turn's legal-move set excludes every previously committed destination, so a
+    # for. A detective is only ever offered nodes no other detective is standing on, so a
     # duplicate reaching here means that exclusion has regressed - which must fail loudly
-    # rather than degrade into a silently forfeited turn. Detectives staying put are excluded:
-    # they are not moving anywhere, so they cannot collide with anyone, and two of them sitting
-    # on their own distinct nodes is fine.
-    moving = [
-        node for det_id, node in final_moves.items()
-        if node != state["detectives"][det_id]["node_id"]
+    # rather than degrade into two pawns sharing a square. Detectives that forfeited are
+    # excluded: they did not move, so they cannot have collided with anyone.
+    destinations = [
+        detail["to_node"] for detail in final_move_details.values()
+        if detail["to_node"] != detail["from_node"]
     ]
-    if len(moving) != len(set(moving)):
+    if len(destinations) != len(set(destinations)):
         raise AssertionError(
-            f"finalize_round_node produced colliding destinations: {final_moves}. "
-            "Two detectives cannot move to the same node (rules.md: Node Occupancy)."
+            f"finalize_round_node produced colliding destinations: {final_move_details}. "
+            "Two detectives cannot occupy the same node (rules.md: Node Occupancy)."
         )
 
     logger.info("=== FINAL MOVES FOR ROUND %s === %s", state.get("round_number"), final_moves)
-
-    final_move_details = {}
-    for det_id in DETECTIVE_IDS:
-        detective = state["detectives"][det_id]
-        to_node = final_moves[det_id]
-        occupied = [d["node_id"] for other_id, d in state["detectives"].items() if other_id != det_id]
-        final_move_details[det_id] = {
-            "from_node": detective["node_id"],
-            "to_node": to_node,
-            "transport": determine_move_transport(detective, to_node, occupied),
-        }
 
     return {"final_moves": final_moves, "final_move_details": final_move_details}
 
@@ -94,6 +95,14 @@ def build_detective_graph(num_turns: int = NUM_DETECTIVES):
     def check_turn_status(state: ScotlandYardState) -> str:
         """ROUTER: hand the turn to the next detective, or finalize."""
         turn_index = state.get("turn_index", 0)
+
+        # A capture ends the game the instant it happens, so the detectives still behind this
+        # one in the turn order never move - and, just as importantly, never make ~6 billable
+        # LLM calls each deliberating over a game that is already decided.
+        captured_by = state.get("captured_by")
+        if captured_by:
+            logger.info(">>> ROUTER: %s caught Mr. X - ending the round immediately.", captured_by)
+            return "finalize"
 
         if turn_index >= num_turns:
             logger.info(">>> ROUTER: all %d detectives have committed - finalizing.", num_turns)
@@ -122,17 +131,11 @@ def build_next_round_state(previous_state: ScotlandYardState) -> ScotlandYardSta
     purpose - that's how the turn sequence tracks who has already moved. But the compiled graph
     has no memory between separate invocations, so if a caller fed a round's raw output
     straight back in as the next round's initial_state, turn_index would already be at 5 and
-    the round would finalize without a single detective taking a turn, replaying the previous
-    round's committed nodes as every future round's move. This resets the per-round-only fields
-    so every round starts at Agent Red's turn with nothing committed.
+    the round would finalize without a single detective taking a turn.
 
-    mrx_zone_context is deliberately OMITTED rather than set to None: agents.py's memoization
-    treats key *absence* as "not yet computed this round", while None is a legitimate
-    pre-reveal value that would wrongly read as a cache hit.
-
-    NOTE: This does not apply final_moves to detective positions or deduct tickets - the
-    caller is expected to have already updated state["detectives"] / state["mr_x"] to reflect
-    the previous round's outcome before calling this.
+    NOTE: detective positions and ticket inventories are NOT touched here - each move was
+    already applied the moment its own turn ended (ADR-0010), so mr_x and detectives carry
+    forward exactly as they stand.
     """
     return {
         "round_number": previous_state["round_number"] + 1,
@@ -142,6 +145,7 @@ def build_next_round_state(previous_state: ScotlandYardState) -> ScotlandYardSta
         "messages": [],
         "committed_moves": {},
         "turn_records": {},
+        "captured_by": None,
         "final_moves": {},
         "final_move_details": {},
     }

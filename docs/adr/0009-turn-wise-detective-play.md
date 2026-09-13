@@ -1,6 +1,7 @@
 # ADR-0009 — Turn-wise detective play: propose, respond, commit
 
-- **Status:** Accepted — supersedes [ADR-0006](0006-sequential-debate-and-majority-vote.md)
+- **Status:** Accepted — supersedes [ADR-0006](0006-sequential-debate-and-majority-vote.md),
+  refined by [ADR-0010](0010-per-turn-move-application-and-pawn-handshake.md)
 - **Area:** `backend/scotland_yard/agents.py`, `graph.py`, `state.py`, `rules_constants.py`,
   `serializers.py`, `server.py`, `frontend/src/hooks/useRoundStream.ts`,
   `frontend/src/components/ChatLog.tsx`
@@ -55,7 +56,9 @@ Supporting decisions:
   is still visible as committed moves on the board, which is the part that actually binds.
 - **Moves commit during the turn but apply at the end of the round.** `resolve_round` is
   untouched: ticket transfer, the capture short-circuit, and every win condition work exactly
-  as before.
+  as before. **(Reversed by ADR-0010** — each move now takes effect at the end of its own turn,
+  which is what `rules.md` §2 describes and what lets the board animate one pawn at a time.
+  `reserved_nodes` went with it.)
 
 ### What this deletes
 

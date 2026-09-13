@@ -64,7 +64,12 @@ class TurnRecord(TypedDict):
     proposed_node: int
     proposal_rationale: str
     responses: List[TurnResponse]
+    from_node: int           # Where the detective stood before this turn. Recorded because the
+                             # move is applied immediately (ADR-0010), so by the time anything
+                             # downstream reads this, detectives[det]["node_id"] is already the
+                             # destination and the origin is no longer derivable from state.
     committed_node: int
+    transport: Optional[str]  # The ticket actually spent; None if the detective could not move.
     decision_rationale: str
 
 class ScotlandYardState(TypedDict):
@@ -79,37 +84,30 @@ class ScotlandYardState(TypedDict):
     # which point every detective has committed and the round finalizes.
     turn_index: int
 
-    # Per-round memoization of agents.py:compute_mrx_zone_context(). Its inputs
-    # (last_known_node/round, round_number, and the detectives' occupied nodes) are identical
-    # for every one of the round's 30 LLM calls: detectives commit destinations during their
-    # turns but do not physically move until resolve_round, so state["detectives"] is frozen
-    # for the whole round. Computed once by the first turn and reused by the other four. Key
-    # absence (not just None, which is a legitimate pre-reveal value) means "not yet computed
-    # this round" - build_next_round_state omits this field so each new round starts fresh.
-    mrx_zone_context: Optional[dict]
-
     # Mr. X Status & Travel Log
     mr_x: MrXState
     
     # Detective Statuses (Keys: rules_constants.py's DETECTIVE_IDS - "agent_red",
-    # "agent_blue", "agent_green", "agent_yellow", "agent_purple")
+    # "agent_blue", "agent_green", "agent_yellow", "agent_purple"). Updated DURING a round, as
+    # each detective's turn ends and its move is applied (ADR-0010) - not only at round
+    # resolution, which is what it used to be.
     detectives: Dict[str, Detective]
     
     # Append-only log of each turn's rendered transcript, one AIMessage per completed turn.
     # Using Annotated with operator.add appends rather than replacing.
     messages: Annotated[List[BaseMessage], operator.add]
     
-    # {detective_id: node_id} for every detective that has already finished its turn this
-    # round. A committed destination is final: the next mover's legal-move set excludes it
-    # (agents.py:fetch_legal_moves' reserved_nodes), which is what makes two detectives sharing
-    # a destination structurally impossible under turn-wise play rather than something a vote
-    # threshold has to rule out after the fact. See ADR-0009.
-    #
-    # Committing is NOT the same as moving: a detective physically stays on its old node until
-    # round_resolver.resolve_round applies final_moves at the end of the round, so
-    # state["detectives"] is unchanged for the whole round and a committed destination never
-    # shows up in the occupied-node set on its own.
+    # {detective_id: node_id} for every detective that has already taken its turn this round.
+    # Its entry is where that detective is now actually standing - the move was applied the
+    # moment its turn ended (ADR-0010), so this is a record of who has moved, not a set of
+    # reservations waiting to be honoured. Two detectives sharing a destination is impossible
+    # because the second one is simply never offered a node the first is standing on.
     committed_moves: Annotated[Dict[str, int], update_dict]
+
+    # Set to the detective that landed on Mr. X, the instant it happens. The rules end the game
+    # at that moment, so the router reads this to skip every remaining turn in the round rather
+    # than letting four more detectives deliberate over a finished game.
+    captured_by: Optional[str]
 
     # {detective_id: TurnRecord} for every turn taken so far this round - see TurnRecord.
     turn_records: Annotated[Dict[str, TurnRecord], update_dict]

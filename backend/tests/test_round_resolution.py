@@ -112,31 +112,31 @@ def test_resolve_round_non_capturing_conserves_tickets_and_advances_round():
     assert session.state["turn_records"] == {}
 
 
-def test_resolve_round_capture_short_circuits_remaining_detectives():
-    print("\n=== TEST: resolve_round - capture stops remaining detectives from moving ===")
-    session = create_game(seed_positions=SEED_POSITIONS)
-    d1 = session.state["detectives"]["agent_red"]
-    occupied = [d["node_id"] for k, d in session.state["detectives"].items() if k != "agent_red"]
-    legal = compute_valid_moves(d1["node_id"], d1["taxi_tickets"], d1["bus_tickets"], d1["metro_tickets"], 0, occupied)
-    target = legal[0]["target_node"]
+def test_resolve_round_reports_a_capture_the_turn_loop_already_made():
+    """
+    Capture is decided inside the turn that causes it (agents.py:apply_detective_move) and
+    recorded on state["captured_by"], because the rules end the game at that instant - the
+    detectives behind it in the turn order never move. By the time resolve_round runs, that
+    verdict is already in; all it does is read it.
 
-    session.state["mr_x"]["current_node"] = target  # force a guaranteed capture
-    d2_original_node = session.state["detectives"]["agent_blue"]["node_id"]
-    session.state["final_moves"] = {"agent_red": target, "agent_blue": d2_original_node + 0}
-    # Give agent_blue a real (but irrelevant, since the round must stop before they move) move too.
-    d2 = session.state["detectives"]["agent_blue"]
-    occupied_for_d2 = [d["node_id"] for k, d in session.state["detectives"].items() if k != "agent_blue"]
-    d2_legal = compute_valid_moves(d2["node_id"], d2["taxi_tickets"], d2["bus_tickets"], d2["metro_tickets"], 0, occupied_for_d2)
-    if d2_legal:
-        session.state["final_moves"]["agent_blue"] = d2_legal[0]["target_node"]
+    The short-circuit itself - remaining detectives never taking a turn at all - is exercised
+    end-to-end in test_move_consensus.py::TestCaptureShortCircuit.
+    """
+    print("\n=== TEST: resolve_round - reports a capture recorded during the round ===")
+    session = create_game(seed_positions=SEED_POSITIONS)
+    red = session.state["detectives"]["agent_red"]
+    blue_node = session.state["detectives"]["agent_blue"]["node_id"]
+
+    # The board as the turn loop would have left it: Red standing on Mr. X, nobody else moved.
+    session.state["mr_x"]["current_node"] = red["node_id"]
+    session.state["captured_by"] = "agent_red"
 
     result = resolve_round(session)
 
     assert result["winner"] == "detectives"
     assert result["status"] == "game_over"
-    assert session.state["detectives"]["agent_red"]["node_id"] == target
-    assert session.state["detectives"]["agent_blue"]["node_id"] == d2_original_node, \
-        "agent_blue must NOT have moved - the round must stop the instant agent_red captures Mr. X"
+    assert session.state["detectives"]["agent_blue"]["node_id"] == blue_node, \
+        "resolve_round must not move anyone - every move was applied during its own turn"
 
 
 def test_resolve_round_mr_x_trapped_detectives_win():

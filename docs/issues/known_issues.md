@@ -841,6 +841,63 @@ case, the original entry has been updated too, rather than left to contradict th
 - **Related**: closes the still-open half of ISSUE-009 (a real wall-clock deadline per call),
   which sequential calls made necessary rather than merely nice.
 
+### ISSUE-036 — Detective moves were applied all at once, so the board showed a turn-wise round as a simultaneous scramble
+
+- **Status**: Fixed (2026-09-13) — see **ADR-0010**
+- **Area**: `backend/scotland_yard/agents.py`, `graph.py`, `round_resolver.py`, `state.py`,
+  `session.py`, `server.py`, `frontend/src/board/BoardScene.ts`, `hooks/useRoundStream.ts`
+- **Logged**: 2026-09-13
+- **Description**: ADR-0009 made detectives take turns, but a turn only *committed* a
+  destination - all five moves were applied together by `resolve_round` at the end of the round.
+  Two consequences, both wrong:
+  1. **The board contradicted the narrative.** Five pawns jumped to their new nodes at once when
+     the round resolved, so a round deliberated one detective at a time was still *shown* as a
+     simultaneous scramble. The legibility ADR-0009 bought in the Chat Log was thrown away on the
+     board. Detective pawns were also destroyed and recreated on every render, so they could only
+     ever teleport - the tween ISSUE-030's fix gave Mr. X had no equivalent for them.
+  2. **It was a rules deviation.** `rules.md` §2 has detectives "moving in sequential order",
+     each receiving "the current board state". Committing-without-moving needed a `reserved_nodes`
+     set to prevent collisions, and that set blocked each mover's **origin** for the rest of the
+     round as well as its destination - a node Agent Red had walked away from stayed unusable by
+     everyone until the round ended, which the rules never ask for.
+- **Fix**: `agents.py:apply_detective_move` moves the detective, transfers its ticket and decides
+  capture at the end of its own turn. `fetch_legal_moves` loses `reserved_nodes` (occupancy is
+  now just "where the other four are standing", which is exact); the Mr. X zone BFS is recomputed
+  per turn rather than memoized per round, since its occupancy input genuinely changes five times
+  a round; capture ends the round where it happens via `captured_by` and the graph's router;
+  `resolve_round` keeps only the whole-round win conditions. Every pawn is reused across renders
+  and tweened over `PAWN_MOVE_DURATION_MS`, and the next detective's first LLM call waits for the
+  previous pawn to land - via a `POST /turn-ack` handshake for detectives, and by holding the
+  round stream closed for the animation's duration for Mr. X.
+- **Bounded by design**: the wait always has a timeout (`TURN_ACK_TIMEOUT_SECONDS`). Nobody may
+  be watching (ISSUE-027), the tab may be backgrounded with its tweens throttled, or the
+  connection may have dropped; timing out logs at INFO and continues rather than stalling.
+- **Cost**: ~6s per round of animation on top of ADR-0009's ~2.2min. Deliberate - it is what
+  makes the round watchable.
+- **Testing note**: httpx's `ASGITransport` buffers a streaming response rather than delivering
+  it incrementally, so an in-process test of this handshake sees every event arrive at once after
+  the round finishes, and every ack rejected as stale. Verifying it needs a real server over a
+  real socket. `test_round_stream_concurrency.py` stubs the loop entirely and is unaffected.
+
+### ISSUE-037 — LangGraph silently passes no config to a node whose `config` parameter is not annotated `RunnableConfig`
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `backend/scotland_yard/agents.py:turn_node`
+- **Logged**: 2026-09-13
+- **Description**: `turn_node` needs the `GameSession` to run the pawn-animation handshake, and
+  it is threaded through LangGraph's `config` (`astream(..., config={"configurable": {...}})`)
+  rather than through graph state, so a live orchestration object stays out of the serializable
+  state. Declared as `async def turn_node(state, config: Optional[dict] = None)`, `config`
+  arrived as **None** on every call - LangGraph decides whether to hand a node its config by
+  inspecting that parameter's *annotation*, and an unrecognised one is passed nothing rather than
+  raising. The failure is silent and looks exactly like a working handshake that never fires:
+  `session` was None, so no ack was ever armed, every client ack was rejected as unmatched, and
+  every turn waited out its full timeout.
+- **Evidence**: a minimal two-node graph with an unannotated `config=None` parameter *did*
+  receive the config, which is what narrowed it to the annotation rather than the parameter name.
+- **Fix**: annotate it `config: RunnableConfig`. The annotation carries a comment saying it is
+  load-bearing, since it reads like decoration and removing it fails quietly.
+
 ### ISSUE-027 — `round/stream`'s status check sat outside the lock, so two subscribers ran the detective loop twice
 
 - **Status**: Fixed (2026-09-13)

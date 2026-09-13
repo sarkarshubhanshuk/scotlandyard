@@ -29,3 +29,4 @@ considered, Consequences. A decision that is later reversed gets its Status flip
 | [0007](0007-exposing-mr-x-position-to-the-client.md) | Mr. X's true position is serialized to the client | Accepted |
 | [0008](0008-no-global-state-library-on-the-frontend.md) | No global state library on the frontend | Accepted |
 | [0009](0009-turn-wise-detective-play.md) | Turn-wise detective play: propose, respond, commit | Accepted (supersedes ADR-0006) |
+| [0010](0010-per-turn-move-application-and-pawn-handshake.md) | Moves apply per turn, and the board paces the round | Accepted (refines ADR-0009) |

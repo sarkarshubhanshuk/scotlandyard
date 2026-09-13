@@ -59,7 +59,8 @@ tools/                One-off board-data authoring utilities
 - **Phase 4:** Completed (React + Phaser.js Frontend).
 - **Phase 5:** Completed (Architecture audit — see `known_issues.md` Group E and `docs/adr/`).
 - **Phase 6:** Completed (Turn-wise detective play, replacing the simultaneous propose/debate/
-  vote consensus loop — **ADR-0009**).
+  vote consensus loop — **ADR-0009**; then per-turn move application and the pawn-animation
+  handshake that paces a round to the board — **ADR-0010**).
 
 ## Architecture & Code Rationale
 
@@ -69,10 +70,11 @@ Every LLM output is treated as untrusted, and re-derived against the board befor
 affect game state. There are four independent layers, and each one is load-bearing:
 
 - `agents.py:fetch_legal_moves` computes the mover's legal targets **before** building any
-  prompt, so the model is only ever offered real options. It reserves both other detectives'
-  current nodes *and* every destination committed earlier this round. Under turn-wise play this
-  single exclusion is what makes two detectives sharing a destination **structurally
-  impossible** — it is a constraint on what can be proposed, not a check applied afterwards.
+  prompt, so the model is only ever offered real options — every node another detective is
+  standing on is excluded. Since ADR-0010 each move is applied at the end of its own turn, so
+  that exclusion is exact rather than reconstructed, and it is what makes two detectives sharing
+  a node **structurally impossible**: a constraint on what can be proposed, not a check applied
+  afterwards.
 - `agents.py:_enforce_legal_node` overrides whatever the model actually named if it isn't in
   that set. The mover gets one self-correction retry; the deterministic pass is what guarantees
   correctness. A responder's *advisory* preference is dropped rather than rewritten, so an
@@ -103,8 +105,9 @@ the original "MCP prevents hallucination" framing stopped being true and what re
   `MAX_ROUND`, so retuning a boundary fails loudly rather than dropping a round off the table.
 
 - `state.py`: defines `ScotlandYardState`. Tracks Mr. X's travel log (`transport_history`),
-  ticket inventories, `committed_moves`/`turn_records` for the round in progress, and
-  dictionary reducers that merge each turn's update without overwriting the previous turns'.
+  ticket inventories, `committed_moves`/`turn_records`/`captured_by` for the round in progress,
+  and dictionary reducers that merge each turn's update without overwriting the previous turns'.
+  `detectives` and `mr_x` now change *during* a round, as each turn applies its own move.
 
 - `agents.py`: `turn_node` — one detective's whole turn, six LLM calls (**ADR-0009**).
   - A turn is: the mover proposes and broadcasts (1 call) → the other four respond once each,
@@ -129,14 +132,19 @@ the original "MCP prevents hallucination" framing stopped being true and what re
     stranding itself without asking a small model to do ticket arithmetic.
   - `turn_node` emits a custom stream event **per LLM call**, which is what lets the Chat Log
     read as a conversation unfolding rather than a stage landing all at once.
+  - `apply_detective_move` ends the turn by actually moving the detective, transferring its
+    ticket, and deciding capture (**ADR-0010**) — so the next detective reasons about a board
+    that already reflects it, exactly as `rules.md` §2 describes. The turn then waits for the
+    client to finish animating that pawn (`session.await_pawn_settled`, bounded by
+    `TURN_ACK_TIMEOUT_SECONDS`) before the next detective's first call goes out.
 
 - `graph.py`: `build_detective_graph()` compiles the state machine (a factory, so a variant can
-  be built for tests). It loops `turn` once per detective and then finalizes — there is no
-  fallback resolution left to do, because every turn ends in a committed move.
-  `finalize_round_node` assembles `final_moves`, asserts destination uniqueness, and computes
-  `final_move_details` for the frontend Chat Log via `transport.py:determine_move_transport`,
-  the same helper `resolve_round` uses to apply moves, so the two can never disagree about
-  which ticket a move spends.
+  be built for tests). It loops `turn` once per detective and then finalizes — or finalizes
+  early if a detective caught Mr. X, since the game ends at that instant and the detectives
+  behind it never move. There is no fallback resolution and no move application left to do:
+  every turn ends in a move that already happened. `finalize_round_node` summarises the round
+  from `turn_records` (the origin nodes are no longer derivable from state, because the
+  detectives have left them) and asserts destination uniqueness.
 
 - `logging_config.py`: stderr-only logging (preserving `game_master.py`'s MCP stdio
   constraint package-wide), `LOG_LEVEL` env var, and a contextvar binding a game id into every
@@ -150,6 +158,10 @@ the original "MCP prevents hallucination" framing stopped being true and what re
   `GET /games/{id}/round/stream` (SSE).
 - `requests.py` validates request shapes with Pydantic at the route boundary, so a malformed
   body is a 400 with a field-level message rather than a 500 (ISSUE-028).
+- `POST /games/{id}/turn-ack` is how the board tells the backend a pawn finished animating,
+  releasing the next detective's turn (**ADR-0010**). It deliberately does *not* take
+  `session.lock` — the lock is held for the whole round by the stream route, and this request
+  exists to unblock that loop from the inside.
 - `round/stream` re-checks game status **inside** the session lock. A second subscriber to an
   already-resolved round gets a terminal `round_already_resolved` event instead of re-running
   the loop — which is what React StrictMode's double-invoke used to cause, at a full round of
@@ -181,9 +193,14 @@ Highlights:
   endpoint before submitting both hops atomically.
 - **Live AI turns** (`hooks/useRoundStream.ts`): renders one Chat Log entry per streamed LLM
   call, each tagged with the turn it belongs to, so `ChatLog` can group a round into five
-  turns — the mover's proposal, four indented responses, the mover's decision. On
+  turns — the mover's proposal, four indented responses, the mover's decision. It also mirrors
+  each applied move into game state as it arrives, which is what animates that detective's pawn
+  and keeps ticket counts live mid-round, and acks the backend once the tween lands. On
   `round_result` it reports the fresh state up — which is also what resets the move wizard,
   with no coordination code between the two hooks.
+- **Pawn movement:** every pawn, Mr. X's and all five detectives', is reused across renders and
+  tweened to its new node over `PAWN_MOVE_DURATION_MS` (`boardDimensions.ts` — the Phaser-free
+  module, so `useRoundStream` can read it without pulling Phaser into the main bundle).
 - **Board pawns / Travel Log:** every pawn is hoverable; Mr. X's pawn is always rendered at his
   real node, alpha-toggled by whether he is currently surfaced (a reminder for the human
   player, not an information-hiding mechanism — ADR-0007). The Travel Log is a fixed 24-slot

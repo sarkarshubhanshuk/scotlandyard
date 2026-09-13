@@ -9,6 +9,8 @@ interface BoardCanvasProps {
   mapData: MapData;
   gameState: PublicGameState;
   wizard: MrXMoveWizard;
+  /** Fired when a pawn finishes sliding to a new node - see BoardSceneData.onPawnSettled. */
+  onPawnSettled: (pawnId: string) => void;
 }
 
 // Phaser owns the canvas imperatively once created - React never re-renders into it. The game
@@ -20,7 +22,7 @@ interface BoardCanvasProps {
 // which lines up exactly with the node's on-screen position because GameLayout's board pane has
 // no letterboxing (its own aspect-ratio already matches BOARD_WIDTH:BOARD_HEIGHT - see that
 // file's comment) - the percentage box below scales with it identically.
-export function BoardCanvas({ mapData, gameState, wizard }: BoardCanvasProps) {
+export function BoardCanvas({ mapData, gameState, wizard, onPawnSettled }: BoardCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
@@ -37,6 +39,13 @@ export function BoardCanvas({ mapData, gameState, wizard }: BoardCanvasProps) {
   useEffect(() => {
     onNodeClickRef.current = handleNodeClick;
   }, [handleNodeClick]);
+
+  // Same reasoning as onNodeClickRef: the scene is wired up once, but this callback closes over
+  // the round stream's live state and changes identity. A stale one would ack the wrong turn.
+  const onPawnSettledRef = useRef(onPawnSettled);
+  useEffect(() => {
+    onPawnSettledRef.current = onPawnSettled;
+  }, [onPawnSettled]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -59,6 +68,7 @@ export function BoardCanvas({ mapData, gameState, wizard }: BoardCanvasProps) {
       mapData,
       gameState,
       onNodeClick: (nodeId: number) => onNodeClickRef.current?.(nodeId),
+      onPawnSettled: (pawnId: string) => onPawnSettledRef.current?.(pawnId),
       highlightedNodeIds,
       selectedNodeId,
     });

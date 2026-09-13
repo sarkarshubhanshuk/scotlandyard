@@ -86,7 +86,16 @@ export function GameScreen() {
   // accumulated chat log entries) starts fresh for every distinct game, rather than carrying
   // over stale in-progress picks or a previous game's debate history.
   return (
-    <LoadedGame key={gameId} gameId={gameId} mapData={mapData} gameState={gameState} onGameStateChange={setGameState} />
+    <LoadedGame
+      key={gameId}
+      gameId={gameId}
+      mapData={mapData}
+      gameState={gameState}
+      // setGameState's own state is PublicGameState | null, but LoadedGame only ever renders
+      // once it is non-null and only ever sets a real snapshot, so the updater it passes can
+      // safely assume a non-null previous value.
+      onGameStateChange={setGameState as LoadedGameProps["onGameStateChange"]}
+    />
   );
 }
 
@@ -94,7 +103,12 @@ interface LoadedGameProps {
   gameId: string;
   mapData: MapData;
   gameState: PublicGameState;
-  onGameStateChange: (gameState: PublicGameState) => void;
+  // Accepts an updater as well as a plain snapshot: useRoundStream applies each detective's move
+  // as it streams in (ADR-0010), and those land against whatever the previous turn left behind
+  // rather than against the state of the render that opened the stream.
+  onGameStateChange: (
+    update: PublicGameState | ((prev: PublicGameState) => PublicGameState),
+  ) => void;
 }
 
 function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGameProps) {
@@ -109,7 +123,12 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
       <GameLayout
         board={
           <Suspense fallback={<div style={{ padding: 24 }}>Loading board...</div>}>
-            <BoardCanvas mapData={mapData} gameState={gameState} wizard={wizard} />
+            <BoardCanvas
+              mapData={mapData}
+              gameState={gameState}
+              wizard={wizard}
+              onPawnSettled={roundStream.handlePawnSettled}
+            />
           </Suspense>
         }
         sidebar={

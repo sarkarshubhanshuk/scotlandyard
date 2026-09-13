@@ -41,9 +41,58 @@ class GameSession:
     # touch(). Drives TTL eviction in create_game; see SESSION_TTL_SECONDS.
     last_touched_at: float = field(default_factory=time.monotonic)
 
+    # --- Pawn-animation handshake (ADR-0010) ---------------------------------------------
+    # A detective's turn ends by physically moving its pawn, and the NEXT detective must not
+    # start deliberating until that move has finished playing out on the board. The board is in
+    # the browser, so the only way the turn loop can know is for the client to say so: it POSTs
+    # /turn-ack when the tween completes, and `await_pawn_settled` releases.
+    #
+    # `awaiting_ack` names the exact move being waited on, as (round_number, detective_id). An
+    # ack that does not match it is ignored rather than trusted - a late ack for the previous
+    # turn must never release the current one, and a client is not something this code takes on
+    # faith any more than an LLM is.
+    awaiting_ack: Optional[tuple] = None
+    _ack_event: asyncio.Event = field(default_factory=asyncio.Event)
+
     def touch(self) -> None:
         """Mark this game as still in use, deferring its TTL eviction."""
         self.last_touched_at = time.monotonic()
+
+    def expect_pawn_ack(self, round_number: int, det_id: str) -> None:
+        """Arms the handshake for one specific pawn move. Call BEFORE emitting turn_decision."""
+        self.awaiting_ack = (round_number, det_id)
+        self._ack_event.clear()
+
+    def acknowledge_pawn_settled(self, round_number: int, det_id: str) -> bool:
+        """
+        Records that the client finished animating one pawn move. Returns whether the ack
+        matched what the turn loop is actually waiting on - a mismatch is a no-op, not an error.
+        """
+        if self.awaiting_ack != (round_number, det_id):
+            return False
+        self._ack_event.set()
+        return True
+
+    async def await_pawn_settled(self, timeout: float) -> bool:
+        """
+        Blocks until the armed pawn move is acked, or `timeout` elapses. Returns whether a real
+        ack arrived.
+
+        Timing out is a normal outcome, not a failure: nobody may be watching (the round runs
+        whether or not a client is listening - ISSUE-027), the tab may be backgrounded with its
+        tweens throttled, or the connection may have dropped. The round must continue in every
+        one of those cases, so this degrades to a plain bounded wait rather than stalling.
+        """
+        if self.awaiting_ack is None:
+            return True
+        try:
+            await asyncio.wait_for(self._ack_event.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            return False
+        finally:
+            self.awaiting_ack = None
+            self._ack_event.clear()
 
 
 # Plain in-memory store - no database, deliberately not durable across restarts (ADR-0005).

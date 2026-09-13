@@ -94,6 +94,20 @@ assert all(
     earlier[0] < later[0] for earlier, later in zip(COLLABORATION_TIERS, COLLABORATION_TIERS[1:])
 ), f"COLLABORATION_TIERS' round bounds must be strictly increasing: {COLLABORATION_TIERS}"
 
+# --- Pawn-animation handshake (see ADR-0010) -------------------------------------------
+# A detective commits its move at the end of its turn, and the board animates the pawn from its
+# old node to its new one. The next detective's turn must not begin until that animation has
+# finished, so the human player sees one pawn move at a time rather than the next agent
+# deliberating over a board that is still visibly rearranging itself.
+#
+# The board lives in the browser, so the turn loop learns about this from the client: it POSTs
+# /games/{id}/turn-ack when the tween completes. This is the bound on how long the loop will
+# wait for that ack before continuing anyway - nobody may be watching, the tab may be
+# backgrounded with its tweens throttled, or the connection may have dropped, and a round must
+# survive all three. Set comfortably above the frontend's own animation duration
+# (PAWN_MOVE_DURATION_MS in BoardScene.ts, currently 1000ms) plus a round-trip.
+TURN_ACK_TIMEOUT_SECONDS = 3.0
+
 # --- Per-call LLM deadline (see ADR-0009 "Consequences", docs/issues ISSUE-009) ---------
 # llm_client.py's timeout=45 is enforced by the HTTP client as an IDLE-GAP timeout - reset by
 # every streamed chunk - so it reliably kills a genuinely stuck call but does not cap total

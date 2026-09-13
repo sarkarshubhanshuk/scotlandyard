@@ -11,6 +11,14 @@ time in DETECTIVE_IDS order. A single turn is three phases and six LLM calls:
        nothing and is free to decide differently on its own turn.
     3. The mover, having heard all four, commits its final destination.        (1 call)
 
+The move is then APPLIED immediately - the detective physically moves, its ticket transfers to
+Mr. X, and capture is checked - so the next detective deliberates against a board that already
+reflects it (rules.md section 2: "A full Round consists of Mr. X moving first, followed by
+Detectives 1 through 5 moving in sequential order", and "At the start of each turn, the active
+AI agent receives the current board state"). The turn then waits for the client to finish
+animating that pawn before returning, so the next detective does not start deliberating over a
+board that is still visibly rearranging itself. See ADR-0010.
+
 Nothing here trusts the model's output: every node the LLM names is re-checked against a
 legal-move set this module computed itself, and a failed check is resolved deterministically
 rather than retried indefinitely.
@@ -21,6 +29,7 @@ import logging
 from typing import Optional
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from pydantic import BaseModel, Field
 
@@ -33,6 +42,7 @@ from .rules_constants import (
     LLM_CALL_DEADLINE_SECONDS,
     MAX_ROUND,
     NUM_DETECTIVES,
+    TURN_ACK_TIMEOUT_SECONDS,
 )
 from .state import ScotlandYardState
 from .transport import determine_move_transport
@@ -55,18 +65,21 @@ def responders_for(mover_id: str) -> list[str]:
     return [DETECTIVE_IDS[(start + offset) % NUM_DETECTIVES] for offset in range(1, NUM_DETECTIVES)]
 
 
-def fetch_legal_moves(state: ScotlandYardState, det_ids: list, reserved_nodes: set) -> tuple[dict, dict]:
+def fetch_legal_moves(state: ScotlandYardState, det_ids: list) -> tuple[dict, dict]:
     """
-    The legal target nodes each detective in `det_ids` can reach this turn, as both a
+    The legal target nodes each detective in `det_ids` can reach right now, as both a
     displayable list (for prompt text) and a set (for validating LLM output against).
 
-    `reserved_nodes` is the set of destinations already committed by detectives who have taken
-    their turn earlier this round. A committed detective is still physically standing on its
-    OLD node until the round is finalized, so its destination has to be excluded explicitly -
-    it does not show up in the occupied-node set. Under turn-wise play this single exclusion is
-    what makes two detectives sharing a destination structurally impossible; it is not a check
-    applied after the fact, so there is no second code path that can drift out of sync with it
-    (the failure mode that was ISSUE-025 under the old propose/vote design).
+    Occupancy is simply every OTHER detective's current node. That is the whole collision
+    guarantee, and it is exact rather than approximate because a detective's move is applied
+    the moment its turn ends (ADR-0010): by the time the next detective asks this question, an
+    earlier mover is genuinely standing on its new node and has genuinely vacated its old one.
+
+    This used to need a `reserved_nodes` argument. Moves were committed during the turn but not
+    applied until the round finalized, so a committed detective was still physically on its old
+    node and its destination had to be excluded by hand - and that node stayed blocked for the
+    rest of the round even though nobody was on it any more, which rules.md never asked for.
+    Applying per turn removes both the extra argument and that phantom occupancy.
 
     Board legality is computed in-process via game_master.compute_valid_moves rather than
     over MCP: these are lookups this code makes on the agents' behalf, not model-initiated
@@ -77,7 +90,7 @@ def fetch_legal_moves(state: ScotlandYardState, det_ids: list, reserved_nodes: s
     legal_move_sets = {}
     for det_id in det_ids:
         d_info = state["detectives"][det_id]
-        occupied = list((all_detective_nodes - {d_info["node_id"]}) | reserved_nodes)
+        occupied = list(all_detective_nodes - {d_info["node_id"]})
         moves = compute_valid_moves(
             d_info["node_id"], d_info["taxi_tickets"], d_info["bus_tickets"],
             d_info["metro_tickets"], black_tickets=0, occupied_nodes=occupied,
@@ -94,24 +107,24 @@ def annotate_zone_distances(legal_moves_context: dict, distances_to_zone: dict) 
             move["distance_to_mrx_zone"] = distances_to_zone.get(move["target_node"])
 
 
-def projected_occupied_nodes(state: ScotlandYardState, exclude_det_id: str, committed: dict) -> list:
+def other_detective_nodes(state: ScotlandYardState, exclude_det_id: str) -> list:
     """
-    Where the other four detectives will be standing once this round is applied: their committed
-    destination if they have already taken their turn, otherwise their current node.
+    Where the other four detectives are standing right now.
 
-    This is the best available projection of next round's board. Detectives do not physically
-    move until resolve_round, so state["detectives"] alone would understate the constraint for
-    anyone who has already committed.
+    Positions are live under per-turn application (ADR-0010), so this needs no projection: a
+    detective that has already moved this round is already on its new node. It previously had
+    to merge in `committed_moves` by hand, because a committed detective had not physically
+    moved yet.
     """
     return [
-        committed.get(det_id, info["node_id"])
+        info["node_id"]
         for det_id, info in state["detectives"].items()
         if det_id != exclude_det_id
     ]
 
 
 def annotate_onward_options(
-    state: ScotlandYardState, det_id: str, legal_moves_context: dict, committed: dict
+    state: ScotlandYardState, det_id: str, legal_moves_context: dict
 ) -> None:
     """
     Adds "onward_moves_after" to every candidate: how many distinct nodes `det_id` would still
@@ -130,7 +143,7 @@ def annotate_onward_options(
     move will really cost. Costs one integer per candidate in prompt text.
     """
     detective = state["detectives"][det_id]
-    occupied_now = projected_occupied_nodes(state, det_id, committed)
+    occupied_now = other_detective_nodes(state, det_id)
     onward_cache: dict[int, Optional[int]] = {}
 
     for move in legal_moves_context.get(det_id, []):
@@ -148,7 +161,8 @@ def annotate_onward_options(
                     target, remaining["taxi_tickets"], remaining["bus_tickets"],
                     remaining["metro_tickets"], black_tickets=0,
                     # This detective has vacated its old node by then, so only the other four
-                    # constrain it - projected forward to where they will actually be.
+                    # constrain it. Detectives later in the turn order will move again before
+                    # this lookahead comes true, so it is a snapshot, not a guarantee.
                     occupied_nodes=occupied_now,
                 )
                 onward_cache[target] = len({m["target_node"] for m in onward if "target_node" in m})
@@ -195,6 +209,12 @@ def compute_mrx_zone_context(state: ScotlandYardState) -> Optional[dict]:
     also cleanly absorbs the one asymmetric surfacing gap (round 18 -> round 24 is 6 rounds,
     not 5): the rounds that would otherwise compute 5 hops are already "saturated" at 4 anyway.
 
+    Recomputed at the start of every turn rather than memoized once per round. Its occupancy
+    input is no longer constant across a round: detectives physically move as their turns end
+    (ADR-0010), so the nodes the BFS is blocked through change five times per round. A
+    round-start snapshot would show a later detective paths blocked through nodes its teammates
+    had since vacated. Five BFS pairs per round instead of one is nothing next to 30 LLM calls.
+
     Still ticket-blind - the zone is a strict superset of where Mr. X could really be, because
     the BFS does not check that his remaining inventory could actually pay for a given path.
     See ISSUE-015; narrowing this using his travel log is deliberately a separate change.
@@ -215,26 +235,6 @@ def compute_mrx_zone_context(state: ScotlandYardState) -> Optional[dict]:
         "zone_nodes": sorted(zone.keys()),
         "distances_to_zone": compute_distances_to_zone(zone.keys()),
     }
-
-def get_mrx_zone_context(state: ScotlandYardState) -> tuple[Optional[dict], dict]:
-    """
-    Memoizes compute_mrx_zone_context() for the current round.
-
-    Its inputs (last_known_node/round, round_number, the detectives' occupied nodes) are
-    identical for all 30 of a round's LLM calls: detectives commit destinations during their
-    turns but do not physically move until resolve_round, so state["detectives"] is frozen for
-    the whole round. Without this, each of the five turns would re-run the same pair of BFS
-    passes. Presence of "mrx_zone_context" on state (not just truthiness - it's legitimately
-    None pre-reveal) is what marks it as already computed this round; build_next_round_state
-    omits the key so each new round starts with a cache miss.
-
-    Returns (zone_context, state_update): callers must merge state_update into their own
-    returned dict so later turns in the same round see the cached value instead of recomputing.
-    """
-    if "mrx_zone_context" in state:
-        return state["mrx_zone_context"], {}
-    zone_context = compute_mrx_zone_context(state)
-    return zone_context, {"mrx_zone_context": zone_context}
 
 def format_mrx_zone_block(zone_context: Optional[dict]) -> str:
     """
@@ -345,8 +345,8 @@ def format_board_block(state: ScotlandYardState, zone_block: str, committed: dic
         Mr. X's Possible Zone:
         {zone_block}
 
-        Moves Already Committed This Round (FINAL - those detectives have taken their turn; no
-        one else may be sent to their destinations): {json.dumps(committed, indent=2)}
+        Detectives who have ALREADY MOVED this round (their turn is over; the Board State above
+        already shows them on their new nodes): {json.dumps(committed, indent=2)}
     """
 
 
@@ -466,17 +466,72 @@ async def _choose_move(structured_llm, prompt: str, det_id: str, legal_set: set,
     return node, rationale
 
 
+def apply_detective_move(state: ScotlandYardState, det_id: str, target_node: int) -> dict:
+    """
+    Physically moves one detective and pays for it, returning the fields to merge into state.
+
+    Applied the moment a turn ends rather than batched at the end of the round (ADR-0010), so
+    the next detective reasons about - and the board shows - a position that is already real.
+    rules.md section 2 describes exactly this ordering ("Detectives 1 through 5 moving in
+    sequential order"), and section 3's occupancy rule then falls out for free: the node this
+    detective vacates is genuinely unoccupied for whoever moves next.
+
+    Legality is re-derived here rather than trusted from the turn that chose it - the same
+    posture resolve_round has always taken toward the graph's output. A target that is not
+    actually reachable is a forfeit (rules.md section 3: no ticket spent, no ticket
+    transferred), not a crash, and is logged at WARNING because it always means an upstream bug.
+
+    Returns {"detectives", "mr_x", "from_node", "transport", "captured"}.
+    """
+    detective = dict(state["detectives"][det_id])
+    mr_x = dict(state["mr_x"])
+    from_node = detective["node_id"]
+
+    transport = None
+    if target_node != from_node:
+        transport = determine_move_transport(
+            detective, target_node, other_detective_nodes(state, det_id))
+        if transport is None:
+            logger.warning(
+                "%s could not legally move from Node %s to Node %s - forfeiting the turn.",
+                det_id, from_node, target_node)
+        else:
+            ticket_key = f"{transport}_tickets"
+            detective[ticket_key] -= 1
+            mr_x[ticket_key] += 1  # Rules: a detective's spent ticket transfers to Mr. X.
+            detective["node_id"] = target_node
+
+    return {
+        "detectives": {**state["detectives"], det_id: detective},
+        "mr_x": mr_x,
+        "from_node": from_node,
+        "transport": transport,
+        # Checked here, the instant this detective lands, because the rules end the game at
+        # that moment - the detectives still to move this round never get their turn.
+        "captured": detective["node_id"] == mr_x["current_node"],
+    }
+
+
 # --- THE TURN NODE ---
 
-async def turn_node(state: ScotlandYardState) -> dict:
+async def turn_node(state: ScotlandYardState, config: RunnableConfig) -> dict:
     """
-    Runs the whole turn for whichever detective `state["turn_index"]` points at, and commits
-    its move.
+    Runs the whole turn for whichever detective `state["turn_index"]` points at, applies its
+    move, and waits for the board to finish animating that move before returning.
 
     Emits a custom stream event per LLM call rather than one per node. Under the old design a
     stage's five calls landed on the client as a single blob once the last of them finished;
     here each of the six calls is surfaced the moment it completes, which is what lets the
     Chat Log read as a conversation unfolding rather than three bursts per loop.
+
+    `config` carries the GameSession under "configurable"/"session" (round_resolver passes it),
+    used only for the end-of-turn pawn-animation handshake. A session is absent whenever the
+    graph is driven directly (tests, the -m llm runners), and the turn then simply does not
+    wait - the handshake is presentation timing, never correctness.
+
+    The RunnableConfig annotation is load-bearing, not decoration: LangGraph decides whether to
+    hand a node the config by inspecting that annotation, and a plain `dict` hint silently gets
+    nothing passed at all rather than failing.
     """
     mover = DETECTIVE_IDS[state["turn_index"]]
     mover_name = AGENT_DISPLAY_NAMES[mover]
@@ -486,22 +541,24 @@ async def turn_node(state: ScotlandYardState) -> dict:
                 round_number, mover_name.upper(), state["turn_index"] + 1, NUM_DETECTIVES)
 
     writer = get_stream_writer()
-    reserved = set(committed.values())
+    session = (config or {}).get("configurable", {}).get("session")
 
-    zone_context, zone_state_update = get_mrx_zone_context(state)
+    # Recomputed per turn, not memoized per round: detectives physically move as their turns
+    # end, so the occupancy this BFS is blocked through genuinely differs between turns.
+    zone_context = compute_mrx_zone_context(state)
     zone_block = format_mrx_zone_block(zone_context)
     distances_to_zone = zone_context["distances_to_zone"] if zone_context else {}
 
     # Options are needed for the mover AND for every responder that has not moved yet, since a
     # responder argues about its own next move as well as the mover's. Detectives that already
-    # committed are excluded: they have no move left to make this round, so computing options
-    # for them would be both wasted work and actively misleading to put in front of them.
+    # moved are excluded: they have no move left to make this round, so computing options for
+    # them would be both wasted work and actively misleading to put in front of them.
     # One pass, so all six calls see the same board.
     still_to_move = [det_id for det_id in DETECTIVE_IDS if det_id not in committed]
-    legal_moves_context, legal_move_sets = fetch_legal_moves(state, still_to_move, reserved)
+    legal_moves_context, legal_move_sets = fetch_legal_moves(state, still_to_move)
     annotate_zone_distances(legal_moves_context, distances_to_zone)
     for det_id in still_to_move:
-        annotate_onward_options(state, det_id, legal_moves_context, committed)
+        annotate_onward_options(state, det_id, legal_moves_context)
 
     board_block = format_board_block(state, zone_block, committed)
     mover_options = format_options_block(mover, state, legal_moves_context, distances_to_zone)
@@ -548,13 +605,13 @@ async def turn_node(state: ScotlandYardState) -> dict:
         has_moved = responder in committed
         if has_moved:
             own_position_block = (
-                f"        You have ALREADY taken your turn this round and committed to Node "
-                f"{committed[responder]}. That is final - you cannot change it, and you have no "
-                f"move left to make. Argue from where you will actually be standing."
+                f"        You have ALREADY taken your turn this round and moved to Node "
+                f"{committed[responder]}. You are standing there now and have no move left to "
+                f"make this round. Argue from where you actually are."
             )
             preference_task = (
-                f"Answer with Node {committed[responder]} - your own committed node - as your "
-                "preferred_node, since your move is already settled."
+                f"Answer with Node {committed[responder]} - the node you are standing on - as "
+                "your preferred_node, since your move this round is already made."
             )
         else:
             own_position_block = format_options_block(
@@ -650,33 +707,58 @@ async def turn_node(state: ScotlandYardState) -> dict:
     committed_node, decision_rationale = await _choose_move(
         move_llm, decision_prompt, mover, legal_move_sets[mover], state, "final decision")
 
-    occupied = projected_occupied_nodes(state, mover, committed)
-    transport = determine_move_transport(state["detectives"][mover], committed_node, occupied)
-    logger.info("[%s COMMITTED] Node %s via %s - %s",
-                mover.upper(), committed_node, transport, decision_rationale)
+    # --- APPLY: the detective physically moves, and pays for it ---
+    applied = apply_detective_move(state, mover, committed_node)
+    from_node = applied["from_node"]
+    transport = applied["transport"]
+    final_node = applied["detectives"][mover]["node_id"]
+    logger.info("[%s MOVED] Node %s -> Node %s via %s - %s",
+                mover.upper(), from_node, final_node, transport, decision_rationale)
+    if applied["captured"]:
+        logger.info("[%s CAPTURED MR. X] at Node %s - the round ends here.", mover.upper(), final_node)
+
+    # Arm the handshake BEFORE the client can possibly answer it: the ack is a reply to the
+    # event emitted on the very next line, and arming afterwards would race a fast client.
+    if session is not None:
+        session.expect_pawn_ack(round_number, mover)
     writer({
         "event": "turn_decision", "detective": mover,
-        "from_node": state["detectives"][mover]["node_id"], "target_node": committed_node,
+        "from_node": from_node, "target_node": final_node,
         "transport": transport, "rationale": decision_rationale,
+        "captured": applied["captured"],
     })
+
+    # Hold the turn open until that pawn has finished moving on the board, so the next
+    # detective does not start deliberating over a board that is still rearranging itself.
+    # Bounded (ADR-0010): nobody may be watching, so this must never be able to stall a round.
+    if session is not None:
+        acked = await session.await_pawn_settled(TURN_ACK_TIMEOUT_SECONDS)
+        if not acked:
+            logger.info(
+                "No pawn-settled ack for %s within %.1fs - continuing without it (no client "
+                "watching, or its tweens are throttled).", mover, TURN_ACK_TIMEOUT_SECONDS)
 
     turn_record = {
         "proposed_node": proposed_node,
         "proposal_rationale": proposal_rationale,
         "responses": responses,
-        "committed_node": committed_node,
+        "from_node": from_node,
+        "committed_node": final_node,
+        "transport": transport,
         "decision_rationale": decision_rationale,
     }
     turn_summary = "\n".join(
         [f"[{mover_name} proposes Node {proposed_node}]: {proposal_rationale}"]
         + transcript
-        + [f"[{mover_name} commits to Node {committed_node}]: {decision_rationale}"]
+        + [f"[{mover_name} moves to Node {final_node}]: {decision_rationale}"]
     )
 
     return {
-        "committed_moves": {mover: committed_node},
+        "detectives": applied["detectives"],
+        "mr_x": applied["mr_x"],
+        "committed_moves": {mover: final_node},
         "turn_records": {mover: turn_record},
         "turn_index": state["turn_index"] + 1,
+        "captured_by": mover if applied["captured"] else None,
         "messages": [AIMessage(content=turn_summary)],
-        **zone_state_update,
     }

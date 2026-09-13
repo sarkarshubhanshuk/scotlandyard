@@ -1,7 +1,7 @@
 import Phaser from "phaser";
 import { AGENT_COLORS, DETECTIVE_LABELS } from "../labels";
 import { DETECTIVE_IDS, type MapData, type MapNode, type PublicGameState } from "../types";
-import { BOARD_HEIGHT, BOARD_WIDTH } from "./boardDimensions";
+import { BOARD_HEIGHT, BOARD_WIDTH, PAWN_MOVE_DURATION_MS } from "./boardDimensions";
 
 // Re-exported so BoardCanvas.tsx's existing `from "./BoardScene"` import keeps working - moved to
 // boardDimensions.ts (a Phaser-free module) so GameLayout.tsx can use these for its CSS
@@ -80,17 +80,20 @@ const LEGAL_TARGET_ALPHA = 0.9;
 const LEGAL_TARGET_SELECTED_ALPHA = 1;
 const LEGAL_TARGET_UNSELECTED_ALPHA = 0.5;
 
-// Fixed regardless of hop distance (a 1-hop taxi ride and a cross-board double-move both take
-// exactly this long to animate) - see renderMrX()'s own comment for why that's straightforward
-// to guarantee with a Phaser tween. Sine.easeInOut eases into and out of the motion rather than
-// moving at a constant speed.
-const MR_X_MOVE_DURATION_MS = 1000;
-const MR_X_MOVE_EASE = "Sine.easeInOut";
+// Sine.easeInOut eases into and out of the motion rather than moving at a constant speed. The
+// duration itself lives in boardDimensions.ts (the Phaser-free module) because useRoundStream
+// needs it too - see its comment there. Shared by Mr. X and all five detectives: every pawn
+// moves the same way, so a detective's move reads as the same kind of event as Mr. X's.
+const PAWN_MOVE_EASE = "Sine.easeInOut";
 
 export interface BoardSceneData {
   mapData: MapData;
   gameState: PublicGameState;
   onNodeClick?: (nodeId: number) => void;
+  // Fired when a pawn finishes animating to a new node ("mr_x" or a DetectiveId). This is what
+  // releases the next detective's turn - see useRoundStream's own handler and ADR-0010. Only
+  // ever fired for an actual move, never for a pawn that was simply placed.
+  onPawnSettled?: (pawnId: string) => void;
   highlightedNodeIds?: number[];
   selectedNodeId?: number | null;
 }
@@ -100,13 +103,17 @@ export class BoardScene extends Phaser.Scene {
   private nodesById = new Map<number, MapNode>();
   private gameState!: PublicGameState;
   private onNodeClick?: (nodeId: number) => void;
+  private onPawnSettled?: (pawnId: string) => void;
   private pawns = new Map<string, Phaser.GameObjects.Image>();
   private mrXHalo: Phaser.GameObjects.Graphics | null = null;
-  // The node Mr. X's pawn was last actually PLACED at (as opposed to gameState.mr_x.current_node,
-  // which is always the latest server truth) - renderMrX() diffs against this to tell "he just
-  // moved, animate it" apart from "a detective-only update arrived and he's exactly where he was".
-  // null only before the very first render, so that one is never mistaken for a move.
-  private lastMrXNode: number | null = null;
+  // The radius mrXHalo was drawn at, so ensureMrXHalo only redraws when the node tier under him
+  // actually changes rather than on every render.
+  private mrXHaloRadius: number | null = null;
+  // The node each pawn was last actually PLACED at (as opposed to the node the latest game state
+  // says it is on) - renderPawn() diffs against this to tell "it just moved, animate it" apart
+  // from "an unrelated update arrived and it is exactly where it was". A pawn missing from this
+  // map has never been rendered, so its first placement is never mistaken for a move.
+  private lastNodes = new Map<string, number>();
   private highlights = new Map<number, Phaser.GameObjects.GameObject>();
   private pawnTooltip: Phaser.GameObjects.Container | null = null;
   // The legal-move fetch that drives highlights resolves asynchronously and can arrive before
@@ -126,6 +133,7 @@ export class BoardScene extends Phaser.Scene {
     this.nodesById = new Map(this.mapData.nodes.map((node) => [node.id, node]));
     this.gameState = data.gameState;
     this.onNodeClick = data.onNodeClick;
+    this.onPawnSettled = data.onPawnSettled;
     this.latestHighlightedNodeIds = data.highlightedNodeIds ?? [];
     this.latestSelectedNodeId = data.selectedNodeId ?? null;
   }
@@ -176,115 +184,142 @@ export class BoardScene extends Phaser.Scene {
   }
 
   private renderPawns() {
-    // Detectives are always fully recreated (no movement animation asked for them) - Mr. X's own
-    // pawn/halo are handled separately by renderMrX(), which reuses rather than recreates them
-    // so a move can tween smoothly instead of snapping.
-    for (const [id, pawn] of this.pawns) {
-      if (id === "mr_x") continue;
-      pawn.destroy();
-      this.pawns.delete(id);
-    }
-    // The pawn objects a stale tooltip's hover handlers referred to no longer exist once this
-    // runs (a fresh game snapshot recreates every detective pawn from scratch) - drop any open
-    // tooltip rather than leaving it pointing at a destroyed pawn.
-    this.hidePawnTooltip();
-
     for (const detId of DETECTIVE_IDS) {
       const detective = this.gameState.detectives[detId];
       if (!detective) continue;
-      const pos = this.mapData.positions[String(detective.node_id)];
-      if (!pos) continue;
-      const pawn = this.add
-        .image(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, "pawn")
-        .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
-        .setTint(AGENT_COLORS[detId]);
-      this.makePawnHoverable(pawn, DETECTIVE_LABELS[detId], detective.node_id);
-      this.pawns.set(detId, pawn);
+      this.renderPawn(detId, detective.node_id, AGENT_COLORS[detId], DETECTIVE_LABELS[detId]);
     }
-
     this.renderMrX();
   }
 
-  // Mr. X's pawn is always rendered at his real current_node now (see serializers.py's own note
-  // on why exposing this is safe: the only human-facing client is played BY Mr. X, and detectives
+  /**
+   * Places or moves one pawn, and reports when it has arrived.
+   *
+   * Pawns are reused across renders rather than destroyed and recreated, which is what makes a
+   * move animate instead of snap: a Phaser tween interpolates from whatever the target's own x/y
+   * already is, so there is no need to look up or store the old position. `extraTargets` carries
+   * anything that must travel with the pawn (Mr. X's halo), so it stays locked to it mid-flight.
+   *
+   * Every pawn goes through here, detectives included. They used to be destroyed and recreated on
+   * every render - harmless while all five moved at once at the end of a round, but the reason
+   * they teleported. Now that each detective's move arrives on its own (ADR-0010), the same tween
+   * Mr. X already had applies to all six pawns.
+   */
+  private renderPawn(
+    pawnId: string,
+    nodeId: number,
+    tint: number,
+    label: string,
+    tooltipLines: string[] = [],
+    alpha = 1,
+    extraTargets: Phaser.GameObjects.GameObject[] = [],
+  ): Phaser.GameObjects.Image {
+    const pos = this.mapData.positions[String(nodeId)];
+    const cx = pos.x * RENDER_SCALE;
+    const cy = pos.y * RENDER_SCALE;
+
+    let pawn = this.pawns.get(pawnId);
+    const lastNode = this.lastNodes.get(pawnId);
+    const justMoved = lastNode !== undefined && lastNode !== nodeId;
+
+    if (!pawn) {
+      pawn = this.add
+        .image(cx, cy, "pawn")
+        .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE);
+      this.pawns.set(pawnId, pawn);
+    }
+    pawn.setTint(tint);
+    pawn.setAlpha(alpha);
+    this.makePawnHoverable(pawn, label, nodeId, tooltipLines);
+
+    if (justMoved) {
+      const targets = [pawn, ...extraTargets];
+      for (const target of targets) this.tweens.killTweensOf(target);
+      this.tweens.add({
+        targets,
+        x: cx,
+        y: cy,
+        duration: PAWN_MOVE_DURATION_MS,
+        ease: PAWN_MOVE_EASE,
+        // Fired only on a real move, which is exactly the contract onPawnSettled documents -
+        // the backend is waiting on this before it lets the next detective start thinking.
+        onComplete: () => this.onPawnSettled?.(pawnId),
+      });
+    } else {
+      pawn.setPosition(cx, cy);
+      for (const target of extraTargets) {
+        (target as Phaser.GameObjects.Graphics).setPosition(cx, cy);
+      }
+    }
+
+    this.lastNodes.set(pawnId, nodeId);
+    return pawn;
+  }
+
+  // Mr. X's pawn is always rendered at his real current_node (see serializers.py's own note on
+  // why exposing this is safe: the only human-facing client is played BY Mr. X, and detectives
   // are backend-only agents with no client access at all). Alpha is a visual reminder for the
   // human of whether detectives ALSO currently know this position - opaque only on the exact
   // round he's surfaced (last_known_round stays stuck on a past round forever after, per
   // build_next_round_state, so this must compare against the CURRENT round, not just check
   // non-null), semi-transparent every other round - not an information-hiding mechanism, since
   // nothing here is ever hidden from the one person who can see this canvas.
-  //
-  // When current_node has actually changed since the last render, the existing pawn+halo are
-  // reused and tweened to the new spot (a Phaser tween interpolates from whatever a target's own
-  // x/y property already is, so there's no need to look up or store the OLD position here) rather
-  // than destroyed and recreated at the destination - that's what turns a move into a visible
-  // animation instead of an instant snap. Every other case (first render, or a same-node update
-  // from a detective-only round) just places them directly, which is also what a plain
-  // destroy-and-recreate already did before this existed.
   private renderMrX() {
     const mrX = this.gameState.mr_x;
-    const pos = this.mapData.positions[String(mrX.current_node)];
-    if (!pos) return; // Defensive only - every node has a position entry.
-
-    const cx = pos.x * RENDER_SCALE;
-    const cy = pos.y * RENDER_SCALE;
     const isSurfacingRound = mrX.last_known_round === this.gameState.round_number;
-    const tooltipLines = [isSurfacingRound ? "Visible to Detectives" : "Invisible to Detectives"];
-    const existingPawn = this.pawns.get("mr_x");
-    const justMoved = this.lastMrXNode !== null && this.lastMrXNode !== mrX.current_node;
+    const halo = this.ensureMrXHalo(mrX.current_node);
+    this.renderPawn(
+      "mr_x",
+      mrX.current_node,
+      MR_X_COLOR,
+      "Mr. X",
+      [isSurfacingRound ? "Visible to Detectives" : "Invisible to Detectives"],
+      isSurfacingRound ? 1 : MR_X_HIDDEN_ALPHA,
+      halo ? [halo] : [],
+    );
+  }
 
-    if (existingPawn && this.mrXHalo && justMoved) {
-      const halo = this.mrXHalo;
-      this.tweens.killTweensOf(existingPawn);
-      this.tweens.killTweensOf(halo);
-      this.tweens.add({
-        targets: [existingPawn, halo],
-        x: cx,
-        y: cy,
-        duration: MR_X_MOVE_DURATION_MS,
-        ease: MR_X_MOVE_EASE,
-      });
-      existingPawn.setAlpha(isSurfacingRound ? 1 : MR_X_HIDDEN_ALPHA);
-      this.makePawnHoverable(existingPawn, "Mr. X", mrX.current_node, tooltipLines);
-    } else {
-      existingPawn?.destroy();
-      this.mrXHalo?.destroy();
+  // The ring around Mr. X's node, drawn once and then carried along by renderPawn's tween.
+  //
+  // Its radius depends on which marker tier the node it sits on actually draws, so it is redrawn
+  // whenever that radius would change - but NOT repositioned here, since positioning is
+  // renderPawn's job and doing it in both places would fight the tween mid-flight. Circles are
+  // drawn at the graphics object's own local origin (rather than passing cx/cy into strokeCircle)
+  // precisely so its x/y can be tweened like any other GameObject.
+  private ensureMrXHalo(nodeId: number): Phaser.GameObjects.Graphics | null {
+    const radius = this.nodeHaloBaseRadius(nodeId) + MR_X_HALO_THICKNESS / 2;
+    if (this.mrXHalo && this.mrXHaloRadius === radius) return this.mrXHalo;
 
-      // Drawn before the pawn below so it sits behind it in the display list - a ring around the
-      // node, not a disc covering it, so both the pawn and the node's own marker/border remain
-      // visible inside it, with zero gap (see nodeHaloBaseRadius()'s own comment). Two concentric
-      // strokes at the same radius - a wider, low-alpha one for a soft glow and a thinner
-      // full-alpha one for a crisp bright core - stand in for a blurred glow without an actual
-      // blur filter. Circles are drawn at the graphics object's own local origin and positioned
-      // via setPosition (rather than passing cx/cy straight into strokeCircle) so a later move
-      // can tween its x/y like any other GameObject instead of needing a manual per-frame redraw.
-      const mrXHaloRadius = this.nodeHaloBaseRadius(mrX.current_node) + MR_X_HALO_THICKNESS / 2;
-      const halo = this.add.graphics();
-      halo.lineStyle(MR_X_HALO_THICKNESS * 2 * RENDER_SCALE, MR_X_HALO_COLOR, 0.35);
-      halo.strokeCircle(0, 0, mrXHaloRadius * RENDER_SCALE);
-      halo.lineStyle(MR_X_HALO_THICKNESS * RENDER_SCALE, MR_X_HALO_CORE_COLOR, 0.9);
-      halo.strokeCircle(0, 0, mrXHaloRadius * RENDER_SCALE);
-      halo.setPosition(cx, cy);
-      this.mrXHalo = halo;
-
-      const pawn = this.add
-        .image(cx, cy, "pawn")
-        .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
-        .setTint(MR_X_COLOR)
-        .setAlpha(isSurfacingRound ? 1 : MR_X_HIDDEN_ALPHA);
-      this.makePawnHoverable(pawn, "Mr. X", mrX.current_node, tooltipLines);
-      this.pawns.set("mr_x", pawn);
+    // Two concentric strokes at the same radius - a wider, low-alpha one for a soft glow and a
+    // thinner full-alpha one for a crisp bright core - stand in for a blurred glow without an
+    // actual blur filter. A ring, not a disc, so the pawn and the node's own marker stay visible.
+    const previous = this.mrXHalo;
+    const halo = this.add.graphics();
+    halo.lineStyle(MR_X_HALO_THICKNESS * 2 * RENDER_SCALE, MR_X_HALO_COLOR, 0.35);
+    halo.strokeCircle(0, 0, radius * RENDER_SCALE);
+    halo.lineStyle(MR_X_HALO_THICKNESS * RENDER_SCALE, MR_X_HALO_CORE_COLOR, 0.9);
+    halo.strokeCircle(0, 0, radius * RENDER_SCALE);
+    if (previous) {
+      // Inherit the outgoing halo's position so a redraw mid-move doesn't jump to the origin
+      // before renderPawn gets a chance to place or tween it.
+      halo.setPosition(previous.x, previous.y);
+      this.tweens.killTweensOf(previous);
+      previous.destroy();
     }
-
-    this.lastMrXNode = mrX.current_node;
+    // Drawn before the pawn in the display list is what puts it behind; a fresh graphics object
+    // is added on top, so send it back explicitly.
+    halo.setDepth(-1);
+    this.mrXHalo = halo;
+    this.mrXHaloRadius = radius;
+    return halo;
   }
 
   // A pawn's own display bounds (its interactive hit area, since setInteractive() is called with
   // no explicit shape) are used as the hover target rather than a separate invisible hit circle
   // like the node markers get - the pawn image itself is the only thing a player would expect to
-  // hover to inspect it. Detectives always call this on a freshly-created pawn, but Mr. X's own
-  // pawn can be reused across renders (see renderMrX()) - clearing any previous listeners first
-  // keeps this idempotent either way, rather than stacking a duplicate pair on every re-render.
+  // hover to inspect it. EVERY pawn is now reused across renders (see renderPawn), and the node
+  // in its tooltip changes when it moves, so this is called repeatedly on the same object -
+  // clearing the previous listeners first is what stops a duplicate pair stacking every render.
   private makePawnHoverable(pawn: Phaser.GameObjects.Image, label: string, node: number, extraLines: string[] = []) {
     pawn.setInteractive({ useHandCursor: true });
     pawn.off("pointerover");
@@ -347,7 +382,11 @@ export class BoardScene extends Phaser.Scene {
     this.pawnTooltip = null;
   }
 
-  /** Called by BoardCanvas when a fresh game snapshot arrives, to move pawns without recreating the scene. */
+  /**
+   * Called by BoardCanvas when a fresh game snapshot arrives, to move pawns without recreating
+   * the scene. Under per-turn application (ADR-0010) this now fires once per detective turn as
+   * well as once per Mr. X move, and renderPawn turns each into a single pawn's animation.
+   */
   updateGameState(gameState: PublicGameState) {
     this.gameState = gameState;
     this.renderPawns();

@@ -1,8 +1,9 @@
-import type { LegalMove, MapData, PublicGameState, TicketType } from "../types";
+import type { DetectiveId, LegalMove, MapData, PublicGameState, TicketType } from "../types";
 
-// No Vite proxy configured - the backend already opens CORS to "*" (server.py) specifically so
-// the frontend can call it directly across ports in dev. Override via VITE_API_BASE_URL (a .env
-// file, or the shell environment at build/dev time) to point at a non-default backend origin.
+// No Vite proxy configured - the backend opens CORS to this dev origin (server.py) specifically
+// so the frontend can call it directly across ports in dev. Override via VITE_API_BASE_URL (a
+// .env file, or the shell environment at build/dev time) to point at a non-default backend
+// origin - and note server.py's ALLOWED_ORIGINS has to agree, since it no longer allows "*".
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 class ApiError extends Error {
@@ -68,6 +69,21 @@ export function submitMrXMove(gameId: string, move: MrXMoveRequest): Promise<Pub
   return request(`/games/${gameId}/mrx/move`, {
     method: "POST",
     body: JSON.stringify(move),
+  });
+}
+
+/**
+ * Tells the backend that a detective's pawn has finished animating, which is what releases the
+ * next detective's turn (ADR-0010).
+ *
+ * Deliberately fire-and-forget from the caller's point of view: the backend waits only a few
+ * seconds for this before continuing anyway, so a failed or late ack costs a little pacing and
+ * nothing else. There is nothing useful for the UI to say about it and nothing worth retrying.
+ */
+export function postTurnAck(gameId: string, roundNumber: number, detective: DetectiveId): Promise<{ applied: boolean }> {
+  return request(`/games/${gameId}/turn-ack`, {
+    method: "POST",
+    body: JSON.stringify({ round_number: roundNumber, detective }),
   });
 }
 

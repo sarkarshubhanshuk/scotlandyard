@@ -61,8 +61,13 @@ and link it from the Table of Contents below.
 Once per round, each of the 5 detectives takes a turn, one at a time, in fixed `DETECTIVE_IDS`
 order. A turn is three phases and six LLM calls: the detective whose turn it is (the *mover*)
 proposes a destination for itself and broadcasts it; the other four respond to that proposal
-one at a time; the mover then commits. **The commitment is final** — every detective who has
-not yet moved must work around it.
+one at a time; the mover then commits.
+
+The move is then **applied immediately** — the detective physically moves, its ticket transfers
+to Mr. X, and capture is checked — and the turn waits for the board to finish animating that
+pawn before the next detective's first LLM call goes out. So a round plays out the way
+`rules.md` §2 describes it: "Mr. X moving first, followed by Detectives 1 through 5 moving in
+sequential order", each one deciding against "the current board state". See **ADR-0010**.
 
 This replaced a simultaneous propose → debate → vote consensus loop in which all five
 detectives decided at once and a 3-of-5 majority locked each move. See **ADR-0009** for why,
@@ -81,21 +86,24 @@ Runs once per round, orchestrated by the `detective_graph` LangGraph state machi
 START -> turn -> [router] -> turn (next detective) OR finalize -> END
 ```
 
-The router advances `turn_index` through `DETECTIVE_IDS` until all five have committed. Each
-`turn` node run is one detective's whole turn:
+The router advances `turn_index` through `DETECTIVE_IDS` until all five have moved — or stops
+early if one of them caught Mr. X, since the game ends at that instant and the detectives behind
+it never move. Each `turn` node run is one detective's whole turn:
 
 **Phase 1 — Propose** (1 call, the mover)
 - Before building any prompt, the node calls `game_master.compute_valid_moves` in-process
   (ADR-0001 — this used to be an MCP tool round-trip), passing `occupied_nodes` = every other
-  detective's current position **plus every node already in `committed_moves`**. This returns
-  the true legal move set (ticket-legal, unoccupied, *and* not already claimed by a detective
-  who moved earlier this round), computed server-side rather than trusted from the LLM.
-- Folding committed destinations into `occupied_nodes` is the whole collision guarantee. A
-  detective that has already committed is still physically standing on its old node until
-  `finalize`, so its destination does not appear in the occupied set on its own. With it
-  excluded, a later mover is **never offered** a node someone has taken — duplicate
-  destinations are structurally impossible rather than something a vote tally rules out
-  afterwards.
+  detective's current position. This returns the true legal move set (ticket-legal and
+  unoccupied), computed server-side rather than trusted from the LLM.
+- That single exclusion is the whole collision guarantee, and it is **exact** rather than
+  reconstructed: since each move is applied at the end of its own turn (ADR-0010), a detective
+  that has already moved is genuinely standing on its new node. A later mover is therefore never
+  offered a node someone is on — duplicate destinations are structurally impossible rather than
+  something a vote tally rules out afterwards.
+- Equally, the node an earlier detective **vacated** is simply available again, which is what
+  `rules.md` §3's occupancy rule describes. This used to be forbidden: the old scheme reserved a
+  mover's destination *and* left it standing on its origin, so both nodes stayed blocked for the
+  rest of the round.
 - The mover sees its own current node, its ticket inventory, and its legal destinations
   annotated with `distance_to_mrx_zone` (see "Mr. X Possible-Zone Context" below) and
   `onward_moves_after` (see "Onward-Move Annotation" below).
@@ -143,8 +151,30 @@ The router advances `turn_index` through `DETECTIVE_IDS` until all five have com
   responses, and commits. Its collaboration tendency (below) is what the prompt tells it to
   apply when weighing those responses against its own read.
 - Same `MoveChoice` schema, same one-retry-then-deterministic enforcement.
-- The committed node goes into `state["committed_moves"]`, which the next turn's
-  `fetch_legal_moves` immediately treats as reserved.
+- `agents.py:apply_detective_move` then makes the move real: the detective's `node_id` changes,
+  the ticket it spends transfers to Mr. X (rules.md §3), and capture is decided the instant it
+  lands. Legality is re-derived here rather than trusted from the turn that chose it — a target
+  that is not actually reachable is a forfeit (no ticket spent, none transferred), logged at
+  WARNING because it always means an upstream bug.
+- **Capture ends the round here.** `state["captured_by"]` is set, the router skips straight to
+  `finalize`, and the detectives behind this one never take a turn — the rules-correct outcome,
+  and ~24 billable LLM calls not spent deliberating a decided game.
+
+**The pawn-animation handshake** (ADR-0010)
+- A turn does not return until the board has finished sliding that pawn to its new node, so the
+  next detective never starts deliberating over a board that is still visibly rearranging.
+- The board is in the browser, so the client says when: it POSTs `/games/{id}/turn-ack` on tween
+  completion, and `session.await_pawn_settled` releases. The ack names `(round_number,
+  detective)` and is ignored unless it matches what the loop is waiting on, so a late ack for an
+  earlier turn cannot release the current one.
+- **Always bounded** (`TURN_ACK_TIMEOUT_SECONDS`, 3s). Nobody may be watching — the round runs
+  whether or not a client is listening (ISSUE-027) — the tab may be backgrounded with its tweens
+  throttled, or the connection may have dropped. Timing out logs at INFO and continues; it can
+  never stall a round.
+- A detective that forfeited never animates, so the client acks it immediately rather than
+  letting the backend wait out the full timeout.
+- Mr. X's own move needs no ack: the client simply holds the round stream closed for the
+  animation's duration, and the backend does not start the round until that stream opens.
 
 **Deterministic enforcement** (`agents.py:_enforce_legal_node`)
 - Applies to both of the mover's calls. Whatever the model named, the node actually recorded
@@ -170,15 +200,12 @@ The router advances `turn_index` through `DETECTIVE_IDS` until all five have com
 - Computed from `mr_x.last_known_node`/`last_known_round` and the board graph, then injected as
   prompt text into every proposal, response, and decision call. Gives detectives spatial
   grounding they otherwise have none of — see `docs/issues/known_issues.md` ISSUE-005.
-- **Memoized once per round** via `agents.py:get_mrx_zone_context`, not recomputed per call: its
-  inputs (`last_known_node`/`last_known_round`, `round_number`, and the detectives' occupied
-  nodes) are identical for all 30 of a round's calls, because detectives commit destinations
-  during their turns but do not physically move until `resolve_round` — `state["detectives"]` is
-  frozen for the whole round. The first turn computes it and stashes it on
-  `state["mrx_zone_context"]`; the other four read the cached value. Key *presence* on state
-  (not truthiness) marks it as already computed, since `None` is itself a legitimate pre-reveal
-  value — `build_next_round_state` omits the key entirely so each new round starts with a cache
-  miss.
+- **Recomputed at the start of every turn**, not memoized per round. It used to be cached once
+  per round, which was correct while detectives did not physically move until the round resolved
+  — but under per-turn application (ADR-0010) the occupancy this BFS is blocked through changes
+  five times a round, and a round-start snapshot would show a later detective paths blocked
+  through nodes its teammates had already vacated. Five BFS pairs per round instead of one is
+  nothing beside 30 LLM calls; `state["mrx_zone_context"]` and its memo wrapper are gone.
 - **The zone**: every node reachable from Mr. X's last-known node within
   `min(round_number - last_known_round, 4)` hops, blocked through currently-occupied detective
   nodes (per rules.md's "Mr. X cannot move to, or pass through, a Node occupied by a
@@ -201,10 +228,9 @@ The router advances `turn_index` through `DETECTIVE_IDS` until all five have com
 - Which ticket a move spends is resolved by `transport.determine_move_transport` — the same
   helper `resolve_round` uses to actually deduct it — so this can never disagree with what the
   move will really cost.
-- Occupancy for the onward calculation is *projected forward* (`projected_occupied_nodes`):
-  every other detective is treated as standing on its committed destination if it has already
-  taken its turn, otherwise on its current node. That is the best available picture of next
-  round's board.
+- Occupancy for the onward calculation is simply where the other four are standing right now
+  (`other_detective_nodes`) — exact for anyone who has already moved this round, and a snapshot
+  for anyone who has not, since they will move again before this lookahead comes true.
 - Computed deterministically rather than left to the model, for the same reason
   `distance_to_mrx_zone` is: it is a cheap board lookup, and asking a small model to simulate
   ticket arithmetic is exactly the kind of thing it gets quietly wrong. Costs one integer per
@@ -235,10 +261,12 @@ The router advances `turn_index` through `DETECTIVE_IDS` until all five have com
   the table.
 
 **Finalize** (`finalize_round_node`)
-- Assembles `final_moves` from `committed_moves` in `DETECTIVE_IDS` order. There is no fallback
-  resolution left to do: every turn ends in a committed move, already validated against a legal
-  set that excluded everything committed before it. A missing commitment raises rather than
-  being papered over.
+- Assembles `final_moves` and `final_move_details` from `turn_records`. There is no fallback
+  resolution and no move application left to do: every turn ends in a move that already happened.
+  Both values are read straight out of the records rather than recomputed, because the detectives
+  have already left the nodes they started from — `from_node` has to be captured while it is
+  still true. A round cut short by a capture finalizes with only the turns that actually
+  happened; otherwise a missing record raises rather than being papered over.
 - *Asserts* destination uniqueness (excluding detectives that stayed put, which cannot collide).
   Unreachable given the reservation above, which is exactly why it is asserted — a duplicate
   arriving here means that exclusion has regressed, and it must fail loudly rather than degrade
@@ -265,18 +293,18 @@ rather than re-sending content already streamed, and translates only `finalize`.
 
 ### Round Boundaries
 
-`committed_moves`, `turn_records`, and `turn_index` are intentionally cumulative *within* a
-round (that's how the turn sequence tracks who has already moved). They do **not** reset
-themselves — `detective_graph` has no cross-invocation memory, so resetting is the caller's
+`committed_moves`, `turn_records`, `captured_by` and `turn_index` are intentionally cumulative
+*within* a round (that's how the turn sequence tracks who has already moved). They do **not**
+reset themselves — `detective_graph` has no cross-invocation memory, so resetting is the caller's
 responsibility. `build_next_round_state()` (`backend/scotland_yard/graph.py`) takes a completed round's final
 state and returns a fresh `initial_state` for the next round: `round_number` incremented,
-`turn_index: 0`, `committed_moves: {}`, `turn_records: {}`, `final_moves: {}`,
-`final_move_details: {}`, `messages: []`, while carrying `detectives` and `mr_x` forward
-unchanged. Left unreset, `turn_index` would already be at 5 and the next round would route
-straight to `finalize` without a single detective taking a turn, replaying the previous round's
-committed nodes forever. `mrx_zone_context` is deliberately omitted (not set to `None`) so the
-per-round memoization described above starts each new round with a cache miss. It does **not**
-apply `final_moves` to positions or deduct tickets — see Known Limitations.
+`turn_index: 0`, `committed_moves: {}`, `turn_records: {}`, `captured_by: None`,
+`final_moves: {}`, `final_move_details: {}`, `messages: []`, while carrying `detectives` and
+`mr_x` forward unchanged. Left unreset, `turn_index` would already be at 5 and the next round
+would route straight to `finalize` without a single detective taking a turn.
+
+Positions and ticket inventories need no handling here: each move was applied when its own turn
+ended, so `detectives` and `mr_x` are already current.
 
 ### State Involved
 
@@ -284,13 +312,14 @@ apply `final_moves` to positions or deduct tickets — see Known Limitations.
 |---|---|---|
 | `round_number` | `int` | Drives the collaboration-tendency ladder (see above) |
 | `turn_index` | `int` | Index into `DETECTIVE_IDS` of the detective currently taking its turn; the router finalizes once it reaches 5 |
-| `committed_moves` | `Dict[str, int]` | Detective → node, accumulates within a round; each entry is reserved against every later mover |
-| `turn_records` | `Dict[str, TurnRecord]` | Per turn: the proposal, the four responses, and the final decision, with rationales |
+| `committed_moves` | `Dict[str, int]` | Detective → node, accumulates within a round; a record of who has already moved, not a set of reservations |
+| `captured_by` | `Optional[str]` | The detective that landed on Mr. X, set the instant it happens; the router reads it to skip every remaining turn |
+| `turn_records` | `Dict[str, TurnRecord]` | Per turn: the proposal, the four responses, the origin node, the ticket spent, and the final decision |
 | `final_moves` | `Dict[str, int]` | Output of `finalize_round_node`; the round's resolved moves |
 | `final_move_details` | `Dict[str, dict]` | `finalize_round_node`'s from/to/transport preview per detective, for the frontend Chat Log - see Finalize above |
 | `messages` | `List[BaseMessage]` | One `AIMessage` per completed turn, holding that turn's rendered transcript |
-| `detectives` | `Dict[str, Detective]` | Current positions/tickets; read-only input to this cycle, frozen for the whole round |
-| `mrx_zone_context` | `Optional[dict]` | Per-round memoized Mr. X possible-zone context (see above); key absent = not yet computed this round |
+| `detectives` | `Dict[str, Detective]` | Current positions/tickets; **written** by each turn as its move is applied (ADR-0010), not frozen for the round |
+| `mr_x` | `MrXState` | Also written each turn: a detective's spent ticket transfers into his inventory |
 
 ### Implementation References
 
@@ -302,7 +331,14 @@ apply `final_moves` to positions or deduct tickets — see Known Limitations.
   internal id. Dict keys and console logs still use the raw id.
 - `backend/scotland_yard/rules_constants.py:COLLABORATION_TIERS`, `CALLS_PER_TURN`, `LLM_CALL_DEADLINE_SECONDS`
   — this project's own turn parameters (not from rules.md); see ADR-0009
-- `backend/scotland_yard/agents.py:turn_node` — the whole turn: propose, four responses, decide
+- `backend/scotland_yard/agents.py:turn_node` — the whole turn: propose, four responses, decide,
+  apply, then wait for the pawn to finish animating
+- `backend/scotland_yard/agents.py:apply_detective_move` — the move itself: position, ticket
+  transfer, capture check, all re-derived rather than trusted
+- `backend/scotland_yard/session.py:expect_pawn_ack`, `acknowledge_pawn_settled`,
+  `await_pawn_settled` — the bounded pawn-animation handshake
+- `backend/scotland_yard/server.py:turn_ack_route` — `POST /games/{id}/turn-ack`, which
+  deliberately does not take `session.lock` (the round holds it)
 - `backend/scotland_yard/agents.py:responders_for` — the cyclic response order for a given mover
 - `backend/scotland_yard/agents.py:get_psychology_prompt`, `get_collaboration_tier` — the 3 motivations and the
   round-based collaboration ladder
@@ -313,8 +349,8 @@ apply `final_moves` to positions or deduct tickets — see Known Limitations.
   in a turn shares, so all six demonstrably reason about the same board
 - `backend/scotland_yard/graph.py:build_detective_graph` (and its `check_turn_status` router), `finalize_round_node`, `build_next_round_state`
 - `backend/scotland_yard/game_master.py:compute_valid_moves` — ticket + occupancy legality, server-side
-- `backend/scotland_yard/agents.py:fetch_legal_moves` — the single legal-move lookup, and the `reserved_nodes`
-  exclusion that makes duplicate destinations structurally impossible
+- `backend/scotland_yard/agents.py:fetch_legal_moves` — the single legal-move lookup, and the
+  occupancy exclusion that makes duplicate destinations structurally impossible
 - `backend/scotland_yard/llm_client.py:get_detective_llm` — cached LLM for the mover's proposal and decision
 - `backend/scotland_yard/llm_client.py:get_debate_llm`, `_build_chat_llm` — the responders' cached, non-tool-
   bound LLM instance (see ISSUE-003) and the shared OpenRouter config helper both LLM getters
@@ -323,10 +359,8 @@ apply `final_moves` to positions or deduct tickets — see Known Limitations.
   BFS behind the Mr. X Possible-Zone Context described above
 - `backend/scotland_yard/agents.py:compute_mrx_zone_context`, `format_mrx_zone_block` — builds and renders that
   context into every prompt
-- `backend/scotland_yard/agents.py:get_mrx_zone_context` — per-round memoization wrapper around
-  `compute_mrx_zone_context`; `turn_node` calls this instead of the raw function
-- `backend/scotland_yard/agents.py:annotate_onward_options`, `projected_occupied_nodes` — the anti-stranding
-  annotation and the forward-projected occupancy it is computed against
+- `backend/scotland_yard/agents.py:annotate_onward_options`, `other_detective_nodes` — the
+  anti-stranding annotation and the live occupancy it is computed against
 - `backend/scotland_yard/transport.py:pick_transport`, `determine_move_transport` — the transport
   legality/tie-break logic shared by `finalize_round_node`'s Chat-Log preview (here),
   `annotate_onward_options`, and §2's `resolve_round` (which actually applies the move) -
@@ -342,12 +376,17 @@ apply `final_moves` to positions or deduct tickets — see Known Limitations.
   parallelized, so the critical path goes from 7 sequential call-slots per loop to a flat 30 per
   round. Token cost is roughly unchanged (~31k input tokens/round against 25k–76k before),
   because each call now carries one or two detectives' option lists instead of all five.
-- **Sequential commitment replaces the majority threshold as the collision guarantee**: the old
+- **Sequential movement replaces the majority threshold as the collision guarantee**: the old
   3-of-5 threshold was load-bearing for *correctness*, not just legitimacy — a strict majority
   is what made two detectives' tallies both reaching the threshold on one node arithmetically
-  impossible (`known_issues.md` ISSUE-010). Reserving committed destinations achieves the same
-  guarantee more directly and with one code path instead of several, which also retires
+  impossible (`known_issues.md` ISSUE-010). Moving each detective as its turn ends achieves the
+  same guarantee more directly and with one code path instead of several, which also retires
   ISSUE-025's shared-helper fix and ISSUE-026's fallback de-duplication.
+- **The board paces the round, not the other way round** (ADR-0010): a turn ends by waiting for
+  its own pawn to arrive. That costs ~6s per round on top of the LLM time and is the price of a
+  round being watchable — five pawns jumping at once when the round resolved threw away, on the
+  board, exactly the legibility turn-wise play bought in the Chat Log. The wait is bounded in
+  every direction so it can never become a way for a round to hang.
 - **Fixed turn order, not rotating**: Agent Red always picks from a free board and Agent Purple
   always picks against four reserved nodes, so there is a real first-mover advantage. Accepted
   deliberately — a fixed order is something the player learns once and can then follow without
@@ -405,10 +444,13 @@ apply `final_moves` to positions or deduct tickets — see Known Limitations.
 
 ### Overview
 
-Everything §1 leaves unfinished: applying `final_moves` to the board, deducting/transferring
-tickets, detecting capture and the other win conditions, handling Mr. X's own (human-played)
-turn including double-moves and surfacing reveals, and a live server a browser frontend can
-actually talk to.
+Everything §1 leaves unfinished: judging the win conditions that can only be judged once a whole
+round is over, handling Mr. X's own (human-played) turn including double-moves and surfacing
+reveals, and a live server a browser frontend can actually talk to.
+
+Note what is **not** here any more: detective moves and their ticket transfers are applied inside
+§1, at the end of each detective's own turn (ADR-0010). `resolve_round` used to do that work and
+no longer moves anyone.
 
 ### Trigger
 
@@ -455,19 +497,19 @@ Starlette API (`backend/scotland_yard/server.py`).
   six-call turn has finished - too coarse to drive the Chat Log, so they are used for the
   `finalize` node and as a turn-boundary marker. The last `"values"` chunk becomes the new
   `session.state` directly, reusing `state.py`'s own reducers rather than reimplementing them.
-- `resolve_round` applies `final_moves` to each detective (agents.py's `DETECTIVE_IDS`) **sequentially, in fixed order**,
-  never trusting the graph's output for legality (re-derived via `game_master.compute_valid_moves`
-  — the same posture §1 already applies to every LLM response). When a target node is reachable
-  via more than one transport type (verified real case: map.json's node 1 ↔ node 46 via both bus
-  and metro), `transport.py:determine_move_transport` (which wraps `pick_transport`)
-  deterministically prefers whichever type the detective holds the
-  most tickets of, tie-broken taxi > bus > metro — a server-side apply-time decision, not
-  something detectives ever choose themselves (see Design Rationale). §1's
-  `finalize_round_node` calls the same helper to preview this same decision one step earlier, for
-  the frontend Chat Log.
-- **Capture is checked after EVERY individual detective's move**, not once at the end — the
-  instant a detective's new node equals Mr. X's real `current_node`, the round stops and the
-  remaining detectives never move.
+- Moves are applied by §1's `agents.py:apply_detective_move`, once per turn, never trusting the
+  LLM's choice for legality (re-derived via `game_master.compute_valid_moves` — the same posture
+  §1 applies to every LLM response). When a target node is reachable via more than one transport
+  type (verified real case: map.json's node 1 ↔ node 46 via both bus and metro),
+  `transport.py:determine_move_transport` (which wraps `pick_transport`) deterministically
+  prefers whichever type the detective holds the most tickets of, tie-broken taxi > bus > metro —
+  a server-side apply-time decision, not something detectives ever choose themselves (see Design
+  Rationale). `finalize_round_node` reads the resulting ticket back out of `turn_records` for the
+  Chat Log's round recap, so the two can never disagree.
+- **Capture is decided inside the turn that causes it**, not here — the instant a detective's new
+  node equals Mr. X's real `current_node`, `captured_by` is set and the graph's router skips
+  every remaining turn, so the detectives behind it never move *or* deliberate. `resolve_round`
+  only reads that verdict.
 - If no capture: checks whether Mr. X now has any legal move at all (detectives win if not),
   then whether all 5 detectives are simultaneously trapped (Mr. X wins if so), then whether
   `round_number == 24` was just completed (Mr. X wins). Otherwise calls `build_next_round_state`
@@ -483,6 +525,10 @@ Starlette API (`backend/scotland_yard/server.py`).
   human-facing client is the one played BY Mr. X; the detectives are backend-only LangGraph/LLM
   agents with no access to this or any client. If a detective-facing client is ever added,
   `current_node` must be excluded from whatever serialization *that* client receives.
+- `POST /games/{game_id}/turn-ack` is the one client→server message in the round: the board
+  reporting that a detective's pawn finished animating, which releases the next detective's turn
+  (ADR-0010). It deliberately does **not** take `session.lock`, since the round holds that lock
+  for its whole duration and this request exists to unblock it from the inside.
 - Most SSE events are `agents.py`'s own per-call payloads, relayed verbatim by
   `round_stream_route` with the payload's own `"event"` name as the SSE event name:
   `turn_started`, `turn_proposal`, `turn_response`, `turn_decision`.

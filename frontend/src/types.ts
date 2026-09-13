@@ -104,8 +104,13 @@ export interface TurnResponseEvent {
   preferred_node: number | null;
 }
 
-// The mover's final, binding choice. Every later detective this round must work around it.
-// transport is null only if the detective could not legally move at all and stayed put.
+// The mover's final choice, ALREADY APPLIED on the server (ADR-0010) - this detective has
+// moved, spent its ticket, and every detective still to move this round sees it there. The
+// client mirrors the same change locally so the board animates the pawn and the ticket counts
+// stay live; round_result re-syncs against server truth at the end of the round regardless.
+//
+// transport is null only if the detective could not legally move at all and stayed put, in
+// which case from_node === target_node and no ticket changed hands.
 export interface TurnDecisionEvent {
   type: "turn_decision";
   detective: DetectiveId;
@@ -113,6 +118,9 @@ export interface TurnDecisionEvent {
   target_node: number;
   transport: TicketType | null;
   rationale: string;
+  // True if this detective landed on Mr. X. The game ends here and the detectives behind it in
+  // the turn order never move - see graph.py's router.
+  captured: boolean;
 }
 
 // The graph's turn node finished - a boundary marker, since every message it produced has
