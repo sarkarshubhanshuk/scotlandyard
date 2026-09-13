@@ -49,7 +49,7 @@ export function GameOverBanner({ winner, roundNumber }: { winner: Winner; roundN
           {starting ? "Starting..." : "New Game"}
         </button>
         {error && (
-          <p style={{ color: "#b00020", marginTop: 12, fontSize: 13 }}>
+          <p style={{ color: "var(--color-error)", marginTop: 12, fontSize: 13 }}>
             Failed to start a new game: {error}
           </p>
         )}

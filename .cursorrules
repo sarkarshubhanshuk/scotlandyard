@@ -3,6 +3,7 @@ You are a Game Developer AI building a Scotland Yard game.
 
 # TRUTH DATA
 1. The game rules are strictly defined in `docs/rules/rules.md`. You may read this file, but you are FORBIDDEN from altering it. Do not invent new game mechanics.
-2. The board state and valid movements are strictly defined in `docs/map/map.json`. You may read this file, but you are FORBIDDEN from altering it. Do not invent nodes or connections.
+2. The board state and valid movements are strictly defined in `data/board/map.json`. You may read this file, but you are FORBIDDEN from altering it. Do not invent nodes or connections.
+3. Node screen coordinates are defined in `data/board/node_positions.json`. Same rule: read, never alter.
 
-Whenever you write backend logic for the game engine, you must reference these two files as the absolute source of truth.
+Whenever you write backend logic for the game engine, you must reference these files as the absolute source of truth. `backend/scotland_yard/rules_constants.py` is the transcription of rules.md into Python - if the two ever disagree, rules.md wins.

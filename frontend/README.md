@@ -1,78 +1,88 @@
-> Generic Vite/React tooling reference only — not project-specific documentation. For this
-> project's planned frontend architecture (Phase 4, not yet started), see `CLAUDE.md`.
+# Frontend — Scotland Yard
 
-# React + TypeScript + Vite
+The React 19 + Phaser 4 client. The human plays **Mr. X** here; the five detectives are LLM
+agents running in the backend and have no client of their own (see
+[ADR-0003](../docs/adr/0003-human-mr-x-llm-detectives.md)).
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Commands
 
-Currently, two official plugins are available:
+| Command | What it does |
+|---|---|
+| `npm run dev` | Vite dev server on <http://localhost:5173> (runs `sync-assets` first). |
+| `npm run build` | Type-check and production build (runs `sync-assets` first). |
+| `npm run preview` | Serve the production build — the only way to test without StrictMode. |
+| `npm run lint` | ESLint, type-checked rules. |
+| `npm run sync-assets` | Copy board/ticket/pawn art from `../data` into `public/`. |
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+The backend must be running at `http://localhost:8000`. Override with `VITE_API_BASE_URL` in
+`.env.local` (see `.env.example`).
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Architecture
 
 ```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+src/
+  screens/      HomeScreen (new game), GameScreen (owns the one PublicGameState)
+  layout/       GameLayout — the board/sidebar split
+  board/        Phaser: BoardCanvas (React bridge) + BoardScene (the scene itself)
+  components/   TicketInventory, ChatLog, TravelLog, GameOverBanner, BackendUnreachable
+  hooks/        useMrXMoveWizard (the move state machine), useRoundStream (SSE)
+  api/          client.ts — the only place that talks to the backend
+  types.ts      Hand-written mirror of the backend's payloads
+  labels.ts     Agent names/colors, ticket labels/icons — deliberately Phaser-free
 ```
+
+**State** lives in `GameScreen`/`LoadedGame` and is passed down; there is no global store
+([ADR-0008](../docs/adr/0008-no-global-state-library-on-the-frontend.md)). Both hooks report a
+new state via the same `onGameStateChange` callback, which is also what resets the move wizard
+between rounds.
+
+**The board is outside React's render path.** One Phaser `Scene` is mounted once and updated
+imperatively via `updateGameState`/`updateHighlights`, never recreated per render.
+
+## Constraints worth knowing before you edit
+
+### 1. Don't pull Phaser into the main chunk
+
+`GameScreen.tsx` lazy-loads `BoardCanvas`, so Phaser (~1.4 MB) downloads only when a game is
+entered. This is easy to undo by accident: anything imported by a component *outside* that lazy
+boundary must not transitively import `board/BoardScene.ts` or any other Phaser-importing
+module. `board/boardDimensions.ts` and `labels.ts` exist specifically as Phaser-free modules
+that non-lazy code can safely import from.
+
+Verify with `npm run build` — **the main chunk should stay around 245 kB**, not balloon to
+~1.6 MB. See [ISSUE-019](../docs/issues/known_issues.md).
+
+### 2. `types.ts` is hand-maintained
+
+The backend is Starlette, not FastAPI, so there is no OpenAPI schema to generate from
+([ADR-0002](../docs/adr/0002-starlette-over-fastapi.md)). When `backend/scotland_yard/serializers.py`
+changes shape, `types.ts` must be updated by hand — nothing will catch it otherwise.
+`labels.ts` similarly mirrors backend constants (`MAX_ROUND`, `SURFACING_ROUNDS`,
+`DETECTIVE_LABELS`); each mirror says which backend symbol it tracks.
+
+### 3. Art in `public/` is generated, not source
+
+`scripts/sync-assets.mjs` copies `board/`, `pawn/`, `tickets/` and `game_logo.jpg` from the
+top-level `data/` directory on every `dev`/`build`. Those paths are gitignored — **edit the
+originals in `data/`**, not the copies. `favicon.svg` is real committed frontend source and is
+not touched by the sync.
+
+### 4. StrictMode double-invoke
+
+`main.tsx` uses `<StrictMode>`, so in development React mounts → unmounts → remounts effects
+once. This has bitten this project twice:
+
+- [ISSUE-024](../docs/issues/known_issues.md) (**open**) — two Phaser canvases can end up
+  stacked, the visible one being the dead one, which silently swallows hover and clicks. If
+  board interaction mysteriously stops working in `npm run dev`, check
+  `document.querySelectorAll('canvas').length` before debugging anything else, and confirm
+  against `npm run preview`, which does not double-invoke.
+- [ISSUE-027](../docs/issues/known_issues.md) (fixed) — two `EventSource` connections per round
+  made the backend run the detective loop twice. Fixed server-side, since a client-side guard
+  would not have helped with two browser tabs.
+
+## Styling
+
+Design tokens (colors, spacing, radius) are CSS custom properties in `src/index.css`.
+Components use inline styles for genuinely dynamic values — per-agent colors, popup positioning
+— and tokens (`var(--color-error)`) for everything shared.

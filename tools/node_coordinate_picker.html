@@ -815,7 +815,7 @@ document.getElementById('export-btn').addEventListener('click', () => {
   a.href = url; a.download = 'node_positions.json';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  document.getElementById('status').textContent = 'Exported node_positions.json - replace docs/map/node_positions.json with the downloaded file if you made corrections.';
+  document.getElementById('status').textContent = 'Exported node_positions.json - replace data/board/node_positions.json with the downloaded file if you made corrections.';
 });
 </script>
 </body>

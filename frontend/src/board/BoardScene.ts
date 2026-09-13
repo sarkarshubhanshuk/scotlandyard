@@ -48,7 +48,7 @@ const MR_X_COLOR = 0x000000; // black
 // (see renderPawns()'s own comment on why exposing current_node here is safe at all).
 const MR_X_HIDDEN_ALPHA = 0.4;
 // Mr. X's halo (and the legal-target halo below) is drawn with Phaser Graphics rather than an
-// image asset (a prior attempt using docs/ui/halo.png looked too large and showed faint
+// image asset (a prior attempt using data/ui/halo.png looked too large and showed faint
 // checkerboard patches where its matted-out background wasn't fully transparent) - a plain
 // stroked circle has no such artifacts and its size is exact rather than approximated from a
 // raster's own padding.

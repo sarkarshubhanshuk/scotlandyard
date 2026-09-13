@@ -94,7 +94,7 @@ export function TravelLog({ mrX }: { mrX: PublicMrX }) {
               }}
             >
               {slot.played ? (
-                // Ticket art is itself a 2:1 rectangle (docs/tickets/*.jpg) - object-fit: contain
+                // Ticket art is itself a 2:1 rectangle (data/tickets/*.jpg) - object-fit: contain
                 // preserves that aspect ratio exactly rather than stretching to fill the slot.
                 <img
                   src={TICKET_ICONS[slot.icon!]}

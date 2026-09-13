@@ -1,0 +1,68 @@
+# Continuous integration.
+#
+# Deliberately runs NOTHING that costs money or needs a secret: `pytest` defaults to
+# `-m "not llm"` (see backend/pyproject.toml), so the LLM-dependent tests are deselected here
+# the same way they are locally. There is no OPENROUTER_API_KEY in CI and there should not be.
+#
+# The frontend build step is not just a compile check - it is the guard for the Phaser
+# bundle-split regression (ISSUE-019), which is invisible until you look at chunk sizes.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend with dev extras
+        run: pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      # Also runs sync-assets (prebuild), so this verifies data/ -> public/ still resolves.
+      - run: npm run build
+
+      - name: Check the main chunk has not swallowed Phaser
+        # The lazy boundary in GameScreen.tsx keeps Phaser out of the entry chunk. If an import
+        # in non-lazy code pulls it back in, the main chunk jumps from ~245 kB to ~1.6 MB with
+        # no error anywhere - only the chunk size shows it. 600 kB is a deliberately loose
+        # ceiling: high enough not to trip on ordinary growth, far below a Phaser-inclusive chunk.
+        run: |
+          main_chunk=$(ls -1 dist/assets/index-*.js | head -1)
+          size=$(stat -c%s "$main_chunk")
+          echo "Main chunk: $main_chunk ($size bytes)"
+          if [ "$size" -gt 600000 ]; then
+            echo "::error::Main chunk is ${size} bytes - Phaser has likely been pulled back into it (see ISSUE-019)."
+            exit 1
+          fi

@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Game art synced from ../data by scripts/sync-assets.mjs (generated, not source).
+# favicon.svg is real frontend source and stays committed.
+public/board/
+public/pawn/
+public/tickets/
+public/game_logo.jpg

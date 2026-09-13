@@ -8,144 +8,184 @@ built the way they are. It sits one level above `docs/mechanics/game_mechanics.m
 implementation-level detail. It is not the place for game rules, mechanic-by-mechanic
 implementation detail, or a bug/limitation log — those live in the docs below.
 
+**Decisions with real alternatives now live in `docs/adr/`, not here.** This file says *what*
+the architecture is; an ADR says *why that and not the other thing*. When adding a section
+here that starts justifying a choice at length, that is the signal to write an ADR and link it.
+
 ## Documentation Map
 
 | File | Purpose |
 |---|---|
-| `README.md` | GitHub-facing landing page — what the project is, links into the docs below. |
+| `README.md` | GitHub-facing landing page — what the project is, plus prerequisites, setup, and how to run it. |
 | `CLAUDE.md` (this file) | Project status and architecture rationale, for Claude Code sessions. |
+| `docs/adr/` | Architecture Decision Records — one per load-bearing decision, with alternatives and consequences. |
 | `docs/rules/rules.md` | Immutable source of truth for what the game rules *allow* — not how the code implements them. |
 | `docs/mechanics/game_mechanics.md` | How the system *implements* each mechanic — algorithms, state transitions, LLM orchestration. |
 | `docs/issues/known_issues.md` | The running log of known bugs, gaps, and non-goals — check here before investigating a weird behavior, and log new ones here once confirmed. |
-| `frontend/README.md` | Generic Vite/React tooling reference for the frontend dev environment — not project-specific documentation. |
+| `frontend/README.md` | Frontend architecture, commands, and the constraints worth knowing before editing it. |
+| `tools/README.md` | The board-data authoring utilities (not part of the running app). |
 
 ## Overview
 
-A digital adaptation of the board game Scotland Yard. The backend uses a multi-agent LangGraph system featuring 5 AI-driven detectives. The game implements game-theoretic behavior (selfish goals vs. team goals) via sequential debate and structured voting. The system uses the Model Context Protocol (MCP) to strictly enforce game rules and prevent LLM hallucination.
+A digital adaptation of the board game Scotland Yard. The backend is a multi-agent LangGraph
+system driving 5 AI detectives against a human Mr. X, implementing game-theoretic behavior
+(selfish goals vs. team goals) via sequential debate and structured voting.
+
+**The agents cannot make an illegal move.** That guarantee comes from deterministic,
+in-process validation at every stage — not from the LLM being asked nicely, and (since
+ADR-0001) not from a protocol boundary either.
+
+## Repository Layout
+
+```
+backend/
+  scotland_yard/      The application package (see its __init__.py for a module map)
+  tests/              pytest suite; `pytest` runs it, `pytest -m llm` adds the billable ones
+  pyproject.toml      Exactly-pinned dependencies + pytest config
+data/                 Immutable game data: board graph, node positions, board/pawn/ticket art
+docs/                 Prose only — ADRs, rules, mechanics, issue log
+frontend/             React 19 + Phaser 4 client
+tools/                One-off board-data authoring utilities
+```
+
+`data/` is deliberately separate from `docs/`: the board graph is loaded at import by
+`game_master.py`, so it is runtime data, not documentation. `.cursorrules` marks it immutable.
 
 ## Current Progress
 
 - **Phase 1 & 2:** Completed (Environment, basic logic, JSON map data).
-
 - **Phase 3:** Completed (Multi-Agent LangGraph System).
-
 - **Phase 4:** Completed (React + Phaser.js Frontend).
+- **Phase 5:** Completed (Architecture audit — see `known_issues.md` Group E and `docs/adr/`).
 
 ## Architecture & Code Rationale
 
-### 1. The MCP Bridge (Zero Hallucination Enforcement)
+### 1. Rule Enforcement (Zero Hallucination)
 
-The AI agents cannot simply guess their moves. They must query a local Game Master server.
+Every LLM output is treated as untrusted, and re-derived against the board before it can
+affect game state. There are four independent layers, and each one is load-bearing:
 
-- `backend/game_master.py`: An MCP Server built with `fastmcp`. It holds the `map_graph.json` and exposes tools like `get_valid_moves`. We route its logs to `sys.stderr` to prevent standard output from corrupting the JSON-RPC data stream.
+- `agents.py:fetch_legal_moves` computes each detective's legal targets **before** building any
+  prompt, so the model is only ever offered real options. It reserves both other detectives'
+  current nodes *and* destinations already locked this round.
+- `agents.py:find_proposal_conflicts` + `propose_node`'s deterministic backup enforcement
+  checks and, if necessary, overrides the model's proposal. A proposer gets one self-correction
+  retry; the deterministic pass is what actually guarantees correctness.
+- `vote_node`'s tally discards any ballot entry that is illegal or duplicates another within
+  the same ballot.
+- `graph.py:finalize_round_node` de-duplicates fallbacks and then *asserts* destination
+  uniqueness, and `round_resolver.py:resolve_round` re-derives legality once more before
+  deducting a single ticket.
 
-- `backend/mcp_client.py`: Uses Langchain's `MultiServerMCPClient` to manage a persistent, stateless connection to the `game_master.py` server. This ensures the connection does not drop during long LangGraph debate cycles.
+`game_master.py` still exposes this logic over MCP (`python -m scotland_yard.game_master`,
+wired up in `.cursor/mcp.json`) for external clients such as an IDE assistant — but the
+application itself calls the plain functions in-process. **See ADR-0001**, which records why
+the original "MCP prevents hallucination" framing stopped being true and what replaced it.
+
+- `llm_client.py` holds the two cached OpenRouter chat clients (propose/vote, and debate).
+  Neither binds tools.
 
 ### 2. The LangGraph State & Agents
 
-- `backend/state.py`: Defines `ScotlandYardState`. Tracks Mr. X's travel log `transport_history`), ticket inventories, and handles dictionary reducers to merge move proposals without overwriting data.
+- `rules_constants.py`: every value transcribed from `rules.md` (board pool, ticket
+  inventories, `MAX_ROUND`, `SURFACING_ROUNDS`, `DETECTIVE_IDS`, `AGENT_DISPLAY_NAMES`) plus
+  this project's own consensus parameters (`VOTE_THRESHOLD`, `MAX_DEBATE_LOOPS`). Imports
+  nothing else in the package, so anything can import it. It asserts
+  `VOTE_THRESHOLD * 2 > NUM_DETECTIVES` at import — the invariant that makes cross-tally
+  collisions arithmetically impossible (ISSUE-010).
 
-- `backend/agents.py`: Contains three primary nodes `propose_node`, `debate_node`, `vote_node`). 
+- `state.py`: defines `ScotlandYardState`. Tracks Mr. X's travel log (`transport_history`),
+  ticket inventories, and dictionary reducers that merge move proposals without overwriting.
 
-  - Uses `get_psychology_prompt()` to enforce 3 goals (1. Team Win, 2. Selfish Glory, 3. Efficiency). Agents become more desperate and willing to compromise as the round number approaches 24.
-
+- `agents.py`: the three primary nodes (`propose_node`, `debate_node`, `vote_node`).
+  - `get_psychology_prompt()` enforces 3 goals (1. Team Win, 2. Selfish Glory, 3. Efficiency).
+    Agents grow more desperate and willing to compromise as the round number approaches 24.
   - Debate is sequential: each detective speaks once per loop, in `DETECTIVE_IDS` order — the
     first speaker pitches proactively, every later speaker is told not to just agree.
+  - Voting requires 3/5 to lock a move; up to 3 loops. **See ADR-0006** for why those numbers.
+  - Each detective has an internal id (`DETECTIVE_IDS`) and a human-readable callsign
+    (`AGENT_DISPLAY_NAMES`, e.g. "Agent Red") used in all LLM-facing prompt text and the debate
+    transcript, so agents refer to each other by callsign. Confirmed in practice: the model's
+    own free-text rationale adopts these names unprompted.
+  - All three nodes inject a "Mr. X Possible-Zone Context" — a board-topology BFS
+    (`game_master.py:compute_mrx_zone`/`compute_distances_to_zone`) giving detectives spatial
+    grounding: where Mr. X could plausibly be, and each candidate move's hop-distance to that
+    zone. Memoized per round. See `game_mechanics.md` §1.
 
-  - Voting requires a 3/5 threshold to lock a move.
+- `graph.py`: `build_detective_graph()` compiles the state machine (a factory, so a variant can
+  be built for tests). Loops propose/debate/vote up to 3 times; on failure to reach consensus,
+  `finalize_round_node` falls back to each unlocked detective's own self-proposal —
+  **de-duplicated** in `DETECTIVE_IDS` order, because independently-generated self-proposals
+  can and do collide (ISSUE-026). It also computes `final_move_details` for the frontend Chat
+  Log via `transport.py:determine_move_transport`, the same helper `resolve_round` uses to
+  apply moves, so the two can never disagree about which ticket a move spends.
 
-  - Each detective has both an internal id (`DETECTIVE_IDS`: `agent_red`/`agent_blue`/`agent_green`/
-    `agent_yellow`/`agent_purple`) and a human-readable callsign (`AGENT_DISPLAY_NAMES`, e.g. "Agent
-    Red") used in all LLM-facing prompt text and the debate transcript, so agents reason about and
-    refer to each other by callsign rather than the internal id — confirmed in practice: the LLM's
-    own free-text rationale/pitch naturally adopts these names unprompted. See
-    `docs/mechanics/game_mechanics.md` §1 for the full list of what uses which form.
+- `logging_config.py`: stderr-only logging (preserving `game_master.py`'s MCP stdio
+  constraint package-wide), `LOG_LEVEL` env var, and a contextvar binding a game id into every
+  line so concurrent games stay separable. `[VALIDATION]` lines — deterministic enforcement
+  overriding an LLM — log at WARNING, which makes them the one thing worth alerting on.
 
-  - All three nodes inject a "Mr. X Possible-Zone Context" — a server-side board-topology BFS (`game_master.py:compute_mrx_zone`/`compute_distances_to_zone`, called in-process, not via MCP) giving detectives spatial grounding: where Mr. X could plausibly be, and each candidate move's hop-distance to that zone. See `docs/mechanics/game_mechanics.md` §1 for the full design (and why it's a single per-move number, not a full distance matrix).
+### 3. The API Layer
 
-- `backend/graph.py`: The State Machine router. It loops the propose/debate/vote cycle up to a maximum of 3 times per round. If consensus fails after 3 loops, it triggers a fallback where agents execute their self-proposed moves.
+- `server.py` (Starlette — **ADR-0002**) exposes `POST /games`, `GET /games/{id}`,
+  `GET /games/{id}/map`, `GET /games/{id}/mrx/legal-moves`, `POST /games/{id}/mrx/move`, and
+  `GET /games/{id}/round/stream` (SSE).
+- `requests.py` validates request shapes with Pydantic at the route boundary, so a malformed
+  body is a 400 with a field-level message rather than a 500 (ISSUE-028).
+- `round/stream` re-checks game status **inside** the session lock. A second subscriber to an
+  already-resolved round gets a terminal `round_already_resolved` event instead of re-running
+  the loop — which is what React StrictMode's double-invoke used to cause, at ~15 billable LLM
+  calls a time (ISSUE-027).
+- CORS defaults to the Vite dev origin and uvicorn binds `127.0.0.1`. Every endpoint is
+  unauthenticated and the stream endpoint spends real money, so neither default is incidental.
+- `session.py` keeps games in a plain in-memory dict with TTL eviction — **ADR-0005**.
+- `serializers.py` is the single choke point for outward-facing payloads. It includes Mr. X's
+  real `current_node`, which is safe for a specific reason — **ADR-0007**.
 
-- `backend/test_phase3.py` / `backend/test_full_round_e2e.py`: async testing scripts that drive `detective_graph` end-to-end via real LLM calls; both log every LLM call's full input/output to a transcript file for debugging agent behavior.
+### 4. Phase 4: Hybrid Frontend (React + Phaser)
 
-### 3. Phase 4: Hybrid Frontend (React + Phaser)
+Commands, component map, and the constraints worth knowing are in `frontend/README.md`.
+Highlights:
 
-- **Tech Stack:** React 19 (UI layer, via `react-router-dom` for `/` and `/game/:gameId`) + Phaser 4
-  (Canvas layer — `phaser` had no pinned major version when installed; the classic Phaser 3 APIs
-  used here are unaffected). No global state library (Zustand, considered up front, turned out
-  unnecessary — `GameScreen`/`LoadedGame` lift the one `PublicGameState` and pass it down to the
-  board and sidebar, which was enough).
-
-- **Bundle splitting:** `GameScreen.tsx` lazy-loads `BoardCanvas` (`React.lazy`/`Suspense`) so
-  Phaser — the bulk of the production bundle — only downloads once a game is actually entered, not
-  on the home screen. This is easy to accidentally undo: anything imported by a component *outside*
-  that lazy boundary (e.g. `GameLayout.tsx`) must not transitively import from `board/BoardScene.ts`
-  or any other Phaser-importing module, or Phaser silently gets pulled back into the main chunk.
-  `board/boardDimensions.ts` and `labels.ts` exist specifically as Phaser-free modules non-lazy code
-  can safely import from. Verify with `npm run build` — the main chunk should stay ~245KB, not
-  balloon to ~1.6MB.
-
-- **Layout:** Left pane (`BoardCanvas`, one Phaser `Scene` mounted once and updated imperatively
-  via `updateGameState`/`updateHighlights` rather than recreated per render) is sized by height
-  (100% of the viewport) plus a CSS `aspect-ratio` derived from the board's own resolution, not a
-  fixed width percentage - it's pinned flush to the left edge, fills the viewport height exactly
-  (no letterboxing), and can't distort. The right pane (`TicketInventory`, `MoveSelector`,
-  `ChatLog`, `TravelLog`, stacked) takes whatever width remains via `flex: 1`, flush against the
-  board with no gap, out to the browser's right edge. `GameLayout.tsx`'s outer row and the global
-  `html`/`body` both set `overflow: hidden` so the game screen never shows a scrollbar.
-
-- **Backend additions this phase required** (`backend/server.py`, `game_master.py`, `mrx_turn.py`):
-  `GET /games/{id}/map` (serves `map.json` + `node_positions.json` — the frontend never bundles
-  its own copy, keeping the backend the single source of truth for board data), and
-  `GET /games/{id}/mrx/legal-moves` extended with optional `from_node`/`ticket_type_spent` query
-  params to preview a double-move's hop-2 options (reuses the same legality logic
-  `submit_mr_x_move` itself trusts, rather than duplicating it in TypeScript).
-
-- **Move Selector** (`hooks/useMrXMoveWizard.ts`): the single/double-move state machine — pick a
-  legal node on the board, choose a ticket type, and for a double-move, repeat for hop 2 using
-  the preview endpoint above before submitting both hops atomically.
-
-- **Live AI debate** (`hooks/useRoundStream.ts`): opens `GET /round/stream` (SSE) as soon as the
-  game enters `detective_loop_running`, renders `proposal`/`debate`/`vote_tally`/`round_finalized`
-  events into `ChatLog`, and on the terminal `round_result` reports the fresh game state back up
-  — which is also what makes the move wizard reset itself for the next round, with no extra
-  coordination code needed between the two hooks.
-
-- **Agent identity/colors** (`labels.ts`): maps each detective id to its display name
-  (`DETECTIVE_LABELS`, matching the backend's `AGENT_DISPLAY_NAMES`) and a shared color
-  (`AGENT_COLORS`) - deliberately kept here rather than in `board/BoardScene.ts` (which imports
-  Phaser) so `TicketInventory` and `ChatLog` can color each agent's name without re-triggering the
-  bundle-splitting issue above. `ChatLog` colors every occurrence of an agent's display name via a
-  generic regex over all 5 known names, not just a fixed prefix position, since the AI debate
-  transcript's backend-built text can mention an agent's name anywhere mid-sentence.
-
-- **Board pawns** (`board/BoardScene.ts`): every pawn (5 detectives + Mr. X) is interactive -
-  hovering shows a small popup with the pawn's name and current node, plus (Mr. X only) whether
-  detectives currently know it. Mr. X's pawn is always rendered at his real `mr_x.current_node`
-  (see `serializers.py`'s own note on why exposing this is safe), tinted black and alpha-toggled:
-  opaque on the exact round he's surfaced (`last_known_round === round_number`), semi-transparent
-  otherwise - a visual reminder for the human Mr. X player of whether they're currently exposed,
-  not an information-hiding mechanism (the detectives are backend-only agents with no client).
-
-- **Travel Log** (`components/TravelLog.tsx`): renders Mr. X's full `transport_history` as ticket
-  icons (always visible, per rules.md) plus a single "last known position" line. It does **not**
-  attempt to show a per-round history of past surfacing reveals — `state.py`'s `MrXState` only
-  ever retains the *latest* `last_known_node`/`last_known_round`, so anything earlier is no longer
-  available from the backend to reconstruct.
-
-- **Game over**: `GameOverBanner` reads `status`/`winner` only, deliberately **not** cross-
-  referencing `mr_x.current_node` against detective positions to distinguish an actual capture
-  from rules.md's "Mr. X has no legal move" condition — both serialize identically as
-  `winner: "detectives"`, and re-deriving which one happened client-side would duplicate logic
-  `round_resolver.py:resolve_round` already owns. A "detectives win" is worded generically for
-  this reason, not because the client lacks the underlying data (`current_node` is serialized
-  always now — see §2's board-pawn note above).
+- **Tech Stack:** React 19 (`react-router-dom` for `/` and `/game/:gameId`) + Phaser 4. No
+  global state library — **ADR-0008**.
+- **Bundle splitting:** `GameScreen.tsx` lazy-loads `BoardCanvas` so Phaser only downloads once
+  a game is entered. Easy to undo by accident; CI now fails if the main chunk exceeds 600 kB
+  (it should sit around 245 kB). See ISSUE-019 and `frontend/README.md`.
+- **Layout:** the board pane is sized by height plus a CSS `aspect-ratio` derived from the
+  board's own resolution, so it fills the viewport height exactly without letterboxing or
+  distortion; the sidebar takes the remaining width via `flex: 1`.
+- **Move Selector** (`hooks/useMrXMoveWizard.ts`): the single/double-move state machine — pick
+  a legal node, choose a ticket, and for a double-move repeat for hop 2 using the preview
+  endpoint before submitting both hops atomically.
+- **Live AI debate** (`hooks/useRoundStream.ts`): renders `proposal`/`debate`/`vote_tally`/
+  `round_finalized` SSE events into `ChatLog`. `stage_started` events fire the instant each
+  stage's first LLM call goes out, so the header updates as a stage *begins* rather than when
+  it finishes. On `round_result` it reports the fresh state up — which is also what resets the
+  move wizard, with no coordination code between the two hooks.
+- **Board pawns / Travel Log:** every pawn is hoverable; Mr. X's pawn is always rendered at his
+  real node, alpha-toggled by whether he is currently surfaced (a reminder for the human
+  player, not an information-hiding mechanism — ADR-0007). The Travel Log is a fixed 24-slot
+  grid; `transport_history` is walked round-by-round, with a `"double"` sentinel collapsing a
+  double-move's two hops into one slot.
+- **Art** comes from `data/`, copied into `frontend/public/` by `scripts/sync-assets.mjs` on
+  every dev/build. Edit the originals in `data/`; the copies are gitignored generated output.
 
 ## LLM Configuration
 
-- **Model:** `deepseek/deepseek-v4-flash-0731`, served via OpenRouter (an OpenAI-API-compatible
-  aggregator), configured in `backend/mcp_client.py`. Previously Gemini's free tier - switched
-  after its 15 requests/minute cap turned out too low to sustain a single propose/debate/vote
-  loop (~15 calls), which meant votes could never actually pass.
+- **Model:** `deepseek/deepseek-v4-flash-0731` via OpenRouter, configured in `llm_client.py`,
+  with reasoning **disabled**. The provider choice and the four-configuration reasoning-budget
+  experiment behind that setting are recorded in **ADR-0004**.
+- **Env:** `OPENROUTER_API_KEY` in `backend/.env` (see `backend/.env.example`). `.env` files are
+  gitignored.
 
-- **Env:** API keys are managed via `.env` files (excluded via `.gitignore`). Requires
-  `OPENROUTER_API_KEY` in `backend/.env`.
+## Testing
+
+```bash
+cd backend && pytest          # fast: unit + API, no network, no API key
+cd backend && pytest -m llm   # opt-in: real, billable LLM calls
+cd frontend && npm run lint && npm run build
+```
+
+CI (`.github/workflows/ci.yml`) runs the fast suite, the frontend lint/build, and the bundle
+size guard. It has no API key and should never be given one.

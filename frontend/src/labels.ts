@@ -1,6 +1,6 @@
 import { DETECTIVE_IDS, type DetectiveId, type TravelLogTicket } from "./types";
 
-// Mirrors backend/agents.py's AGENT_DISPLAY_NAMES.
+// Mirrors backend/scotland_yard/rules_constants.py's AGENT_DISPLAY_NAMES.
 export const DETECTIVE_LABELS: Record<DetectiveId, string> = {
   agent_red: "Agent Red",
   agent_blue: "Agent Blue",
@@ -42,8 +42,9 @@ export const TICKET_LABELS: Record<TravelLogTicket, string> = {
   double: "Double Move",
 };
 
-// Sourced from docs/tickets/ (the project's canonical ticket art) - copied verbatim into
-// frontend/public/tickets/ since Vite only serves static assets from within the frontend project.
+// Sourced from data/tickets/ (the project's canonical ticket art). Vite only serves static
+// assets from inside the frontend project, so scripts/sync-assets.mjs copies them into
+// public/tickets/ on every dev/build run - the copies are generated, not committed.
 export const TICKET_ICONS: Record<TravelLogTicket, string> = {
   taxi: "/tickets/taxi_ticket.jpg",
   bus: "/tickets/bus_ticket.jpg",
@@ -52,10 +53,10 @@ export const TICKET_ICONS: Record<TravelLogTicket, string> = {
   double: "/tickets/doublemove_ticket.jpg",
 };
 
-// Mirrors backend/round_resolver.py:SURFACING_ROUNDS - the rounds after which Mr. X must reveal
+// Mirrors backend/scotland_yard/rules_constants.py:SURFACING_ROUNDS - the rounds after which Mr. X must reveal
 // his position (rules.md: "Mr. X must reveal his location at the end of turns 3, 8, 13, 18, and 24").
 export const SURFACING_ROUNDS = [3, 8, 13, 18, 24];
 
-// Mirrors backend/round_resolver.py's MAX_ROUND - TravelLog always renders one slot per possible
+// Mirrors backend/scotland_yard/rules_constants.py's MAX_ROUND - TravelLog always renders one slot per possible
 // round (played or not), rather than growing as the game progresses.
 export const MAX_ROUND = 24;

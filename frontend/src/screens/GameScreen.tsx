@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, getGame, getMap } from "../api/client";
+import { BackendUnreachable } from "../components/BackendUnreachable";
 import { ChatLog } from "../components/ChatLog";
 import { GameOverBanner } from "../components/GameOverBanner";
 import { TicketInventory } from "../components/TicketInventory";
@@ -63,10 +64,10 @@ export function GameScreen() {
 
   if (notFound) {
     return (
-      <div style={{ padding: 24 }}>
+      <div style={{ padding: "var(--space-5)" }}>
         <p>
           Game <code>{gameId}</code> was not found - it may have ended when the backend process
-          restarted (games are in-memory only).
+          restarted, or been swept after sitting idle (games are in-memory only).
         </p>
         <Link to="/">Start a new game</Link>
       </div>
@@ -74,15 +75,7 @@ export function GameScreen() {
   }
 
   if (error) {
-    return (
-      <div style={{ padding: 24, color: "#b00020" }}>
-        <p>
-          Failed to reach the backend at http://localhost:8000 - is `uvicorn server:app --reload`
-          running? ({error})
-        </p>
-        <button onClick={() => setRetryToken((t) => t + 1)}>Retry</button>
-      </div>
-    );
+    return <BackendUnreachable error={error} onRetry={() => setRetryToken((t) => t + 1)} />;
   }
 
   if (!gameId || !gameState || !mapData) {
@@ -126,7 +119,7 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <h2 style={{ margin: 0 }}>
                 Round {gameState.round_number}{" "}
-                <span style={{ color: "#666", fontWeight: 400 }}>
+                <span style={{ color: "var(--color-text-muted)", fontWeight: 400 }}>
                   -{" "}
                   {gameState.status === "detective_loop_running"
                     ? roundStream.stageLabel

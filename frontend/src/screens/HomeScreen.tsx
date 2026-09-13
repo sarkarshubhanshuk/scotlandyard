@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { createGame } from "../api/client";
+import { BackendUnreachable } from "../components/BackendUnreachable";
 
 export function HomeScreen() {
   const navigate = useNavigate();
@@ -31,18 +32,14 @@ export function HomeScreen() {
         gap: 16,
       }}
     >
-      {/* 350x200 source (docs/ui/game_logo.jpg) - width constraint + height:auto keeps that
-          aspect ratio intact rather than stretching it. */}
+      {/* 350x200 source (data/ui/game_logo.jpg, synced into public/ at build time) - the
+          width constraint plus height:auto keeps that aspect ratio intact. */}
       <img src="/game_logo.jpg" alt="Scotland Yard" style={{ width: "min(420px, 80vw)", height: "auto" }} />
       <p>Play Mr. X against 5 AI-driven detectives.</p>
-      <button onClick={() => void handleNewGame()} disabled={starting} style={{ padding: "10px 24px", fontSize: 16 }}>
+      <button className="sy-button" onClick={() => void handleNewGame()} disabled={starting}>
         {starting ? "Starting..." : "New Game"}
       </button>
-      {error && (
-        <p style={{ color: "#b00020" }}>
-          Failed to reach the backend at http://localhost:8000 - is `uvicorn server:app --reload` running? ({error})
-        </p>
-      )}
+      {error && <BackendUnreachable error={error} />}
     </div>
   );
 }
