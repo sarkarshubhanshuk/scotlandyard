@@ -36,9 +36,12 @@ that is genuinely different information from what the real pawn already conveys 
   Reusing the exact vector path was simpler and exact, not approximate.
 - **Never tweened.** Unlike a pawn's own move (ADR-0010), this marker doesn't represent something
   walking anywhere - only a static fact that jumps straight to its new value the round it changes.
-- **Depth `-0.5`**: behind every real pawn (depth `0`) but in front of the halos (depth `-1`), so
-  a detective standing on the exact node Mr. X was last seen at is unambiguously the one actually
-  there, with the hollow outline only visible around/behind it.
+- **Depth `DEPTH_GHOST`**: under every real pawn but over the halos, so a detective standing on
+  the exact node Mr. X was last seen at is unambiguously the one actually there, with the hollow
+  outline still legible around it. This was originally written as a *negative* depth (`-0.5`) on
+  the reasoning that "below the pawns" meant "below zero" - which silently put it below the board
+  background too, so it never rendered at all. See ISSUE-038 and `BoardScene.ts`'s `DEPTH_*`
+  ladder.
 - Reused across renders (created once, then shown/hidden and repositioned), the same discipline
   every other pawn and halo on this board already follows.
 

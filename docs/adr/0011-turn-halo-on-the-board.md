@@ -58,6 +58,10 @@ window before the ticket is spent, not during.
 
 - `renderPawn()` lost its `extraTargets` parameter entirely - a straightforward simplification
   now that nothing needs to travel with a mid-flight tween.
+- **The halo initially shipped invisible.** It inherited Mr. X's old `setDepth(-1)`, which sorts
+  below the opaque board background and so never rendered - as had been true of Mr. X's own halo
+  before it. Fixed by giving every layer an explicit, named depth (`BoardScene.ts`'s `DEPTH_*`
+  ladder) instead of letting most objects rely on insertion order. See ISSUE-038.
 - The halo can show briefly on nobody at all (the animation-and-ack gap between one detective's
   `turn_decision` and the next one's `turn_started`, and the finalize/`round_result` gap at a
   round's end) - accepted as a natural side effect of turns being discrete events rather than a

@@ -898,6 +898,41 @@ case, the original entry has been updated too, rather than left to contradict th
 - **Fix**: annotate it `config: RunnableConfig`. The annotation carries a comment saying it is
   load-bearing, since it reads like decoration and removing it fails quietly.
 
+### ISSUE-038 — Negative depths put the turn halo and the last-known ghost *behind* the board, so neither ever rendered
+
+- **Status**: Fixed (2026-09-13)
+- **Area**: `frontend/src/board/BoardScene.ts`
+- **Logged**: 2026-09-13
+- **Description**: Both newly added board markers - the turn halo (ADR-0011) and Mr. X's
+  last-known-location ghost (ADR-0012) - were created, positioned, and `visible: true`, yet
+  neither appeared on screen.
+
+  Phaser depth-sorts the entire display list as soon as *any* object sets a depth, falling back
+  to insertion order only within one depth value. The board background is a full-bleed **opaque**
+  image at the default depth `0`. Both markers had been given *negative* depths - `-1` for the
+  halo, `-0.5` for the ghost - on the reasoning that "behind the pawns" meant "below zero". That
+  reasoning was half right: it did put them behind the pawns, but it also put them behind the
+  board artwork, which then painted straight over them.
+
+  The halo inherited this from Mr. X's own original `ensureMrXHalo`, which used `setDepth(-1)`
+  too - so Mr. X's personal halo had almost certainly never rendered either, and the halos
+  players *did* see were the legal-target rings, which set no depth at all and therefore landed
+  at depth `0` after the board in insertion order.
+- **Evidence**: the live display list, after `depthSort()`, ordered: turn halo (index 0), ghost
+  (index 1), **board background (index 2)**, … pawns (index 207). Anything at an index below the
+  board is drawn before it and covered by it.
+- **Root cause, generalized**: depth was set on *some* objects and left implicit on others, so
+  the layering was partly explicit and partly an accident of call order - which is exactly the
+  kind of arrangement that looks fine until one new object is added at the wrong end of it.
+- **Fix**: a single named depth ladder in `BoardScene.ts`, applied to **every** object it adds -
+  `DEPTH_BOARD` (0, map + node hit circles), `DEPTH_HALO` (1, turn halo + legal-target rings),
+  `DEPTH_GHOST` (2), `DEPTH_PAWN` (3), `DEPTH_TOOLTIP` (1000). Nothing on this board relies on
+  insertion order any more, and the intended stacking can be read in one place.
+- **Note on how this got missed**: it was "verified" from zoomed screenshot crops, in which
+  board.svg's own concentric node markers and the legal-target rings were mistaken for the new
+  markers. Small JPEG crops of a 199-node board are not sufficient evidence that a specific new
+  object rendered; inspecting the scene's display list is, and is what actually found this.
+
 ### ISSUE-027 — `round/stream`'s status check sat outside the lock, so two subscribers ran the detective loop twice
 
 - **Status**: Fixed (2026-09-13)

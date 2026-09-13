@@ -84,6 +84,21 @@ const LEGAL_TARGET_ALPHA = 0.9;
 const LEGAL_TARGET_SELECTED_ALPHA = 1;
 const LEGAL_TARGET_UNSELECTED_ALPHA = 0.5;
 
+// EVERY layer's depth, explicitly - nothing here may rely on insertion order.
+//
+// Phaser depth-sorts the whole display list as soon as ANY object sets a depth, and only then
+// falls back to insertion order within one depth. The board background is a full-bleed opaque
+// image, so anything sorted below it is not merely behind the artwork - it is completely
+// invisible. That is exactly what happened to the turn halo and the last-known ghost when they
+// were given negative depths (-1 and -0.5) to "sit behind the pawns": negative put them behind
+// the board too, and neither ever rendered. Every layer is named here so the whole stack can be
+// read at a glance rather than inferred from the order calls happen to be made in.
+const DEPTH_BOARD = 0; // the map artwork and the (transparent) node hit circles
+const DEPTH_HALO = 1; // turn halo + legal-target rings: above the map, under the pawns
+const DEPTH_GHOST = 2; // Mr. X's last-known-location outline: above the halos, under the pawns
+const DEPTH_PAWN = 3; // every real pawn, so a live player always reads as on top
+const DEPTH_TOOLTIP = 1000; // hover popups, above absolutely everything
+
 // Sine.easeInOut eases into and out of the motion rather than moving at a constant speed. The
 // duration itself lives in boardDimensions.ts (the Phaser-free module) because useRoundStream
 // needs it too - see its comment there. Shared by Mr. X and all five detectives: every pawn
@@ -186,7 +201,8 @@ export class BoardScene extends Phaser.Scene {
     this.add
       .image(0, 0, "board")
       .setOrigin(0, 0)
-      .setDisplaySize(BOARD_WIDTH * RENDER_SCALE, BOARD_HEIGHT * RENDER_SCALE);
+      .setDisplaySize(BOARD_WIDTH * RENDER_SCALE, BOARD_HEIGHT * RENDER_SCALE)
+      .setDepth(DEPTH_BOARD);
 
     for (const node of this.mapData.nodes) {
       const pos = this.mapData.positions[String(node.id)];
@@ -194,6 +210,7 @@ export class BoardScene extends Phaser.Scene {
 
       const hitCircle = this.add.circle(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE, NODE_RADIUS * RENDER_SCALE, 0xffffff, 0);
       hitCircle.setStrokeStyle(1 * RENDER_SCALE, 0x888888, 0.4);
+      hitCircle.setDepth(DEPTH_BOARD);
       hitCircle.setInteractive({ useHandCursor: true });
       hitCircle.on("pointerdown", () => this.onNodeClick?.(node.id));
     }
@@ -255,7 +272,8 @@ export class BoardScene extends Phaser.Scene {
     if (!pawn) {
       pawn = this.add
         .image(cx, cy, "pawn")
-        .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE);
+        .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
+        .setDepth(DEPTH_PAWN);
       this.pawns.set(pawnId, pawn);
     }
     pawn.setTint(tint);
@@ -315,10 +333,10 @@ export class BoardScene extends Phaser.Scene {
       this.lastKnownGhost = this.add
         .image(0, 0, "pawn_last_known")
         .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
-        // Behind every real pawn (default depth 0) but in front of the halos (depth -1) - so a
-        // detective standing on the exact node Mr. X was last seen at is unambiguously the one
-        // actually there, with this hollow outline only visible around/behind it.
-        .setDepth(-0.5);
+        // Under every real pawn but over the halos - so a detective standing on the exact node
+        // Mr. X was last seen at is unambiguously the one actually there, with this hollow
+        // outline still legible around it.
+        .setDepth(DEPTH_GHOST);
     }
     this.lastKnownGhost.setPosition(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE);
     this.lastKnownGhost.setVisible(true);
@@ -397,9 +415,7 @@ export class BoardScene extends Phaser.Scene {
     halo.lineStyle(TURN_HALO_THICKNESS * RENDER_SCALE, TURN_HALO_CORE_COLOR, 0.9);
     halo.strokeCircle(0, 0, radius * RENDER_SCALE);
     halo.setPosition(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE);
-    // Drawn before the pawns in the display list is what puts it behind them; a fresh graphics
-    // object is added on top, so send it back explicitly - same as every other halo here.
-    halo.setDepth(-1);
+    halo.setDepth(DEPTH_HALO);
 
     this.turnHalo = halo;
     this.turnHaloKey = key;
@@ -472,7 +488,7 @@ export class BoardScene extends Phaser.Scene {
       cursorY += textObj.height + lineGap;
     }
 
-    this.pawnTooltip = this.add.container(containerX, containerY, [background, ...textObjects]).setDepth(1000);
+    this.pawnTooltip = this.add.container(containerX, containerY, [background, ...textObjects]).setDepth(DEPTH_TOOLTIP);
   }
 
   private hidePawnTooltip() {
@@ -520,6 +536,7 @@ export class BoardScene extends Phaser.Scene {
       const ring = this.add.graphics();
       ring.lineStyle(LEGAL_TARGET_HALO_THICKNESS * RENDER_SCALE, TURN_HALO_COLOR, alpha);
       ring.strokeCircle(cx, cy, legalTargetHaloRadius * RENDER_SCALE);
+      ring.setDepth(DEPTH_HALO);
       this.highlights.set(nodeId, ring);
     }
   }
