@@ -306,11 +306,14 @@ export class BoardScene extends Phaser.Scene {
    * what the real pawn (renderMrX(), below) already shows this round.
    *
    * Hidden in exactly two cases: before Mr. X has ever surfaced (last_known_node is still null -
-   * there is nothing to show), and during the round he surfaces (last_known_round equals the
-   * CURRENT round_number) - his real pawn is already opaque at that exact node this round, so a
-   * second marker on top of it would be pure redundancy. Every other round it is shown, because
-   * last_known_node is the detectives' own last confirmed sighting and may well differ from
-   * wherever his real, currently-hidden pawn actually is.
+   * there is nothing to show), and during the round he surfaces at his CURRENT node (last_known_
+   * round equals the CURRENT round_number AND last_known_node equals current_node) - his real
+   * pawn is already opaque there this round, so a second marker on top of it would be pure
+   * redundancy. Every other round it is shown, because last_known_node is the detectives' own
+   * last confirmed sighting and may well differ from wherever his real, currently-hidden pawn
+   * actually is - including a surfacing round where a double-move was played: that reveals only
+   * the *intermediate* hop (game_mechanics.md), so current_node stays hidden and this ghost is
+   * exactly what still shows the detectives' one confirmed sighting for the round.
    *
    * Never tweened, unlike a pawn's own move - this marker doesn't represent something walking
    * there, only a static fact ("last confirmed here") that jumps straight to its new value the
@@ -318,10 +321,11 @@ export class BoardScene extends Phaser.Scene {
    */
   private renderLastKnownGhost() {
     const mrX = this.gameState.mr_x;
-    const isSurfacingRound = mrX.last_known_round === this.gameState.round_number;
     const nodeId = mrX.last_known_node;
+    const isRedundantWithRealPawn =
+      mrX.last_known_round === this.gameState.round_number && nodeId === mrX.current_node;
 
-    if (nodeId === null || isSurfacingRound) {
+    if (nodeId === null || isRedundantWithRealPawn) {
       this.lastKnownGhost?.setVisible(false);
       return;
     }
@@ -345,21 +349,28 @@ export class BoardScene extends Phaser.Scene {
   // Mr. X's pawn is always rendered at his real current_node (see serializers.py's own note on
   // why exposing this is safe: the only human-facing client is played BY Mr. X, and detectives
   // are backend-only agents with no client access at all). Alpha is a visual reminder for the
-  // human of whether detectives ALSO currently know this position - opaque only on the exact
-  // round he's surfaced (last_known_round stays stuck on a past round forever after, per
-  // build_next_round_state, so this must compare against the CURRENT round, not just check
-  // non-null), semi-transparent every other round - not an information-hiding mechanism, since
-  // nothing here is ever hidden from the one person who can see this canvas.
+  // human of whether detectives ALSO currently know this position - opaque only when the
+  // CURRENT node is what got revealed this round (last_known_round matches round_number, per
+  // build_next_round_state, AND last_known_node matches current_node), semi-transparent every
+  // other round - not an information-hiding mechanism, since nothing here is ever hidden from
+  // the one person who can see this canvas.
+  //
+  // The node-equality half of that check matters for a double-move played on a surfacing round:
+  // game_mechanics.md's mrx_turn documents that such a move reveals only the *intermediate* hop,
+  // never the final destination, so current_node stays genuinely hidden even though this round's
+  // last_known_round is the current one - without it this pawn would render fully opaque at a
+  // node detectives were never actually shown.
   private renderMrX() {
     const mrX = this.gameState.mr_x;
-    const isSurfacingRound = mrX.last_known_round === this.gameState.round_number;
+    const isRevealedNow =
+      mrX.last_known_round === this.gameState.round_number && mrX.last_known_node === mrX.current_node;
     this.renderPawn(
       "mr_x",
       mrX.current_node,
       MR_X_COLOR,
       "Mr. X",
-      [isSurfacingRound ? "Visible to Detectives" : "Invisible to Detectives"],
-      isSurfacingRound ? 1 : MR_X_HIDDEN_ALPHA,
+      [isRevealedNow ? "Visible to Detectives" : "Invisible to Detectives"],
+      isRevealedNow ? 1 : MR_X_HIDDEN_ALPHA,
     );
   }
 
