@@ -41,6 +41,11 @@ class GameSession:
     # of legal moves without ever actually being landed on). Set once, in round_resolver.py's
     # _game_over, from state["captured_by"] (agents.py:apply_detective_move).
     winning_detective: Optional[str] = None
+    # The browser that created this game, as an opaque bearer token also held in that browser's
+    # HttpOnly cookie. This is the whole of the access control: a shared URL carries the game id
+    # but not the cookie, so the recipient cannot act on someone else's game. There are no
+    # accounts, so ownership is per-browser and ends when the cookie does.
+    owner_token: Optional[str] = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Monotonic timestamp of the last request that touched this game, maintained by
     # touch(). Drives TTL eviction in create_game; see SESSION_TTL_SECONDS.

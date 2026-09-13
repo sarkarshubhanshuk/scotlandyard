@@ -4,9 +4,12 @@ The Starlette HTTP + SSE API.
 Deliberately Starlette rather than FastAPI (ADR-0002), so request-body validation is explicit
 here via the models in requests.py rather than inferred from route signatures.
 """
+import hmac
 import json
 import logging
 import os
+import secrets
+from pathlib import Path
 
 from pydantic import ValidationError
 from sse_starlette.sse import EventSourceResponse
@@ -14,16 +17,23 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
-from starlette.routing import Route
+from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
+from starlette.routing import Mount, Route
+from starlette.staticfiles import StaticFiles
 
-from .game_master import map_data, node_positions
+from .game_master import BASE_DIR, map_data, node_positions
+from .limits import (
+    check_new_game,
+    check_round_budget,
+    client_ip,
+    record_new_game,
+)
 from .logging_config import configure_logging, game_log_context
 from .mrx_turn import IllegalMoveError, get_mr_x_legal_moves, submit_mr_x_move
 from .requests import MR_X_MOVE_ADAPTER, Hop2PreviewQuery, TurnAckRequest
 from .round_resolver import resolve_round, run_detective_loop
 from .serializers import serialize_loop_event, serialize_public_state
-from .session import GAMES, create_game
+from .session import GAMES, SESSION_TTL_SECONDS, create_game
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +48,30 @@ ALLOWED_ORIGINS = [
     for origin in os.getenv("ALLOWED_ORIGINS", ",".join(DEFAULT_ALLOWED_ORIGINS)).split(",")
     if origin.strip()
 ]
+
+# The built SPA, when one has been built into the repo layout (the deployed image puts it here;
+# a dev checkout only has it after `npm run build`). Serving it from this same app is what makes
+# the frontend and the API ONE origin, which in turn is what lets the ownership cookie ride along
+# on the EventSource round stream - EventSource cannot set headers, so a cookie is the only
+# practical way to authenticate it. In dev the SPA is served by Vite instead and this is absent,
+# which is why every route below is conditional rather than assumed.
+FRONTEND_DIST = Path(os.getenv("FRONTEND_DIST", BASE_DIR / "frontend" / "dist"))
+SPA_INDEX = FRONTEND_DIST / "index.html"
+
+# Game ownership, in the absence of any accounts: creating a game mints an opaque token, returns
+# it in an HttpOnly cookie, and records it on the session. Every game-scoped route then requires
+# the cookie to match. A shared URL therefore conveys the game id but NOT the cookie, so the
+# recipient cannot see or act on someone else's game.
+#
+# The token is the secret itself rather than a signed claim - it is 32 random bytes, so forging
+# one is as hard as guessing it, and signing would add a key to manage for no extra strength.
+#
+# Secure is on by default (the deployment is HTTPS, and browsers treat http://localhost as a
+# secure context anyway); COOKIE_SECURE=false exists only for a plain-HTTP host on some other
+# name. SameSite=Lax means a cross-site POST cannot carry it, so another page cannot move your
+# pawns on your behalf.
+PLAYER_COOKIE = "sy_player"
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "true").strip().lower() not in {"false", "0", "no"}
 
 
 def _error(message: str, status: int) -> JSONResponse:
@@ -67,32 +101,78 @@ def _get_session(request: Request):
     return session
 
 
+def _load_owned_game(request: Request):
+    """
+    The game named in the path, but only for the browser that created it.
+
+    Returns `(session, None)` or `(None, error_response)`. An unknown id 404s BEFORE the
+    ownership check, so a stale or mistyped link reads as "no such game" rather than implying
+    one exists; a real game belonging to someone else 403s with a message that tells the reader
+    what to do instead, since following a friend's link is the expected way to hit this.
+    """
+    session = _get_session(request)
+    if session is None:
+        return None, _error("Game not found.", 404)
+    presented = request.cookies.get(PLAYER_COOKIE) or ""
+    if not session.owner_token or not hmac.compare_digest(presented, session.owner_token):
+        return None, _error(
+            "This game belongs to another player. Start your own from the main menu.", 403)
+    return session, None
+
+
 async def create_game_route(request: Request) -> JSONResponse:
+    """
+    Starts a game and binds it to the calling browser.
+
+    A browser that already has a token keeps it, so one person can hold several games at once
+    (an abandoned tab, a fresh start) without the newest invalidating the others. Re-setting the
+    cookie on every creation also refreshes its Max-Age, so an active player's token does not
+    expire out from under them mid-session.
+    """
+    ip = client_ip(request)
+    refusal = check_new_game(ip, active_games=len(GAMES))
+    if refusal is not None:
+        logger.info("Refused a new game for %s: %s", ip, refusal)
+        return _error(refusal, 429)
+
+    token = request.cookies.get(PLAYER_COOKIE) or secrets.token_urlsafe(32)
     session = create_game()
+    record_new_game(ip)
+    session.owner_token = token
     with game_log_context(session.game_id):
-        return JSONResponse(serialize_public_state(session), status_code=201)
+        response = JSONResponse(serialize_public_state(session), status_code=201)
+        response.set_cookie(
+            PLAYER_COOKIE,
+            token,
+            max_age=SESSION_TTL_SECONDS,
+            httponly=True,
+            secure=COOKIE_SECURE,
+            samesite="lax",
+            path="/",
+        )
+        return response
 
 
 async def get_game_route(request: Request) -> JSONResponse:
-    session = _get_session(request)
-    if session is None:
-        return _error("Game not found.", 404)
+    session, denied = _load_owned_game(request)
+    if denied is not None:
+        return denied
     return JSONResponse(serialize_public_state(session))
 
 
 async def map_route(request: Request) -> JSONResponse:
-    session = _get_session(request)
-    if session is None:
-        return _error("Game not found.", 404)
+    session, denied = _load_owned_game(request)
+    if denied is not None:
+        return denied
     # Board topology/positions are game-independent (immutable per .cursorrules), but this route
     # is scoped under /games/{game_id}/... for consistency with the rest of the API.
     return JSONResponse({"nodes": map_data, "positions": node_positions})
 
 
 async def mrx_legal_moves_route(request: Request) -> JSONResponse:
-    session = _get_session(request)
-    if session is None:
-        return _error("Game not found.", 404)
+    session, denied = _load_owned_game(request)
+    if denied is not None:
+        return denied
     if session.status != "awaiting_mr_x_move":
         return _error(f"Not Mr. X's turn (status={session.status}).", 409)
 
@@ -121,9 +201,9 @@ async def mrx_legal_moves_route(request: Request) -> JSONResponse:
 
 
 async def mrx_move_route(request: Request) -> JSONResponse:
-    session = _get_session(request)
-    if session is None:
-        return _error("Game not found.", 404)
+    session, denied = _load_owned_game(request)
+    if denied is not None:
+        return denied
 
     try:
         body = await request.json()
@@ -160,9 +240,9 @@ async def turn_ack_route(request: Request) -> JSONResponse:
     normal race (the loop may already have timed out and moved on), not a client error - there
     is nothing useful for the client to do about it, and nothing it should retry.
     """
-    session = _get_session(request)
-    if session is None:
-        return _error("Game not found.", 404)
+    session, denied = _load_owned_game(request)
+    if denied is not None:
+        return denied
 
     try:
         body = await request.json()
@@ -181,9 +261,9 @@ async def turn_ack_route(request: Request) -> JSONResponse:
 
 
 async def round_stream_route(request: Request):
-    session = _get_session(request)
-    if session is None:
-        return _error("Game not found.", 404)
+    session, denied = _load_owned_game(request)
+    if denied is not None:
+        return denied
 
     # The status check below is repeated INSIDE the lock further down, and that is the one
     # that actually decides. This early check exists only to reject an obviously-wrong request
@@ -198,6 +278,13 @@ async def round_stream_route(request: Request):
             f"Detective loop is not running (status={session.status}). Submit Mr. X's move first.",
             409,
         )
+
+    # Checked HERE, before the stream opens, rather than per call inside the round: refusing
+    # mid-round would leave a game with half its detectives moved and no way to finish.
+    refusal = check_round_budget()
+    if refusal is not None:
+        logger.warning("Refused a round for game %s: %s", session.game_id, refusal)
+        return _error(refusal, 503)
 
     async def event_generator():
         with game_log_context(session.game_id):
@@ -251,22 +338,67 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     return _error("Internal server error.", 500)
 
 
+async def health_route(request: Request) -> PlainTextResponse:
+    """
+    A cheap liveness probe. Exists because every other path here is game-scoped, so a platform
+    health check against "/" on a deployment without the SPA would see a 404 and call the service
+    unhealthy.
+    """
+    return PlainTextResponse("ok")
+
+
+async def spa_route(request: Request) -> FileResponse:
+    """
+    Hands index.html to any non-API path so the client router owns deep links.
+
+    /game/<id> is a React Router route, not a file on disk: a plain static mount would 404 it,
+    which is exactly what a player following a shared link (or refreshing mid-game) would hit.
+    Registered LAST, so it can never shadow a real API route above it.
+    """
+    return FileResponse(SPA_INDEX)
+
+
+routes = [
+    Route("/health", health_route, methods=["GET"]),
+    Route("/games", create_game_route, methods=["POST"]),
+    Route("/games/{game_id}", get_game_route, methods=["GET"]),
+    Route("/games/{game_id}/map", map_route, methods=["GET"]),
+    Route("/games/{game_id}/mrx/legal-moves", mrx_legal_moves_route, methods=["GET"]),
+    Route("/games/{game_id}/mrx/move", mrx_move_route, methods=["POST"]),
+    Route("/games/{game_id}/round/stream", round_stream_route, methods=["GET"]),
+    Route("/games/{game_id}/turn-ack", turn_ack_route, methods=["POST"]),
+]
+
+if SPA_INDEX.is_file():
+    routes += [
+        # Hashed build output: safe to cache hard, and never collides with an API path.
+        Mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets")),
+        # The art sync-assets.mjs copies out of data/ (board, pawns, tickets, how-to, logo).
+        Mount("/board", StaticFiles(directory=FRONTEND_DIST / "board")),
+        Mount("/pawn", StaticFiles(directory=FRONTEND_DIST / "pawn")),
+        Mount("/tickets", StaticFiles(directory=FRONTEND_DIST / "tickets")),
+        Mount("/howto", StaticFiles(directory=FRONTEND_DIST / "howto")),
+        Route("/game_logo.jpg", lambda request: FileResponse(FRONTEND_DIST / "game_logo.jpg")),
+        Route("/", spa_route, methods=["GET"]),
+        Route("/{path:path}", spa_route, methods=["GET"]),
+    ]
+else:
+    logger.info("No SPA build at %s - serving the API only (Vite serves the frontend in dev).",
+                FRONTEND_DIST)
+
 app = Starlette(
-    routes=[
-        Route("/games", create_game_route, methods=["POST"]),
-        Route("/games/{game_id}", get_game_route, methods=["GET"]),
-        Route("/games/{game_id}/map", map_route, methods=["GET"]),
-        Route("/games/{game_id}/mrx/legal-moves", mrx_legal_moves_route, methods=["GET"]),
-        Route("/games/{game_id}/mrx/move", mrx_move_route, methods=["POST"]),
-        Route("/games/{game_id}/round/stream", round_stream_route, methods=["GET"]),
-        Route("/games/{game_id}/turn-ack", turn_ack_route, methods=["POST"]),
-    ],
+    routes=routes,
     middleware=[
         Middleware(
             CORSMiddleware,
             allow_origins=ALLOWED_ORIGINS,
             allow_methods=["GET", "POST"],
             allow_headers=["Content-Type"],
+            # Needed for the ownership cookie to survive the cross-origin dev setup (:5173 SPA
+            # calling the :8000 API). Safe only because allow_origins is an explicit list and
+            # never "*" - the two are mutually exclusive in the CORS spec for exactly this
+            # reason. Deployed, the SPA is same-origin and this has nothing to do.
+            allow_credentials=True,
         ),
     ],
     exception_handlers={Exception: unhandled_exception_handler},

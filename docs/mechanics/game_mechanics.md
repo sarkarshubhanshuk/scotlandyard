@@ -613,7 +613,17 @@ Starlette API (`backend/scotland_yard/server.py`).
 **API layer** (`backend/scotland_yard/server.py`, `backend/scotland_yard/serializers.py`)
 - `POST /games`, `GET /games/{id}`, `GET /games/{id}/mrx/legal-moves`,
   `POST /games/{id}/mrx/move`, `GET /games/{id}/round/stream` (SSE via `sse_starlette`, chosen
-  over WebSocket since this is one-directional server→client data once opened).
+  over WebSocket since this is one-directional server→client data once opened), plus `/health`
+  for platform liveness checks.
+- **Every game-scoped route is ownership-checked** (**ADR-0014**): `POST /games` mints an opaque
+  token, returns it in an `HttpOnly` cookie and records it on the session, and the rest require a
+  `hmac.compare_digest` match. An unknown id 404s *before* that check, so a dead link reads as
+  "no such game" rather than hinting one exists. `limits.py` additionally refuses new games past
+  a concurrency/per-IP cap (429) and refuses to *start* a round past the daily LLM-call budget
+  (503) - before the stream opens, never mid-round, since a refusal halfway would strand a game
+  with some detectives moved.
+- In a deployment this same app also serves the built SPA, so there is one origin; in dev Vite
+  serves it separately and the client sends credentials explicitly so both paths behave alike.
 - `serializers.serialize_public_state` is the **single choke point** every route and streamed
   event goes through to build an outward-facing payload. `mr_x.current_node` (his real position)
   IS included as of the board's always-visible Mr. X pawn feature — safe because the only

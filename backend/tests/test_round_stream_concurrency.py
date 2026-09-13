@@ -21,6 +21,9 @@ import pytest
 
 from scotland_yard import server
 from scotland_yard.session import GAMES, create_game
+from scotland_yard.server import PLAYER_COOKIE
+
+OWNER_TOKEN = "test-owner-token"
 
 from .conftest import SEED_POSITIONS
 
@@ -36,6 +39,9 @@ def running_game(monkeypatch):
     """
     GAMES.clear()
     session = create_game(seed_positions=SEED_POSITIONS)
+    # Built directly rather than over HTTP, so it has no owning browser yet; the
+    # clients below present this same token as their ownership cookie.
+    session.owner_token = OWNER_TOKEN
     session.status = "detective_loop_running"
     counters = {"loop_runs": 0, "resolves": 0}
 
@@ -72,7 +78,8 @@ async def test_two_concurrent_subscribers_run_the_loop_exactly_once(running_game
     session, counters = running_game
     transport = httpx.ASGITransport(app=server.app)
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test",
+                              cookies={PLAYER_COOKIE: OWNER_TOKEN}) as client:
         first, second = await asyncio.gather(
             _consume(client, session.game_id),
             _consume(client, session.game_id),
@@ -107,7 +114,8 @@ async def test_the_late_subscriber_still_receives_the_current_state(running_game
                     payloads.append(json.loads(line.split(":", 1)[1].strip()))
         return payloads
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test",
+                              cookies={PLAYER_COOKIE: OWNER_TOKEN}) as client:
         results = await asyncio.gather(consume_raw(client), consume_raw(client))
 
     late = next(
@@ -124,7 +132,8 @@ async def test_a_stream_request_outside_the_detective_loop_is_still_rejected_ear
     session.status = "awaiting_mr_x_move"
 
     transport = httpx.ASGITransport(app=server.app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+    async with httpx.AsyncClient(transport=transport, base_url="http://test",
+                              cookies={PLAYER_COOKIE: OWNER_TOKEN}) as client:
         response = await client.get(f"/games/{session.game_id}/round/stream")
 
     assert response.status_code == 409

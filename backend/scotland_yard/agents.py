@@ -40,6 +40,7 @@ from .game_master import (
     compute_valid_moves,
     project_zone_one_hop,
 )
+from .limits import record_llm_call
 from .llm_client import get_debate_llm, get_detective_llm
 from .rules_constants import (
     AGENT_DISPLAY_NAMES,
@@ -636,7 +637,11 @@ async def _invoke(structured_llm, prompt: str, label: str):
 
     Timeouts and errors are logged at WARNING, not raised: a round must always produce a legal
     move for every detective, and every caller here has a deterministic fallback.
+
+    Every attempt is counted against the deployment's daily budget (limits.py), including ones
+    that fail - a call that times out has still been paid for.
     """
+    record_llm_call()
     try:
         return await asyncio.wait_for(
             structured_llm.ainvoke([HumanMessage(content=prompt)]),

@@ -19,7 +19,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from scotland_yard.session import create_game  # noqa: E402
+from scotland_yard import limits  # noqa: E402
+from scotland_yard.session import GAMES, create_game  # noqa: E402
 
 # One fixed, reproducible board, drawn from rules.md's starting-node pool. Every position
 # here is a real pool entry, so the board is one the game could genuinely have dealt.
@@ -43,3 +44,21 @@ def seeded_session():
 def seed_positions():
     """The fixed board `seeded_session` was built from, for tests that need the raw node ids."""
     return dict(SEED_POSITIONS)
+
+
+@pytest.fixture(autouse=True)
+def _reset_deployment_limits():
+    """
+    Clears limits.py's counters around every test.
+
+    Those counters - and the GAMES store they count - are process-global on purpose (the
+    deployment is one container), which makes them leak between tests: the suite creates far
+    more than one IP's hourly allowance, and far more than the concurrent-game cap, so without
+    this the first handful of tests pass and the rest are refused with a 429 that has nothing to
+    do with what they are testing.
+    """
+    limits.reset_for_tests()
+    GAMES.clear()
+    yield
+    limits.reset_for_tests()
+    GAMES.clear()

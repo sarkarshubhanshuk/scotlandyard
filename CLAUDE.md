@@ -187,7 +187,18 @@ the original "MCP prevents hallucination" framing stopped being true and what re
   `round_result` come from `serializers.py:serialize_loop_event`.
 - CORS defaults to the Vite dev origin and uvicorn binds `127.0.0.1`. Every endpoint is
   unauthenticated and the stream endpoint spends real money, so neither default is incidental.
-- `session.py` keeps games in a plain in-memory dict with TTL eviction — **ADR-0005**.
+- `session.py` keeps games in a plain in-memory dict with TTL eviction — **ADR-0005**. Each
+  session also records the browser that owns it.
+- **Access control without accounts (ADR-0014):** `POST /games` mints an opaque token, returns it
+  in an `HttpOnly` cookie, and stores it on the session; every game-scoped route requires a
+  match. A shared URL therefore carries the game id but not the cookie, so it grants nothing.
+  Ownership is per-browser — there is no way to resume a game elsewhere, by design.
+- `limits.py` caps concurrent games, new games per IP, and a rolling daily LLM-call budget
+  (checked before a round starts, never mid-round). These are the polite layer; the real bound
+  on a public deployment is a hard credit limit on the OpenRouter key itself.
+- In a deployment the same app also serves the built SPA, so the frontend and API share one
+  origin — which is what lets the ownership cookie ride along on the `EventSource` round stream,
+  since `EventSource` cannot set headers. See the `Dockerfile` and **ADR-0014**.
 - `serializers.py` is the single choke point for outward-facing payloads. It includes Mr. X's
   real `current_node`, which is safe for a specific reason — **ADR-0007**.
 

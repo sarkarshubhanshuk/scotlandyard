@@ -33,3 +33,4 @@ considered, Consequences. A decision that is later reversed gets its Status flip
 | [0011](0011-turn-halo-on-the-board.md) | A shared "whose turn is it" halo, cycling across every pawn | Accepted |
 | [0012](0012-mr-x-last-known-location-ghost.md) | A dashed "last known location" ghost for Mr. X | Accepted |
 | [0013](0013-ticket-narrowed-mr-x-zone.md) | Mr. X's possible zone is narrowed by his own travel log | Accepted (supersedes ISSUE-015) |
+| [0014](0014-public-deployment-shape.md) | One container, one origin, and a cookie instead of accounts | Accepted |
