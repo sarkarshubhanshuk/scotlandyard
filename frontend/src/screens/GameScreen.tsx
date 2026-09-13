@@ -178,7 +178,11 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
   return (
     <>
       {gameState.status === "game_over" && (
-        <GameOverBanner winner={gameState.winner} roundNumber={gameState.round_number} />
+        <GameOverBanner
+          winner={gameState.winner}
+          roundNumber={gameState.round_number}
+          winningDetective={gameState.winning_detective}
+        />
       )}
       <GameLayout
         board={

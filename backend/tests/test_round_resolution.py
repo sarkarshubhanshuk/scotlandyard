@@ -135,6 +135,7 @@ def test_resolve_round_reports_a_capture_the_turn_loop_already_made():
 
     assert result["winner"] == "detectives"
     assert result["status"] == "game_over"
+    assert session.winning_detective == "agent_red"
     assert session.state["detectives"]["agent_blue"]["node_id"] == blue_node, \
         "resolve_round must not move anyone - every move was applied during its own turn"
 
@@ -149,6 +150,8 @@ def test_resolve_round_mr_x_trapped_detectives_win():
     result = resolve_round(session)
     assert result["winner"] == "detectives"
     assert result["status"] == "game_over"
+    assert session.winning_detective is None, \
+        "no detective actually landed on Mr. X - he simply ran out of tickets"
 
 
 def test_resolve_round_all_detectives_trapped_mr_x_wins():
@@ -163,6 +166,7 @@ def test_resolve_round_all_detectives_trapped_mr_x_wins():
     result = resolve_round(session)
     assert result["winner"] == "mr_x"
     assert result["status"] == "game_over"
+    assert session.winning_detective is None
 
 
 def test_resolve_round_24_ends_in_mr_x_win():

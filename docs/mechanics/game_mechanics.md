@@ -529,7 +529,11 @@ Starlette API (`backend/scotland_yard/server.py`).
 - **Capture is decided inside the turn that causes it**, not here — the instant a detective's new
   node equals Mr. X's real `current_node`, `captured_by` is set and the graph's router skips
   every remaining turn, so the detectives behind it never move *or* deliberate. `resolve_round`
-  only reads that verdict.
+  only reads that verdict, threading it onto `session.winning_detective` (`_game_over`'s own
+  `captured_by` argument) so the frontend can credit a specific detective ("Caught by Agent
+  Red") rather than only knowing "the detectives won". Stays `None` for the OTHER "detectives
+  win" sub-condition below (Mr. X out of legal moves — nobody to credit) and for either "Mr. X
+  wins" ending, where it's simply not applicable.
 - If no capture: checks whether Mr. X now has any legal move at all (detectives win if not),
   then whether all 5 detectives are simultaneously trapped (Mr. X wins if so), then whether
   `round_number == 24` was just completed (Mr. X wins). Otherwise calls `build_next_round_state`
@@ -568,6 +572,7 @@ Starlette API (`backend/scotland_yard/server.py`).
 | `mr_x.transport_history` | Appended to by `mrx_turn` on every hop (records the ticket type spent, not necessarily the underlying route type — a black ticket is logged as `"black"`, matching the rules' obfuscation intent). A double-move additionally inserts a `"double"` sentinel immediately before its own two hop entries, matching rules.md's stated broadcast order — never a valid `ticket_type_spent` itself, only ever inserted by `submit_mr_x_move`'s double-move branch. |
 | `detectives[*].node_id`, ticket counts | Mutated by `resolve_round`, never by the graph itself |
 | `final_moves` | Read (never written) by `resolve_round`; still produced exactly as §1 describes |
+| `session.winning_detective` | Set by `resolve_round`'s `_game_over` from `state["captured_by"]`; `None` unless a detective actually landed on Mr. X. Serialized by `serialize_public_state` for the frontend's game-over banner. |
 
 ### Implementation References
 
