@@ -36,13 +36,51 @@ export function useMrXMoveWizard(
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Always the latest gameState, readable from inside submitSingle/submitDouble regardless of
+  // when those memoized callbacks were last recreated (their own deps don't include gameState,
+  // so a plain closure over the hook's parameter would go stale the moment another render happens
+  // without those deps changing) - needed to read Mr. X's node just before HE moves, i.e. the
+  // origin of whichever hop is about to animate. Kept current via an effect rather than a direct
+  // render-phase assignment, since React disallows writing to a ref during render.
+  const gameStateRef = useRef(gameState);
+  useEffect(() => {
+    gameStateRef.current = gameState;
+  });
+
   // Holds the timer id for submitDouble's intermediate-hop pause (see its own comment) so it can
   // be cleared if the component unmounts mid-animation - e.g. navigating away from the game the
   // instant a double-move lands.
   const pendingHopTimerRef = useRef<number | null>(null);
+
+  // Which hop of Mr. X's own move is currently animating on the board - null once it's finished
+  // (or before any move has been submitted this turn). GameScreen reads this to compose the
+  // sidebar's "Mr. X's turn - ..." label; see beginMovingHop's own comment for why it needs its
+  // own independent timer rather than piggybacking on `submitting`.
+  const [movingHop, setMovingHop] = useState<{ from: number; to: number } | null>(null);
+  const movingHopClearTimerRef = useRef<number | null>(null);
+
+  /**
+   * Marks one hop as currently animating on the board and schedules it to clear again after
+   * PAWN_MOVE_DURATION_MS - the same duration BoardScene's own tween runs for, so the sidebar
+   * label keeps saying "is moving" for exactly as long as the pawn is actually sliding. Kept
+   * independent of `submitting` (which flips false as soon as the network call resolves): a
+   * double-move's second hop starts animating well after that point, and tying the label to
+   * `submitting` would either cut it short or hold the "Submitting move..." board overlay up
+   * for a move that already landed.
+   */
+  const beginMovingHop = useCallback((from: number, to: number) => {
+    if (movingHopClearTimerRef.current !== null) window.clearTimeout(movingHopClearTimerRef.current);
+    setMovingHop({ from, to });
+    movingHopClearTimerRef.current = window.setTimeout(() => {
+      movingHopClearTimerRef.current = null;
+      setMovingHop(null);
+    }, PAWN_MOVE_DURATION_MS);
+  }, []);
+
   useEffect(() => {
     return () => {
       if (pendingHopTimerRef.current !== null) window.clearTimeout(pendingHopTimerRef.current);
+      if (movingHopClearTimerRef.current !== null) window.clearTimeout(movingHopClearTimerRef.current);
     };
   }, []);
 
@@ -110,6 +148,7 @@ export function useMrXMoveWizard(
     async (target: number, ticket: TicketType) => {
       setSubmitting(true);
       setError(null);
+      const origin = gameStateRef.current.mr_x.current_node;
       try {
         const newState = await submitMrXMove(gameId, {
           move_type: "single",
@@ -117,19 +156,21 @@ export function useMrXMoveWizard(
           ticket_type_spent: ticket,
         });
         onMoved(newState);
+        beginMovingHop(origin, target);
       } catch (err) {
         setError(err instanceof ApiError ? err.message : String(err));
       } finally {
         setSubmitting(false);
       }
     },
-    [gameId, onMoved],
+    [gameId, onMoved, beginMovingHop],
   );
 
   const submitDouble = useCallback(
     async (h1: Hop, h2: Hop) => {
       setSubmitting(true);
       setError(null);
+      const origin = gameStateRef.current.mr_x.current_node;
       try {
         const newState = await submitMrXMove(gameId, {
           move_type: "double",
@@ -160,22 +201,29 @@ export function useMrXMoveWizard(
             status: "awaiting_mr_x_move",
             mr_x: { ...newState.mr_x, current_node: h1.target },
           });
+          beginMovingHop(origin, h1.target);
           await new Promise<void>((resolve) => {
             pendingHopTimerRef.current = window.setTimeout(() => {
               pendingHopTimerRef.current = null;
               resolve();
             }, PAWN_MOVE_DURATION_MS);
           });
+          onMoved(newState);
+          beginMovingHop(h1.target, h2.target);
+        } else {
+          // Not a surfacing reveal - the board only ever shows one straight tween from the origin
+          // to the final destination (see renderPawn/BoardScene), so the label covers that same
+          // single hop rather than naming an intermediate node nothing on screen visits.
+          onMoved(newState);
+          beginMovingHop(origin, h2.target);
         }
-
-        onMoved(newState);
       } catch (err) {
         setError(err instanceof ApiError ? err.message : String(err));
       } finally {
         setSubmitting(false);
       }
     },
-    [gameId, onMoved],
+    [gameId, onMoved, beginMovingHop],
   );
 
   const chooseTicket = useCallback(
@@ -227,6 +275,7 @@ export function useMrXMoveWizard(
     pendingTarget,
     highlightedNodeIds,
     submitting,
+    movingHop,
     error,
     handleNodeClick,
     chooseTicket,

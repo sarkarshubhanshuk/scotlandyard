@@ -9,11 +9,42 @@ import { TravelLog } from "../components/TravelLog";
 import { useMrXMoveWizard } from "../hooks/useMrXMoveWizard";
 import { useRoundStream } from "../hooks/useRoundStream";
 import { GameLayout } from "../layout/GameLayout";
+import { AGENT_COLORS, AGENT_SHORT_LABEL_TO_ID, toCssColor } from "../labels";
 import type { MapData, PublicGameState } from "../types";
 
 // Lazy-loaded so Phaser (the bulk of the production bundle - see Vite's own chunk-size warning)
 // only ever downloads once a game is actually entered, not on the home screen.
 const BoardCanvas = lazy(() => import("../board/BoardCanvas").then((m) => ({ default: m.BoardCanvas })));
+
+// Matches any detective's short callsign ("Red", "Blue", ...) wherever it appears in the
+// sidebar's "Ongoing actions" label, so that name can be colored to match its pawn - mirrors
+// ChatLog's own AGENT_NAME_PATTERN/ColoredLine, scoped to the short form this label uses instead
+// of the full "Agent Red" display name ChatLog/tooltips use.
+const AGENT_SHORT_NAME_PATTERN = new RegExp(
+  `\\b(${Object.keys(AGENT_SHORT_LABEL_TO_ID)
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|")})\\b`,
+  "g",
+);
+
+// The label never mentions more than one detective (whichever one's turn it currently is), but
+// splits generically on any of the five names rather than assuming that, so it stays correct if
+// a future phase ever names more than one.
+function OngoingActionText({ text }: { text: string }) {
+  return (
+    <>
+      {text.split(AGENT_SHORT_NAME_PATTERN).map((part, i) => {
+        const agentId = AGENT_SHORT_LABEL_TO_ID[part];
+        if (!agentId) return part;
+        return (
+          <span key={i} style={{ color: toCssColor(AGENT_COLORS[agentId]) }}>
+            {part}
+          </span>
+        );
+      })}
+    </>
+  );
+}
 
 export function GameScreen() {
   const { gameId } = useParams<{ gameId: string }>();
@@ -130,6 +161,20 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
         ? roundStream.activeTurnDetective
         : null;
 
+  // The sidebar's "Ongoing actions" line. wizard.movingHop takes priority over gameState.status
+  // whenever it's set: a double-move's intermediate hop deliberately holds status back at
+  // "awaiting_mr_x_move" until its second leg lands (see useMrXMoveWizard's own comment on why),
+  // so status alone can't tell "still picking a move" apart from "first hop already animating" -
+  // movingHop can. Once it clears (both for a single move and after a double-move's second leg),
+  // this falls through to whatever gameState.status/roundStream actually says next.
+  const ongoingActionLabel = wizard.movingHop
+    ? `Mr. X's turn - Mr. X is moving from ${wizard.movingHop.from} to ${wizard.movingHop.to}`
+    : gameState.status === "awaiting_mr_x_move"
+      ? `Mr. X's turn - Waiting for user input, currently at ${gameState.mr_x.current_node}`
+      : gameState.status === "detective_loop_running"
+        ? roundStream.stageLabel
+        : gameState.status.replaceAll("_", " ");
+
   return (
     <>
       {gameState.status === "game_over" && (
@@ -153,12 +198,20 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
                 sidebar's regular section-to-section gap (set on GameLayout's outer flex column). */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <h2 style={{ margin: 0 }}>
-                Round {gameState.round_number}{" "}
-                <span style={{ color: "var(--color-text-muted)", fontWeight: 400 }}>
-                  -{" "}
-                  {gameState.status === "detective_loop_running"
-                    ? roundStream.stageLabel
-                    : gameState.status.replaceAll("_", " ")}
+                {/* Round number stays at h2's own (larger, bold-by-default) size; the ongoing-
+                    action label gets its own smaller, constant size regardless of phase, so a
+                    longer phase (e.g. "is finalizing their move from 70") still reads as one
+                    line rather than wrapping. */}
+                <span style={{ fontWeight: 700 }}>Round {gameState.round_number}</span>{" "}
+                <span
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 400,
+                    color: "var(--color-text-muted)",
+                    verticalAlign: "middle",
+                  }}
+                >
+                  - <OngoingActionText text={ongoingActionLabel} />
                 </span>
               </h2>
               <TicketInventory gameState={gameState} />
