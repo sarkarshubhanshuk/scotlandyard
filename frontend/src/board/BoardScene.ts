@@ -71,6 +71,12 @@ const NODE_HALO_BASE_RADIUS_BY_TIER = { metro: 12.5, bus: 10.5, taxi: 8.5 };
 const TURN_HALO_THICKNESS = 3;
 const TURN_HALO_COLOR = 0xbfe6ff;
 const TURN_HALO_CORE_COLOR = 0xffffff;
+// The halo's idle "breathing" pulse: scales up from 1x to 1.15x and back down, looping, while
+// its pawn sits stationary. TURN_HALO_PULSE_DURATION_MS is ONE direction (1 -> 1.15, or
+// 1.15 -> 1) - yoyo:true (see renderTurnHalo) plays it back in reverse for the other half of
+// the cycle, so a full up-and-down loop takes twice this.
+const TURN_HALO_PULSE_MAX_SCALE = 1.15;
+const TURN_HALO_PULSE_DURATION_MS = 900;
 // A legal-target halo mirrors the turn halo - same TURN_HALO_COLOR (so it reads as the same kind
 // of marker rather than a differently-colored one) and same per-node base radius (so every node's
 // own layers stay fully visible inside it, with zero gap, whichever tier that node is) - at 3/4
@@ -394,12 +400,21 @@ export class BoardScene extends Phaser.Scene {
    * (agents.py:apply_detective_move), which is the same instant activeTurnPawnId changes away
    * from it - so whenever this halo is visible, the pawn underneath it is always stationary, and
    * a plain redraw-in-place is all a turn change ever needs. See ADR-0011.
+   *
+   * Pulses (scales up to TURN_HALO_PULSE_MAX_SCALE and back, looping) whenever that holds -
+   * checked via `tweens.isTweening(pawn)` rather than just trusted, because it does NOT quite
+   * hold for one edge case: a double-move's intermediate hop on a surfacing round
+   * (useMrXMoveWizard.ts:submitDouble) deliberately holds gameState.status at
+   * "awaiting_mr_x_move" - and so activeTurnPawnId at "mr_x" - for the ~1s that hop's own pawn
+   * tween is still in flight. Checking the pawn's actual tween state catches that case too,
+   * rather than only the common one.
    */
   private renderTurnHalo() {
     const pawnId = this.activeTurnPawnId;
     const nodeId = pawnId === null ? undefined : this.currentNodeForPawn(pawnId);
 
     if (pawnId === null || nodeId === undefined) {
+      if (this.turnHalo) this.tweens.killTweensOf(this.turnHalo);
       this.turnHalo?.destroy();
       this.turnHalo = null;
       this.turnHaloKey = null;
@@ -419,6 +434,7 @@ export class BoardScene extends Phaser.Scene {
     // Two concentric strokes at the same radius - a wider, low-alpha one for a soft glow and a
     // thinner full-alpha one for a crisp bright core - stand in for a blurred glow without an
     // actual blur filter. A ring, not a disc, so the pawn and the node's own marker stay visible.
+    if (this.turnHalo) this.tweens.killTweensOf(this.turnHalo);
     this.turnHalo?.destroy();
     const halo = this.add.graphics();
     halo.lineStyle(TURN_HALO_THICKNESS * 2 * RENDER_SCALE, TURN_HALO_COLOR, 0.35);
@@ -427,6 +443,21 @@ export class BoardScene extends Phaser.Scene {
     halo.strokeCircle(0, 0, radius * RENDER_SCALE);
     halo.setPosition(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE);
     halo.setDepth(DEPTH_HALO);
+
+    // Pulse only while the pawn underneath is actually stationary right now (see this method's
+    // own doc comment on why that's checked rather than assumed) - otherwise leave it static at
+    // its base scale, matching the pawn's own move looking like the more important motion.
+    const pawn = this.pawns.get(pawnId);
+    if (!pawn || !this.tweens.isTweening(pawn)) {
+      this.tweens.add({
+        targets: halo,
+        scale: TURN_HALO_PULSE_MAX_SCALE,
+        duration: TURN_HALO_PULSE_DURATION_MS,
+        ease: "Sine.easeInOut",
+        yoyo: true,
+        repeat: -1,
+      });
+    }
 
     this.turnHalo = halo;
     this.turnHaloKey = key;
