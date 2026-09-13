@@ -91,7 +91,7 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
 
     state: ScotlandYardState = {
         "round_number": 1,
-        "debate_loop_count": 0,
+        "turn_index": 0,
         "mr_x": {
             "current_node": positions["mr_x"],
             "last_known_node": None,
@@ -104,8 +104,8 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
             for det_id in DETECTIVE_IDS
         },
         "messages": [],
-        "proposed_strategies": {},
-        "locked_moves": {},
+        "committed_moves": {},
+        "turn_records": {},
         "final_moves": {},
         "final_move_details": {},
     }

@@ -5,6 +5,10 @@
 
 ## Context
 
+> **Naming note (ADR-0009):** `propose_node`, `debate_node` and `vote_node` were replaced by a single
+> `agents.py:turn_node` when detectives moved to turn-wise play. The decision recorded here is
+> unaffected — read those names as "the detective-facing LLM calls".
+
 Scotland Yard is asymmetric: one hidden evader against five coordinating pursuers. Either
 side could have been the AI side, and the choice determines what the system is actually *for*.
 

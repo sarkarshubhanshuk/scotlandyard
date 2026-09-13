@@ -64,22 +64,41 @@ VALID_TICKET_TYPES = {"taxi", "bus", "metro", "black"}
 # the board but are traversable only by Mr. X, using a black ticket.
 DETECTIVE_TRANSPORT_TYPES = ("taxi", "bus", "metro")
 
-# --- Consensus mechanics (NOT from rules.md - this project's own design; see ADR-0006) --
-# How many of the 5 detectives must agree on a node before that move locks for the round.
-VOTE_THRESHOLD = 3
+# --- Turn mechanics (NOT from rules.md - this project's own design; see ADR-0009) -------
+# Detectives take their turns one at a time, in DETECTIVE_IDS order, and each commits its own
+# move at the end of its own turn. Within one detective's turn, every OTHER detective responds
+# to that detective's proposal once, in cyclic DETECTIVE_IDS order starting from the mover's
+# immediate successor (Agent Green's turn -> Yellow, Purple, Red, Blue).
+CALLS_PER_TURN = 1 + (NUM_DETECTIVES - 1) + 1  # proposal + one response each + final decision
 
-# How many propose -> debate -> vote cycles run before the round is forced to finalize with
-# whatever is still unlocked falling back to each detective's own self-proposal.
-MAX_DEBATE_LOOPS = 3
-
-# A strict majority threshold is what makes it arithmetically impossible for two DIFFERENT
-# detectives' independent tallies to both reach the threshold on the SAME node in one loop:
-# each single ballot is already de-duplicated, so two targets both reaching VOTE_THRESHOLD on
-# one node would need VOTE_THRESHOLD * 2 distinct ballots. That invariant is relied on by
-# vote_node (see docs/issues/known_issues.md ISSUE-010), so assert it here rather than
-# leaving it as an accident of the numbers - if either value is ever retuned, this fires
-# instead of silently reintroducing cross-tally collisions.
-assert VOTE_THRESHOLD * 2 > NUM_DETECTIVES, (
-    f"VOTE_THRESHOLD ({VOTE_THRESHOLD}) must be a strict majority of NUM_DETECTIVES "
-    f"({NUM_DETECTIVES}); otherwise two detectives' tallies can both lock the same node."
+# How willing a detective is to weigh a teammate's argument above its own Selfish Glory goal,
+# as (inclusive upper round bound, percentage, label). Scans in order; the last entry is the
+# open-ended late-game tier, so its bound is MAX_ROUND. The literal percentage goes into the
+# prompt verbatim - get_psychology_prompt states it as a number rather than only as a label,
+# because "25%" is a sharper instruction to the model than "LOW" alone.
+COLLABORATION_TIERS = (
+    (4, 1, "MINIMUM"),
+    (8, 25, "LOW"),
+    (12, 50, "MEDIUM"),
+    (16, 75, "HIGH"),
+    (MAX_ROUND, 99, "MAXIMUM"),
 )
+
+# The tier ladder must stay contiguous and must cover every round up to MAX_ROUND, or
+# get_collaboration_tier would fall off the end of the table for a legal round number.
+assert COLLABORATION_TIERS[-1][0] >= MAX_ROUND, (
+    f"COLLABORATION_TIERS' last tier must cover MAX_ROUND ({MAX_ROUND}); it stops at "
+    f"{COLLABORATION_TIERS[-1][0]}."
+)
+assert all(
+    earlier[0] < later[0] for earlier, later in zip(COLLABORATION_TIERS, COLLABORATION_TIERS[1:])
+), f"COLLABORATION_TIERS' round bounds must be strictly increasing: {COLLABORATION_TIERS}"
+
+# --- Per-call LLM deadline (see ADR-0009 "Consequences", docs/issues ISSUE-009) ---------
+# llm_client.py's timeout=45 is enforced by the HTTP client as an IDLE-GAP timeout - reset by
+# every streamed chunk - so it reliably kills a genuinely stuck call but does not cap total
+# call duration. That was survivable while propose/vote fired 5 calls concurrently and a
+# straggler overlapped its siblings. Turn-wise play makes every call strictly sequential, so
+# one slow call now adds directly to the round's wall-clock. agents.py wraps each call in
+# asyncio.wait_for(..., LLM_CALL_DEADLINE_SECONDS) and falls back deterministically on expiry.
+LLM_CALL_DEADLINE_SECONDS = 90

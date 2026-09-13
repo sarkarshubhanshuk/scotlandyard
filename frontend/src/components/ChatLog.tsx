@@ -1,11 +1,10 @@
 import { useEffect, useRef } from "react";
 import type { ChatLogEntry } from "../hooks/useRoundStream";
-import { AGENT_COLORS, AGENT_LABEL_TO_ID, toCssColor } from "../labels";
+import { AGENT_COLORS, AGENT_LABEL_TO_ID, DETECTIVE_LABELS, toCssColor } from "../labels";
 
-const KIND_LABELS: Record<ChatLogEntry["kind"], string> = {
-  proposal: "Proposals",
-  debate: "Debate",
-  vote_tally: "Vote",
+// Entries carry the turn they belong to (see ChatLogEntry.turn), so a header is only needed
+// for the two end-of-round entries that belong to no detective's turn.
+const KIND_LABELS: Partial<Record<ChatLogEntry["kind"], string>> = {
   round_finalized: "Finalized",
   round_result: "Result",
 };
@@ -86,26 +85,43 @@ export function ChatLog({ entries, connectionError, onRetry }: ChatLogProps) {
           gap: 8,
         }}
       >
-        {entries.length === 0 && <p style={{ color: "#666", margin: 0 }}>No debate yet.</p>}
+        {entries.length === 0 && <p style={{ color: "#666", margin: 0 }}>No turns taken yet.</p>}
         {entries.map((entry, index) => {
           const previous = entries[index - 1];
-          const sameRound = previous?.round === entry.round;
-          // A "proposal" entry that isn't the round's very first entry can only follow a
-          // previous loop's "vote_tally" (see check_vote_status in graph.py) - i.e. it marks a
-          // new loop starting, which gets the more prominent solid separator. Any other same-
-          // round transition (proposal->debate, debate->vote_tally, vote_tally->round_finalized)
-          // is a stage change within the same loop, marked with a lighter dashed separator.
-          const isNewLoop = sameRound && entry.kind === "proposal";
-          const isStageChange = sameRound && !isNewLoop;
+          // A turn boundary - a new detective picking up the round, or the round ending - gets
+          // the prominent header. Everything inside one turn (the mover's proposal, the four
+          // responses, the mover's decision) runs on unbroken underneath it, which is what
+          // makes the log read as five turns rather than thirty loose messages.
+          const newTurn = previous?.round !== entry.round || previous?.turn !== entry.turn;
+          const heading = entry.turn
+            ? `Round ${entry.round} - ${DETECTIVE_LABELS[entry.turn]}'s turn`
+            : `Round ${entry.round} - ${KIND_LABELS[entry.kind] ?? ""}`;
           return (
-            <div key={entry.id}>
-              {isNewLoop && <hr style={{ border: "none", borderTop: "2px solid #999", margin: "0 0 8px" }} />}
-              {isStageChange && <hr style={{ border: "none", borderTop: "1px dashed #ccc", margin: "0 0 8px" }} />}
-              <div style={{ fontWeight: 600, color: "#444" }}>
-                Round {entry.round} - {KIND_LABELS[entry.kind]}
-              </div>
+            <div key={entry.id} style={{ marginTop: newTurn && index > 0 ? 4 : 0 }}>
+              {newTurn && index > 0 && (
+                <hr style={{ border: "none", borderTop: "2px solid #999", margin: "0 0 8px" }} />
+              )}
+              {newTurn && (
+                <div
+                  style={{
+                    fontWeight: 600,
+                    color: entry.turn ? toCssColor(AGENT_COLORS[entry.turn]) : "#444",
+                  }}
+                >
+                  {heading}
+                </div>
+              )}
               {entry.lines.map((line, i) => (
-                <div key={i} style={{ whiteSpace: "pre-wrap" }}>
+                <div
+                  key={i}
+                  style={{
+                    whiteSpace: "pre-wrap",
+                    // The mover's own two messages bracket the turn; the four responses sit
+                    // indented between them, so the shape of a turn is visible at a glance.
+                    paddingLeft: entry.kind === "response" ? 12 : 0,
+                    fontWeight: entry.kind === "decision" ? 600 : 400,
+                  }}
+                >
                   <ColoredLine text={line} />
                 </div>
               ))}

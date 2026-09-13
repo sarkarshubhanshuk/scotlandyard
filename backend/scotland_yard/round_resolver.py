@@ -46,17 +46,16 @@ def _game_over(session: GameSession, winner: str) -> RoundResult:
 async def run_detective_loop(session: GameSession) -> AsyncIterator[dict]:
     """
     Drives detective_graph for the current round, yielding one labeled event per LangGraph step
-    so an API layer can stream propose/debate/vote progress to a client in real time.
+    so an API layer can stream each detective's turn to a client in real time.
 
-    Uses stream_mode=["updates", "values", "custom"] together: "updates" chunks are
-    {node_name: partial} and identify which node just ran (propose/debate/vote/finalize) for
-    event labeling; "values" chunks are full cumulative state snapshots after each step; "custom"
-    chunks are agents.py's own get_stream_writer() calls, fired the moment a node's first LLM
-    call actually goes out (not when the node merely starts, which could still be doing
-    zone-context prep) - this is what lets the frontend show "Detectives are debating..." etc.
-    as each stage BEGINS rather than only once "updates" reports the whole node finished. The
-    LAST "values" snapshot becomes the new session.state directly - this reuses state.py's own
-    reducers (update_dict, operator.add) rather than hand-reimplementing them here.
+    Uses stream_mode=["updates", "values", "custom"] together, and "custom" is now the main
+    channel: those are agents.py's own get_stream_writer() calls, one per LLM call, so the
+    client sees a proposal, each response, and the final decision land individually as they
+    happen. An "updates" chunk only arrives once a whole six-call turn has finished, which is
+    too coarse to drive the Chat Log - it is used for the finalize node and as a turn-boundary
+    marker (see serializers.serialize_loop_event). "values" chunks are full cumulative state
+    snapshots after each step; the LAST one becomes the new session.state directly, reusing
+    state.py's own reducers (update_dict, operator.add) rather than hand-reimplementing them.
     """
     session.status = "detective_loop_running"
     last_values = session.state
@@ -68,7 +67,9 @@ async def run_detective_loop(session: GameSession) -> AsyncIterator[dict]:
             last_values = chunk
             continue
         if mode == "custom":
-            yield {"type": "stage_started", "stage": chunk["stage"]}
+            # agents.py owns these payloads entirely - each already carries its own "event"
+            # name and fields, so they pass straight through rather than being re-shaped here.
+            yield {"type": "turn_event", "payload": chunk}
             continue
         # mode == "updates": chunk is {node_name: partial_state_update}
         for node_name, update in chunk.items():

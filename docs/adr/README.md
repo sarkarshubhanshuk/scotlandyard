@@ -25,6 +25,7 @@ considered, Consequences. A decision that is later reversed gets its Status flip
 | [0003](0003-human-mr-x-llm-detectives.md) | Mr. X is human; only the detectives are agents | Accepted |
 | [0004](0004-openrouter-deepseek-llm-provider.md) | OpenRouter + DeepSeek v4 Flash, with reasoning disabled | Accepted |
 | [0005](0005-in-memory-session-store.md) | In-memory game sessions with TTL eviction, no database | Accepted |
-| [0006](0006-sequential-debate-and-majority-vote.md) | Sequential debate, 3/5 majority vote, 3-loop cap | Accepted |
+| [0006](0006-sequential-debate-and-majority-vote.md) | Sequential debate, 3/5 majority vote, 3-loop cap | Superseded by ADR-0009 |
 | [0007](0007-exposing-mr-x-position-to-the-client.md) | Mr. X's true position is serialized to the client | Accepted |
 | [0008](0008-no-global-state-library-on-the-frontend.md) | No global state library on the frontend | Accepted |
+| [0009](0009-turn-wise-detective-play.md) | Turn-wise detective play: propose, respond, commit | Accepted (supersedes ADR-0006) |

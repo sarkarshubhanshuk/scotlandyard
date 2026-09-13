@@ -107,8 +107,9 @@ def test_resolve_round_non_capturing_conserves_tickets_and_advances_round():
     assert result["status"] == "awaiting_mr_x_move"
     assert result["winner"] is None
     assert session.state["round_number"] == 2
-    assert session.state["locked_moves"] == {}
-    assert session.state["proposed_strategies"] == {}
+    assert session.state["turn_index"] == 0
+    assert session.state["committed_moves"] == {}
+    assert session.state["turn_records"] == {}
 
 
 def test_resolve_round_capture_short_circuits_remaining_detectives():

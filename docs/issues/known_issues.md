@@ -32,9 +32,15 @@ if none fits. Don't renumber or delete old entries when one is fixed — flip it
 
 ---
 
-## Group A: Detective Move Decision Cycle (`propose_node` / `debate_node` / `vote_node`)
+## Group A: Detective Turn Cycle (`agents.py:turn_node`)
 
 See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
+
+**Note (2026-09-13, ADR-0009):** entries below that predate ADR-0009 refer to `propose_node`,
+`debate_node` and `vote_node` — the three nodes of the simultaneous propose/debate/vote
+consensus loop that turn-wise play replaced. They are left as written, per this log's own
+"don't rewrite history" discipline. Where such an entry is now moot because the code it
+describes no longer exists, its Status says so explicitly rather than the entry being deleted.
 
 ### ISSUE-001 — MCP tool-result unwrapping bug silently broke move legality end-to-end
 
@@ -414,8 +420,8 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
 
 ### ISSUE-009 — `timeout=45` does not bound observed call latency; its own comment was stale
 
-- **Status**: Partially Fixed (2026-09-13) — the stale comment is corrected; whether a real
-  wall-clock deadline is wanted remains open
+- **Status**: Fixed (2026-09-13) — stale comment corrected, and a real wall-clock deadline
+  added alongside the idle-gap timeout
 - **Area**: `backend/scotland_yard/llm_client.py:_build_chat_llm` (was `mcp_client.py`)
 - **Logged**: 2026-09-02
 - **Description**: The `ChatOpenAI(..., timeout=45, ...)` call site's own comment claims 45s
@@ -430,9 +436,15 @@ See `docs/mechanics/game_mechanics.md` §1 for how this cycle works.
   semantics rather than claiming a wall-clock bound it does not provide, and ADR-0004 records
   why the timeout must exist at all (without it, a hung request blocks forever and neither the
   SDK's retry nor `agents.py`'s per-call fallback ever runs).
-- **Still open**: whether this workload actually wants a hard wall-clock deadline. Adding one
-  means wrapping each call in `asyncio.wait_for`, which would need a decision about what a
-  timed-out detective does — fall back to its previous proposal, or abstain from the round.
+- **Fix (2026-09-13, completing this entry)**: turn-wise play (ADR-0009) settled the open
+  question. Under the old design a straggler overlapped four concurrent siblings, so a slow call
+  cost little; with all 30 of a round's calls sequential, one slow call adds its full duration to
+  the round. `agents.py:_invoke` now wraps every call in
+  `asyncio.wait_for(LLM_CALL_DEADLINE_SECONDS)` (90s, in `rules_constants.py`) *in addition to*
+  the idle-gap `timeout=45`, which is kept for what it genuinely does. The question of what a
+  timed-out detective does is answered by the same deterministic path an illegal answer takes:
+  `_invoke` returns `None`, and `_enforce_legal_node` assigns that detective its lowest-numbered
+  free legal move — never a forfeit, since a detective must move when a legal move exists.
 
 ---
 
@@ -463,6 +475,13 @@ subsection.
 - **Note**: the *cross-loop* variant of this — a pending detective being voted onto a node
   locked in an EARLIER loop — was a real and reachable bug, and is tracked separately as
   ISSUE-025.
+- **Update (2026-09-13, ADR-0009)**: moot. There is no vote, so there are no tallies to collide.
+  `VOTE_THRESHOLD` and its assert are gone from `rules_constants.py`, and
+  `test_vote_threshold_is_a_strict_majority` with them. Under turn-wise play the collision this
+  entry worried about is prevented one step earlier: a later mover is never *offered* a node an
+  earlier one committed to, so it cannot be chosen in the first place. Worth knowing if
+  simultaneous decisions ever return — the arithmetic argument above would need to come back
+  with them.
 
 ### ISSUE-011 — React/Phaser frontend does not exist yet
 
@@ -749,6 +768,11 @@ case, the original entry has been updated too, rather than left to contradict th
   `reserved_nodes` explicitly, so they cannot drift again. The vote prompt gained the "Already
   Locked Moves" block for parity with propose and debate. Covered by
   `tests/test_move_consensus.py::TestFetchLegalMoves`.
+- **Update (2026-09-13, ADR-0009)**: the *shape* of this bug is now unreachable rather than
+  merely fixed. Turn-wise play has exactly one place that computes legal moves — the mover's own
+  turn — so there are no two call sites left to drift apart. `reserved_nodes` (now carrying
+  `committed_moves`) survives unchanged and is doing more work than ever: it is the whole
+  collision guarantee, not one of several overlapping checks.
 
 ### ISSUE-026 — `finalize_round_node`'s fallback path produced colliding destinations by construction
 
@@ -776,6 +800,46 @@ case, the original entry has been updated too, rather than left to contradict th
   that detective's own lowest-numbered free legal move, and only stays put if it genuinely has
   none. `finalize_round_node` then asserts uniqueness outright (see ISSUE-014). Covered by
   `tests/test_move_consensus.py::TestFallbackResolution`.
+- **Update (2026-09-13, ADR-0009)**: moot — there is no fallback path. Every turn ends in a
+  committed move, so `finalize_round_node` has nothing to resolve and
+  `_resolve_fallback_moves` is gone. `finalize_round_node` now raises if a detective reaches it
+  with no commitment at all, and still asserts destination uniqueness (ISSUE-014) as defence in
+  depth, even though the paths that assert was written for can no longer fire. The
+  `final_move_details` caveat above stands as history: the preview is still computed against
+  pre-move positions, but there is no longer a way for two detectives to reach it holding the
+  same destination.
+
+### ISSUE-035 — Detective rounds were unreadable: 15 messages arrived at once, up to 3 times per round
+
+- **Status**: Fixed (2026-09-13) — see **ADR-0009**
+- **Area**: `backend/scotland_yard/agents.py`, `graph.py`, `state.py`, `rules_constants.py`,
+  `serializers.py`, `server.py`, `frontend/src/hooks/useRoundStream.ts`,
+  `frontend/src/components/ChatLog.tsx`
+- **Logged**: 2026-09-13
+- **Description**: All five detectives decided simultaneously (propose concurrently → debate
+  sequentially → vote concurrently, looping up to 3×). Move *quality* was fine; legibility was
+  not. A round delivered three bursts of five messages, up to three times over, and the human
+  player could not follow which detective was arguing for what, or why any given move happened.
+  Two compounding causes: a simultaneous decision has no natural narrative order for the
+  frontend to impose, and `serialize_loop_event` only fired once an entire stage had finished,
+  so the Chat Log alternated between frozen and flooded.
+- **Fix**: Turn-wise play. Detectives take turns in fixed `DETECTIVE_IDS` order; each turn is
+  the mover's proposal, one response from each of the other four (sequential, cyclic order from
+  the mover's successor), then the mover's binding decision — six LLM calls, 30 per round.
+  `agents.py:turn_node` emits a custom stream event **per LLM call**, so messages arrive at
+  roughly reading pace instead of five at a time, and `ChatLog` groups them into five turns.
+- **What it cost**: latency. Nothing in a turn can be parallelized, so the critical path goes
+  from 7 sequential call-slots per loop (7–21 per round) to a flat 30 — roughly 2.2 min per
+  round against 30–90s. Accepted deliberately; perceived wait is better even though wall-clock
+  is worse. Token cost is roughly flat (~31k input tokens/round against 25k–76k) and now
+  predictable, because each call carries one or two detectives' option lists rather than all
+  five.
+- **What it retired**: `VOTE_THRESHOLD`, `MAX_DEBATE_LOOPS`, `locked_moves`,
+  `debate_loop_count`, `proposed_strategies`, `debate_positions`, `find_proposal_conflicts`,
+  `_resolve_fallback_moves`'s de-duplication, and the dynamic per-loop schemas. See ISSUE-010,
+  ISSUE-025 and ISSUE-026, each annotated with what turn-wise play does instead.
+- **Related**: closes the still-open half of ISSUE-009 (a real wall-clock deadline per call),
+  which sequential calls made necessary rather than merely nice.
 
 ### ISSUE-027 — `round/stream`'s status check sat outside the lock, so two subscribers ran the detective loop twice
 

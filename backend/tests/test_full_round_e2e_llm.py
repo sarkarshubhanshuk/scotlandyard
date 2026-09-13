@@ -1,22 +1,23 @@
 """
 End-to-end test driving detective_graph with REAL DeepSeek v4 calls over OpenRouter
-through one full round: propose -> debate -> vote -> (loop up to 3x) -> finalize.
+through one full turn-wise round: five turns of proposal -> four responses -> decision,
+then finalize (ADR-0009).
 
-Unlike test_phase3.py's run_test_round() (which only prints the round as it unfolds),
-this asserts the structural invariants the pipeline must uphold regardless of what the
-LLM actually said this run: no two detectives end up on the same final node, every
-locked_moves entry survives into final_moves unchanged, every final move was actually
-legally reachable from that detective's OWN starting position (recomputed independently
-via game_master.compute_valid_moves rather than trusting the graph's own bookkeeping),
-and the consensus loop never exceeds its 3-loop cap. Assertions 2 and 4 together are
-exactly what the MCP tool-result unwrapping bug (fixed in agents.py) would have failed:
-it made propose_node silently revert every pending detective to its CURRENT node - which
-compute_valid_moves never lists as a reachable target - instead of a legal move, and made
-vote_node discard every vote as illegal.
+Unlike test_detective_loop_llm.py's run_test_round() (which only prints the round as it
+unfolds), this asserts the structural invariants the pipeline must uphold regardless of what
+the LLM actually said this run: every detective took exactly one turn, no two ended up on the
+same final node, every committed move survives into final_moves unchanged, and every final
+move was actually legally reachable from that detective's OWN starting position (recomputed
+independently via game_master.compute_valid_moves rather than trusting the graph's own
+bookkeeping).
 
-Non-deterministic and costs real OpenRouter API calls - can take several minutes (5
-detectives x up to 3 calls per loop x up to 3 loops). Run standalone:
-    python test_full_round_e2e.py
+Assertion 4 is the one that catches a whole class of regression: it would have failed the old
+MCP tool-result unwrapping bug, which silently reverted every detective to its CURRENT node -
+a node compute_valid_moves never lists as a reachable target.
+
+Non-deterministic and costs real OpenRouter API calls. A round is 30 sequential calls
+(5 detectives x 6 calls each), so expect a couple of minutes. Run standalone:
+    python test_full_round_e2e_llm.py
 """
 import asyncio
 import re
@@ -28,9 +29,10 @@ from typing import Any
 from uuid import UUID
 
 from langchain_core.callbacks import AsyncCallbackHandler
+from scotland_yard.agents import responders_for
 from scotland_yard.game_master import compute_valid_moves
 from scotland_yard.round_resolver import detective_graph
-from scotland_yard.rules_constants import DETECTIVE_IDS
+from scotland_yard.rules_constants import DETECTIVE_IDS, NUM_DETECTIVES
 
 # agents.py logs detective output (which routinely contains em-dashes and curly quotes
 # from the model) through the logging module, whose stderr stream still defaults to the
@@ -57,10 +59,9 @@ class LLMTranscriptLogger(AsyncCallbackHandler):
     """
     Records every LLM call's raw input messages and raw output, in the exact
     chronological order the callback manager fires them, and appends each as a
-    timestamped entry to LOG_PATH. Calls made concurrently (propose_node/vote_node fire
-    all 5 detectives via asyncio.gather) are labeled with a call number assigned at
-    start time, so a START/END pair can still be matched up even with several calls in
-    flight at once.
+    timestamped entry to LOG_PATH. Turn-wise play (ADR-0009) issues all 30 of a round's calls
+    sequentially, so the log reads in true chronological order - but the call-number labeling
+    is kept regardless, so a START/END pair stays matchable if concurrency is reintroduced.
     """
 
     def __init__(self, log_path: Path):
@@ -166,7 +167,7 @@ GRAPH_CONFIG = {"callbacks": [llm_logger]}
 
 INITIAL_STATE = {
     "round_number": 3,
-    "debate_loop_count": 0,
+    "turn_index": 0,
     "mr_x": {
         "last_known_node": 13,
         "last_known_round": 3,
@@ -177,7 +178,7 @@ INITIAL_STATE = {
         "black_tickets": 5,
         "double_tickets": 2,
     },
-    # Spread the detectives out across the map, same seed as test_phase3.py's round.
+    # Spread the detectives out across the map, same seed as test_detective_loop_llm.py's round.
     "detectives": {
         "agent_red": {"node_id": 29, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
         "agent_blue": {"node_id": 50, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
@@ -186,14 +187,14 @@ INITIAL_STATE = {
         "agent_purple": {"node_id": 123, "taxi_tickets": 10, "bus_tickets": 8, "metro_tickets": 4},
     },
     "messages": [],
-    "proposed_strategies": {},
-    "locked_moves": {},
+    "committed_moves": {},
+    "turn_records": {},
     "final_moves": {},
 }
 
 
-async def test_full_round_propose_debate_vote_finalize():
-    print("\n=== TEST: full round propose -> debate -> vote -> finalize (real LLM) ===")
+async def test_full_round_turns_and_finalize():
+    print("\n=== TEST: full turn-wise round, five turns then finalize (real LLM) ===")
 
     starting_detectives = INITIAL_STATE["detectives"]
     starting_nodes = {d: info["node_id"] for d, info in starting_detectives.items()}
@@ -201,11 +202,11 @@ async def test_full_round_propose_debate_vote_finalize():
     result = await detective_graph.ainvoke(INITIAL_STATE, config=GRAPH_CONFIG)
 
     final_moves = result["final_moves"]
-    locked_moves = result["locked_moves"]
-    debate_loop_count = result["debate_loop_count"]
+    committed_moves = result["committed_moves"]
+    turn_records = result["turn_records"]
 
-    print(f"debate_loop_count={debate_loop_count}")
-    print(f"locked_moves={locked_moves}")
+    print(f"turn_index={result['turn_index']}")
+    print(f"committed_moves={committed_moves}")
     print(f"final_moves={final_moves}")
 
     # 1. Every detective got a final move out of the finalize stage.
@@ -219,16 +220,16 @@ async def test_full_round_propose_debate_vote_finalize():
     assert len(destinations) == len(set(destinations)), \
         f"final_moves contains duplicate destinations: {final_moves}"
 
-    # 3. Every locked (>=3-vote) move survived into final_moves unchanged - finalize
-    # must never override a passed vote.
-    for det_id, locked_node in locked_moves.items():
-        assert final_moves[det_id] == locked_node, \
-            f"{det_id} locked at Node {locked_node} but finalized to Node {final_moves[det_id]}"
+    # 3. Every committed move survived into final_moves unchanged - finalize assembles
+    # committed_moves, it must never override a decision a detective already made.
+    for det_id, committed_node in committed_moves.items():
+        assert final_moves[det_id] == committed_node, \
+            f"{det_id} committed to Node {committed_node} but finalized to Node {final_moves[det_id]}"
 
     # 4. Every final move is a node that was ACTUALLY legally reachable from that
     # detective's own starting position this round, recomputed independently of the
     # graph/MCP path (occupied = every OTHER detective's starting node, mirroring
-    # propose_node/vote_node's own occupancy check - positions never change mid-round,
+    # fetch_legal_moves' own occupancy check - positions never change mid-round,
     # so the starting board state is the correct occupancy snapshot for the whole round).
     for det_id, final_node in final_moves.items():
         start_info = starting_detectives[det_id]
@@ -243,12 +244,22 @@ async def test_full_round_propose_debate_vote_finalize():
             f"moves from Node {start_info['node_id']}: {sorted(legal_nodes)}"
         )
 
-    # 5. The consensus loop never exceeds its 3-loop cap.
-    assert debate_loop_count <= 3, f"debate_loop_count exceeded cap: {debate_loop_count}"
+    # 5. Every detective took exactly one turn, and each turn produced the full six-call
+    # record the Chat Log renders: a proposal, one response from each of the other four, and
+    # a final decision.
+    assert result["turn_index"] == NUM_DETECTIVES, \
+        f"expected {NUM_DETECTIVES} turns, turn_index ended at {result['turn_index']}"
+    assert set(turn_records) == set(DETECTIVE_IDS), \
+        f"expected a turn record per detective, got {sorted(turn_records)}"
+    for det_id, record in turn_records.items():
+        responders = [r["responder"] for r in record["responses"]]
+        assert responders == responders_for(det_id), \
+            f"{det_id}'s turn was answered by {responders}, expected {responders_for(det_id)}"
+        assert record["committed_node"] == final_moves[det_id]
 
     print("PASSED")
 
 
 if __name__ == "__main__":  # pragma: no cover - manual, opt-in runner
-    asyncio.run(test_full_round_propose_debate_vote_finalize())
+    asyncio.run(test_full_round_turns_and_finalize())
     print(f"\nFull LLM input/output transcript written to: {LOG_PATH}")

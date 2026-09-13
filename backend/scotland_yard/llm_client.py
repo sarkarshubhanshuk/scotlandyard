@@ -2,17 +2,16 @@
 The OpenRouter-backed LLM clients the detective agents use.
 
 There is no MCP client here any more. The agents used to bind the Game Master's MCP tools
-to the LLM, but they never actually took a tool-calling path: propose/vote wrap the model in
-`with_structured_output(...)`, the psychology prompt explicitly forbids tool use, and
-debate_node deliberately runs tool-less (ISSUE-003). The board lookups that looked like tool
-calls were pre-fetches this application makes on the agents' behalf, so they now call
-game_master.compute_valid_moves directly in-process. See ADR-0001 for the full reasoning and
-for what still uses the MCP server.
+to the LLM, but they never actually took a tool-calling path: every call wraps the model in
+`with_structured_output(...)`, and the psychology prompt explicitly forbids tool use
+(ISSUE-003). The board lookups that looked like tool calls were pre-fetches this application
+makes on the agents' behalf, so they now call game_master.compute_valid_moves directly
+in-process. See ADR-0001 for the full reasoning and for what still uses the MCP server.
 
-Two separately-cached clients live here because they are configured differently:
-  get_detective_llm()  propose_node / vote_node - structured output.
-  get_debate_llm()     debate_node - free-text pitch plus a structured stance.
-Both are built once and reused across every node call, loop, and round.
+Two separately-cached clients live here, one per kind of call a turn makes:
+  get_detective_llm()  a mover's proposal and final decision - MoveChoice.
+  get_debate_llm()     a non-mover's response to the proposal - TurnResponseChoice.
+Both are built once and reused across every call, turn, and round.
 """
 import asyncio
 import logging
@@ -51,19 +50,21 @@ def _build_chat_llm() -> ChatOpenAI:
     The optional headers just identify this app on OpenRouter's dashboard/leaderboards -
     harmless to omit, but recommended by their docs.
 
-    timeout is NOT optional: under this app's concurrent asyncio.gather load (5 detectives
-    firing at once), OpenRouter has been observed to leave one request in a batch hanging
+    timeout is NOT optional: OpenRouter has been observed to leave a request hanging
     indefinitely (confirmed empirically - 4/5 concurrent calls returned in 3-36s, the 5th never
     returned even after 75+s). With no client-side timeout, that hang never raises an error, so
-    neither the SDK's own retry nor this app's per-call try/except fallback (agents.py) ever
-    gets a chance to run - the coroutine just blocks forever.
+    neither the SDK's own retry nor this app's per-call fallback (agents.py) ever gets a chance
+    to run - the coroutine just blocks forever.
 
     What 45s actually bounds (ISSUE-009): this is enforced by the underlying HTTP client as an
     IDLE-GAP timeout - reset by each streamed chunk - not as a hard wall-clock deadline. Calls
     lasting up to 11m 27s have been observed to succeed without ever tripping it, because they
-    kept streaming. So it reliably kills a genuinely STUCK call, which is what it was added for,
-    but it does not cap total call duration. A real wall-clock cap would need asyncio.wait_for
-    around each call, plus a decision about what a timed-out detective should do.
+    kept streaming. So it reliably kills a genuinely STUCK call, which is what it was added
+    for, but it does not cap total call duration. The wall-clock cap it is not now exists
+    alongside it: agents.py wraps every call in asyncio.wait_for(LLM_CALL_DEADLINE_SECONDS)
+    and resolves a timed-out detective deterministically. That matters far more under turn-wise
+    play, where all 30 of a round's calls are sequential and a slow one has no siblings to
+    overlap with.
 
     max_tokens/reasoning cap (ISSUE-006/007, resolved): deepseek-v4-flash-0731's reasoning
     budget was previously uncapped, and a real failure (llm_io_log_full_round_e2e.txt CALL #13)
@@ -108,11 +109,11 @@ def _build_chat_llm() -> ChatOpenAI:
 
 async def get_detective_llm() -> ChatOpenAI:
     """
-    propose_node's and vote_node's shared LLM instance. Built once, then cached.
+    The instance behind a mover's proposal and final decision. Built once, then cached.
 
-    No tools are bound. Both callers wrap this in `with_structured_output(...)`, which
-    constrains the response to a schema rather than to a tool call, and both pre-fetch the
-    board data the model needs and inject it as prompt text. See ADR-0001.
+    No tools are bound. Callers wrap this in `with_structured_output(MoveChoice)`, which
+    constrains the response to a schema rather than to a tool call, and pre-fetch the board
+    data the model needs and inject it as prompt text. See ADR-0001.
     """
     global _cached_detective_llm
 
@@ -128,15 +129,14 @@ async def get_detective_llm() -> ChatOpenAI:
 
 async def get_debate_llm() -> ChatOpenAI:
     """
-    debate_node's dedicated LLM instance - same OpenRouter config as get_detective_llm()
-    (neither binds tools any more; see ADR-0001). Kept as a separate cached instance because
-    it historically differed, and because debate_node's task is a 2-3 sentence
-    text pitch, and it has no tool-execution loop to handle a tool_calls response - previously,
-    reusing the tool-bound instance let the model call get_node_info instead of answering in
-    prose (e.g. when a prompt was short on board context), and that response's empty `.content`
-    was silently appended to the debate transcript as a blank pitch. With no tools bound here,
-    the model has nothing to call, so `.content` is guaranteed to be real prose. Cached the same
-    way get_detective_llm() is, so it's built once and reused across every node call/loop/round.
+    The instance behind a non-mover's response to the proposal on the table - same OpenRouter
+    config as get_detective_llm() (neither binds tools any more; see ADR-0001). Kept as a
+    separate cached instance because it historically differed, and because this call's job is
+    prose-first: previously, reusing the tool-bound instance let the model call get_node_info
+    instead of answering in prose (e.g. when a prompt was short on board context), and that
+    response's empty `.content` was silently appended to the transcript as a blank pitch
+    (ISSUE-003). With no tools bound here, the model has nothing to call. Cached the same way
+    get_detective_llm() is, so it's built once and reused across every call/turn/round.
     """
     global _cached_debate_llm
 

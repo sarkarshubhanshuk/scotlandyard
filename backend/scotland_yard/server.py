@@ -183,8 +183,14 @@ async def round_stream_route(request: Request):
                     return
 
                 async for event in run_detective_loop(session):
-                    if event["type"] == "stage_started":
-                        payload = {"type": "stage_started", "stage": event["stage"]}
+                    if event["type"] == "turn_event":
+                        # One LLM call's worth of a detective's turn, streamed the moment it
+                        # completed. agents.py names the event ("turn_started",
+                        # "turn_proposal", "turn_response", "turn_decision"); the SSE event
+                        # name is taken from that so the client can register one listener per
+                        # kind, exactly as it does for the node-level events below.
+                        turn_event = dict(event["payload"])
+                        payload = {"type": turn_event.pop("event"), **turn_event}
                     else:
                         payload = serialize_loop_event(event["node"], event["update"])
                     yield {"event": payload["type"], "data": json.dumps(payload)}

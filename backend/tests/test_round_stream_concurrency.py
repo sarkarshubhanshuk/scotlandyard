@@ -8,7 +8,8 @@ back to awaiting_mr_x_move - the second went on to run a second full detective l
 the NEXT round's state, with Mr. X having never moved.
 
 React StrictMode's dev-mode double-invoke of effects opens exactly two EventSources, so this
-was routine rather than theoretical, and each spurious loop is ~15 billable LLM calls.
+was routine rather than theoretical, and each spurious loop is a full round of billable LLM
+calls (30 of them under turn-wise play - see ADR-0009).
 
 These tests stub run_detective_loop entirely - the race is in the route's locking, not in the
 loop, and stubbing keeps this fast, deterministic, and free.
@@ -42,7 +43,7 @@ def running_game(monkeypatch):
         counters["loop_runs"] += 1
         # Long enough that a second request reliably arrives while this one holds the lock.
         await asyncio.sleep(0.05)
-        yield {"type": "stage_started", "stage": "proposal"}
+        yield {"type": "turn_event", "payload": {"event": "turn_started", "detective": "agent_red"}}
 
     def fake_resolve(sess):
         counters["resolves"] += 1

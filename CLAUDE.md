@@ -29,7 +29,8 @@ here that starts justifying a choice at length, that is the signal to write an A
 
 A digital adaptation of the board game Scotland Yard. The backend is a multi-agent LangGraph
 system driving 5 AI detectives against a human Mr. X, implementing game-theoretic behavior
-(selfish goals vs. team goals) via sequential debate and structured voting.
+(selfish goals vs. team goals) via turn-wise play: each detective proposes a move, the other
+four respond to it, and the mover then commits.
 
 **The agents cannot make an illegal move.** That guarantee comes from deterministic,
 in-process validation at every stage — not from the LLM being asked nicely, and (since
@@ -57,6 +58,8 @@ tools/                One-off board-data authoring utilities
 - **Phase 3:** Completed (Multi-Agent LangGraph System).
 - **Phase 4:** Completed (React + Phaser.js Frontend).
 - **Phase 5:** Completed (Architecture audit — see `known_issues.md` Group E and `docs/adr/`).
+- **Phase 6:** Completed (Turn-wise detective play, replacing the simultaneous propose/debate/
+  vote consensus loop — **ADR-0009**).
 
 ## Architecture & Code Rationale
 
@@ -65,60 +68,75 @@ tools/                One-off board-data authoring utilities
 Every LLM output is treated as untrusted, and re-derived against the board before it can
 affect game state. There are four independent layers, and each one is load-bearing:
 
-- `agents.py:fetch_legal_moves` computes each detective's legal targets **before** building any
+- `agents.py:fetch_legal_moves` computes the mover's legal targets **before** building any
   prompt, so the model is only ever offered real options. It reserves both other detectives'
-  current nodes *and* destinations already locked this round.
-- `agents.py:find_proposal_conflicts` + `propose_node`'s deterministic backup enforcement
-  checks and, if necessary, overrides the model's proposal. A proposer gets one self-correction
-  retry; the deterministic pass is what actually guarantees correctness.
-- `vote_node`'s tally discards any ballot entry that is illegal or duplicates another within
-  the same ballot.
-- `graph.py:finalize_round_node` de-duplicates fallbacks and then *asserts* destination
-  uniqueness, and `round_resolver.py:resolve_round` re-derives legality once more before
-  deducting a single ticket.
+  current nodes *and* every destination committed earlier this round. Under turn-wise play this
+  single exclusion is what makes two detectives sharing a destination **structurally
+  impossible** — it is a constraint on what can be proposed, not a check applied afterwards.
+- `agents.py:_enforce_legal_node` overrides whatever the model actually named if it isn't in
+  that set. The mover gets one self-correction retry; the deterministic pass is what guarantees
+  correctness. A responder's *advisory* preference is dropped rather than rewritten, so an
+  invented node never feeds into the mover's decision prompt.
+- `agents.py:_invoke` bounds every call with a real wall-clock deadline
+  (`LLM_CALL_DEADLINE_SECONDS`), so a hung or slow call resolves deterministically instead of
+  stalling the round — `llm_client.py`'s own `timeout=45` is only an idle-gap timeout
+  (ISSUE-009), which mattered far less when calls ran concurrently.
+- `graph.py:finalize_round_node` *asserts* destination uniqueness, and
+  `round_resolver.py:resolve_round` re-derives legality once more before deducting a single
+  ticket.
 
 `game_master.py` still exposes this logic over MCP (`python -m scotland_yard.game_master`,
 wired up in `.cursor/mcp.json`) for external clients such as an IDE assistant — but the
 application itself calls the plain functions in-process. **See ADR-0001**, which records why
 the original "MCP prevents hallucination" framing stopped being true and what replaced it.
 
-- `llm_client.py` holds the two cached OpenRouter chat clients (propose/vote, and debate).
-  Neither binds tools.
+- `llm_client.py` holds the two cached OpenRouter chat clients (a mover's proposal/decision,
+  and a responder's answer). Neither binds tools.
 
 ### 2. The LangGraph State & Agents
 
 - `rules_constants.py`: every value transcribed from `rules.md` (board pool, ticket
   inventories, `MAX_ROUND`, `SURFACING_ROUNDS`, `DETECTIVE_IDS`, `AGENT_DISPLAY_NAMES`) plus
-  this project's own consensus parameters (`VOTE_THRESHOLD`, `MAX_DEBATE_LOOPS`). Imports
-  nothing else in the package, so anything can import it. It asserts
-  `VOTE_THRESHOLD * 2 > NUM_DETECTIVES` at import — the invariant that makes cross-tally
-  collisions arithmetically impossible (ISSUE-010).
+  this project's own turn parameters (`COLLABORATION_TIERS`, `CALLS_PER_TURN`,
+  `LLM_CALL_DEADLINE_SECONDS`). Imports nothing else in the package, so anything can import it.
+  It asserts at import that the collaboration ladder is contiguous and covers every round up to
+  `MAX_ROUND`, so retuning a boundary fails loudly rather than dropping a round off the table.
 
 - `state.py`: defines `ScotlandYardState`. Tracks Mr. X's travel log (`transport_history`),
-  ticket inventories, and dictionary reducers that merge move proposals without overwriting.
+  ticket inventories, `committed_moves`/`turn_records` for the round in progress, and
+  dictionary reducers that merge each turn's update without overwriting the previous turns'.
 
-- `agents.py`: the three primary nodes (`propose_node`, `debate_node`, `vote_node`).
+- `agents.py`: `turn_node` — one detective's whole turn, six LLM calls (**ADR-0009**).
+  - A turn is: the mover proposes and broadcasts (1 call) → the other four respond once each,
+    sequentially, in cyclic order from the mover's successor (4 calls) → the mover commits
+    (1 call). Responses are **advisory**: a responder states what it would do on its own turn
+    but reserves nothing.
   - `get_psychology_prompt()` enforces 3 goals (1. Team Win, 2. Selfish Glory, 3. Efficiency).
-    Agents grow more desperate and willing to compromise as the round number approaches 24.
-  - Debate is sequential: each detective speaks once per loop, in `DETECTIVE_IDS` order — the
-    first speaker pitches proactively, every later speaker is told not to just agree.
-  - Voting requires 3/5 to lock a move; up to 3 loops. **See ADR-0006** for why those numbers.
+    Underneath them, a collaboration tendency stated as a literal percentage scales how much
+    weight a teammate's argument gets: rounds ≤4 → 1%, 5–8 → 25%, 9–12 → 50%, 13–16 → 75%,
+    ≥17 → 99%. A prompt tier, not a random draw, so rounds stay reproducible.
   - Each detective has an internal id (`DETECTIVE_IDS`) and a human-readable callsign
-    (`AGENT_DISPLAY_NAMES`, e.g. "Agent Red") used in all LLM-facing prompt text and the debate
+    (`AGENT_DISPLAY_NAMES`, e.g. "Agent Red") used in all LLM-facing prompt text and the turn
     transcript, so agents refer to each other by callsign. Confirmed in practice: the model's
     own free-text rationale adopts these names unprompted.
-  - All three nodes inject a "Mr. X Possible-Zone Context" — a board-topology BFS
+  - Every call injects a "Mr. X Possible-Zone Context" — a board-topology BFS
     (`game_master.py:compute_mrx_zone`/`compute_distances_to_zone`) giving detectives spatial
     grounding: where Mr. X could plausibly be, and each candidate move's hop-distance to that
     zone. Memoized per round. See `game_mechanics.md` §1.
+  - Candidates also carry `onward_moves_after` — how many moves the detective would still have
+    next round from that destination, with the ticket it costs already deducted. Computed
+    deterministically for the same reason the zone distances are: it stops a detective
+    stranding itself without asking a small model to do ticket arithmetic.
+  - `turn_node` emits a custom stream event **per LLM call**, which is what lets the Chat Log
+    read as a conversation unfolding rather than a stage landing all at once.
 
 - `graph.py`: `build_detective_graph()` compiles the state machine (a factory, so a variant can
-  be built for tests). Loops propose/debate/vote up to 3 times; on failure to reach consensus,
-  `finalize_round_node` falls back to each unlocked detective's own self-proposal —
-  **de-duplicated** in `DETECTIVE_IDS` order, because independently-generated self-proposals
-  can and do collide (ISSUE-026). It also computes `final_move_details` for the frontend Chat
-  Log via `transport.py:determine_move_transport`, the same helper `resolve_round` uses to
-  apply moves, so the two can never disagree about which ticket a move spends.
+  be built for tests). It loops `turn` once per detective and then finalizes — there is no
+  fallback resolution left to do, because every turn ends in a committed move.
+  `finalize_round_node` assembles `final_moves`, asserts destination uniqueness, and computes
+  `final_move_details` for the frontend Chat Log via `transport.py:determine_move_transport`,
+  the same helper `resolve_round` uses to apply moves, so the two can never disagree about
+  which ticket a move spends.
 
 - `logging_config.py`: stderr-only logging (preserving `game_master.py`'s MCP stdio
   constraint package-wide), `LOG_LEVEL` env var, and a contextvar binding a game id into every
@@ -134,8 +152,11 @@ the original "MCP prevents hallucination" framing stopped being true and what re
   body is a 400 with a field-level message rather than a 500 (ISSUE-028).
 - `round/stream` re-checks game status **inside** the session lock. A second subscriber to an
   already-resolved round gets a terminal `round_already_resolved` event instead of re-running
-  the loop — which is what React StrictMode's double-invoke used to cause, at ~15 billable LLM
-  calls a time (ISSUE-027).
+  the loop — which is what React StrictMode's double-invoke used to cause, at a full round of
+  billable LLM calls a time (ISSUE-027).
+- Most stream events are `agents.py`'s own per-call payloads, relayed verbatim
+  (`turn_started`/`turn_proposal`/`turn_response`/`turn_decision`); only `round_finalized` and
+  `round_result` come from `serializers.py:serialize_loop_event`.
 - CORS defaults to the Vite dev origin and uvicorn binds `127.0.0.1`. Every endpoint is
   unauthenticated and the stream endpoint spends real money, so neither default is incidental.
 - `session.py` keeps games in a plain in-memory dict with TTL eviction — **ADR-0005**.
@@ -158,11 +179,11 @@ Highlights:
 - **Move Selector** (`hooks/useMrXMoveWizard.ts`): the single/double-move state machine — pick
   a legal node, choose a ticket, and for a double-move repeat for hop 2 using the preview
   endpoint before submitting both hops atomically.
-- **Live AI debate** (`hooks/useRoundStream.ts`): renders `proposal`/`debate`/`vote_tally`/
-  `round_finalized` SSE events into `ChatLog`. `stage_started` events fire the instant each
-  stage's first LLM call goes out, so the header updates as a stage *begins* rather than when
-  it finishes. On `round_result` it reports the fresh state up — which is also what resets the
-  move wizard, with no coordination code between the two hooks.
+- **Live AI turns** (`hooks/useRoundStream.ts`): renders one Chat Log entry per streamed LLM
+  call, each tagged with the turn it belongs to, so `ChatLog` can group a round into five
+  turns — the mover's proposal, four indented responses, the mover's decision. On
+  `round_result` it reports the fresh state up — which is also what resets the move wizard,
+  with no coordination code between the two hooks.
 - **Board pawns / Travel Log:** every pawn is hoverable; Mr. X's pawn is always rendered at his
   real node, alpha-toggled by whether he is currently surfaced (a reminder for the human
   player, not an information-hiding mechanism — ADR-0007). The Travel Log is a fixed 24-slot
