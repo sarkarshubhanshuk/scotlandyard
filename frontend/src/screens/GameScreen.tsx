@@ -197,21 +197,22 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
             {/* Header + Ticket Inventory grouped with their own tighter gap, distinct from the
                 sidebar's regular section-to-section gap (set on GameLayout's outer flex column). */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <h2 style={{ margin: 0 }}>
+              <h2 style={{ margin: 0, display: "flex", alignItems: "center" }}>
                 {/* Round number stays at h2's own (larger, bold-by-default) size; the ongoing-
                     action label gets its own smaller, constant size regardless of phase, so a
                     longer phase (e.g. "is finalizing their move from 70") still reads as one
-                    line rather than wrapping. */}
-                <span style={{ fontWeight: 700 }}>Round {gameState.round_number}</span>{" "}
-                <span
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 400,
-                    color: "var(--color-text-muted)",
-                    verticalAlign: "middle",
-                  }}
-                >
-                  - <OngoingActionText text={ongoingActionLabel} />
+                    line rather than wrapping. display:flex + alignItems:center is what actually
+                    centers the shorter span against the taller one - vertical-align is defined
+                    relative to the parent line box's own baseline/x-height, not to a sibling's
+                    box, so setting it on just one span (as this used to) doesn't align it to the
+                    OTHER span at all. The separating space lives inside the second span's own
+                    text (rather than as a bare text node between the two spans) because a flex
+                    container drops a whitespace-only text node entirely, which would have closed
+                    the gap and shifted this label left. */}
+                <span style={{ fontWeight: 700 }}>Round {gameState.round_number}</span>
+                <span style={{ fontSize: 13, fontWeight: 400, color: "var(--color-text-muted)" }}>
+                  {" - "}
+                  <OngoingActionText text={ongoingActionLabel} />
                 </span>
               </h2>
               <TicketInventory gameState={gameState} />
