@@ -121,3 +121,15 @@ class ScotlandYardState(TypedDict):
     # transport.py:determine_move_transport, the same helper round_resolver.py:resolve_round
     # itself uses to actually apply the move, so this can never disagree with what's deducted.
     final_move_details: Dict[str, dict]
+
+    # {detective_id: [node, node]} - the last two nodes each detective VACATED, oldest first,
+    # and the only thing in this state that survives a round boundary besides positions and
+    # tickets (graph.py:build_next_round_state carries it forward).
+    #
+    # It exists because detectives are otherwise completely stateless across rounds: `messages`
+    # is written once per turn but never read back into a prompt, so nothing a detective did
+    # last round is visible to it this round. That is what lets two detectives shuffle back and
+    # forth between the same pair of nodes indefinitely - each round in isolation, returning
+    # looks as good as it did the first time. agents.py:annotate_revisits turns this into a
+    # per-candidate flag so the mover can at least see that it is about to double back.
+    recent_positions: Annotated[Dict[str, List[int]], update_dict]

@@ -162,6 +162,7 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
         "turn_records": {},
         "final_moves": {},
         "final_move_details": {},
+        "recent_positions": {},
     }
 
     _evict_stale_games()

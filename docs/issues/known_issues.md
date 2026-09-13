@@ -217,7 +217,15 @@ describes no longer exists, its Status says so explicitly rather than the entry 
 
 ### ISSUE-015 — Mr. X's possible-zone computation is ticket-blind
 
-- **Status**: Won't Fix (deliberate, confirmed decision)
+- **Status**: Superseded by **ADR-0013** (2026-09-14) — the zone is now narrowed by the ticket
+  type of every hop in Mr. X's public travel log, which is a *different technique* from the one
+  declined below and is why declining that one did not settle this. The rejected proposal was to
+  model whether his remaining **inventory** could have afforded a hypothetical path; ADR-0013
+  uses only the tickets he **demonstrably spent**, which the rules publish hop by hop, so there
+  is nothing hypothetical to model. The inventory question itself remains Won't Fix: the one-hop
+  projection in `project_zone_one_hop` still includes boat edges without checking he holds a
+  black ticket to pay for one, deliberately, to keep the projection a superset.
+- **Original status**: Won't Fix (deliberate, confirmed decision)
 - **Area**: `backend/game_master.py:compute_mrx_zone`
 - **Logged**: 2026-09-03
 - **Description**: `compute_mrx_zone`'s BFS treats every board edge as traversable regardless of

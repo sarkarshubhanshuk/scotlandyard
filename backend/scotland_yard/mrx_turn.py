@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 from .game_master import get_node_info
 from .rules_constants import SURFACING_ROUNDS, VALID_TICKET_TYPES
 from .session import GameSession
+from .travel_log import DOUBLE_SENTINEL
 
 logger = logging.getLogger(__name__)
 
@@ -164,7 +165,8 @@ def submit_mr_x_move(session: GameSession, move_request: dict) -> dict:
         # by the two transport tickets sequentially" - "double" is a sentinel never valid as an
         # actual ticket_type_spent (see VALID_TICKET_TYPES), only ever inserted here, so the
         # frontend's travel log can render it as its own icon ahead of the two hop tickets.
-        mr_x["transport_history"].append("double")
+        # travel_log.py owns the constant, since it is also the module that reads it back.
+        mr_x["transport_history"].append(DOUBLE_SENTINEL)
         _apply_hop(mr_x, hop1["target_node"], hop1["ticket_type_spent"])
         intermediate_node = mr_x["current_node"]
         _apply_hop(mr_x, hop2["target_node"], hop2["ticket_type_spent"])

@@ -17,12 +17,15 @@ import pytest
 from scotland_yard.agents import (
     _enforce_legal_node,
     annotate_onward_options,
+    annotate_revisits,
+    annotate_zone_shrink,
     apply_detective_move,
     fetch_legal_moves,
     get_collaboration_tier,
     get_surfacing_proximity_prompt,
     other_detective_nodes,
     responders_for,
+    sort_candidates,
 )
 from scotland_yard.graph import build_next_round_state, finalize_round_node
 from scotland_yard.rules_constants import (
@@ -359,38 +362,64 @@ class TestCollaborationTiers:
         assert percentages == sorted(percentages)
 
 
-class TestSurfacingProximityPrompt:
+class TestIntelFreshnessLadder:
     """
-    The tapered onward_moves_after emphasis injected in the two rounds immediately before Mr. X
-    surfaces (project owner's design decision - gated purely on round_number). SURFACING_ROUNDS
-    is {3, 8, 13, 18, 24}, so the "1 round out" set is {2, 7, 12, 17, 23} and "2 rounds out" is
-    {1, 6, 11, 16, 22}.
+    The four-rung ladder keyed purely on round_number (project owner's design decision), which
+    swings the emphasis between flexibility and convergence across each surfacing cycle.
+    SURFACING_ROUNDS is {3, 8, 13, 18, 24}, so with MAX_ROUND 24:
+
+        2 rounds BEFORE a reveal  {1, 6, 11, 16, 22}  weigh onward_moves_after a little more
+        1 round  BEFORE a reveal  {2, 7, 12, 17, 23}  weigh onward_moves_after strongly
+        the reveal round itself   {3, 8, 13, 18, 24}  converge - his zone is a single node
+        1 round  AFTER  a reveal  {4, 9, 14, 19}      keep closing while the trail is warm
+        everything else           {5, 10, 15, 20, 21} balanced default, no extra paragraph
     """
 
-    def test_empty_outside_the_two_round_window(self):
-        affected = {r - 1 for r in SURFACING_ROUNDS} | {r - 2 for r in SURFACING_ROUNDS}
-        for round_number in range(1, MAX_ROUND + 1):
-            if round_number in affected:
-                continue
-            assert get_surfacing_proximity_prompt(round_number) == ""
+    def test_surfacing_rounds_say_converge_not_stay_flexible(self):
+        # The round a detective actually HAS his exact position - Mr. X moves first, so by the
+        # time detectives deliberate in round R the reveal has already landed.
+        for round_number in SURFACING_ROUNDS:
+            text = get_surfacing_proximity_prompt(round_number)
+            assert "HAS JUST SURFACED" in text
+            assert "CONVERGE ON HIM" in text
+
+    @pytest.mark.parametrize("round_number", [r + 1 for r in SURFACING_ROUNDS if r + 1 <= MAX_ROUND])
+    def test_the_round_after_a_reveal_keeps_closing(self, round_number):
+        text = get_surfacing_proximity_prompt(round_number)
+        assert "KEEP CLOSING" in text
+        assert "zone_size_after" in text
 
     @pytest.mark.parametrize("round_number", [r - 1 for r in SURFACING_ROUNDS])
-    def test_strongest_wording_one_round_before_surfacing(self, round_number):
+    def test_strongest_flexibility_wording_one_round_before_surfacing(self, round_number):
         text = get_surfacing_proximity_prompt(round_number)
         assert "end of THIS round" in text
         assert "onward_moves_after" in text
 
     @pytest.mark.parametrize("round_number", [r - 2 for r in SURFACING_ROUNDS])
-    def test_softer_wording_two_rounds_before_surfacing(self, round_number):
+    def test_softer_flexibility_wording_two_rounds_before_surfacing(self, round_number):
         text = get_surfacing_proximity_prompt(round_number)
         assert "in 2 rounds" in text
         assert "onward_moves_after" in text
 
-    def test_surfacing_rounds_themselves_get_no_guidance(self):
-        # Mr. X moves before detectives each round, so a detective playing IN a surfacing round
-        # already has the fresh reveal - the "it's coming" nudge belongs to the round before.
-        for round_number in SURFACING_ROUNDS:
+    def test_every_other_round_gets_no_extra_paragraph(self):
+        laddered = (
+            set(SURFACING_ROUNDS)
+            | {r + 1 for r in SURFACING_ROUNDS}
+            | {r - 1 for r in SURFACING_ROUNDS}
+            | {r - 2 for r in SURFACING_ROUNDS}
+        )
+        quiet = [r for r in range(1, MAX_ROUND + 1) if r not in laddered]
+        assert quiet == [5, 10, 15, 20, 21], "the ladder's shape changed - update this test"
+        for round_number in quiet:
             assert get_surfacing_proximity_prompt(round_number) == ""
+
+    def test_a_reveal_already_banked_outranks_one_still_coming(self):
+        # Both rungs can only ever collide if the cycle tightens; the ordering is asserted so
+        # that if it ever does, acting on a KNOWN position still wins over preparing for one.
+        for round_number in range(1, MAX_ROUND + 1):
+            text = get_surfacing_proximity_prompt(round_number)
+            if "HAS JUST SURFACED" in text or "KEEP CLOSING" in text:
+                assert "will reveal his exact position" not in text
 
 
 def _play_out_round(state) -> dict:
@@ -507,3 +536,116 @@ class TestRoundReset:
 
         assert nxt["detectives"] == moved
         assert nxt["mr_x"] == state["mr_x"]
+
+
+class TestZoneShrinkAnnotation:
+    """
+    "zone_size_after" - how much of Mr. X's escape space a candidate destination closes off.
+    It exists because hop-distance alone cannot express containment: five detectives each
+    minimising their own distance converge on one side of the zone and he leaves by the other
+    (known_issues.md ISSUE-016).
+    """
+
+    def test_every_candidate_is_scored_when_they_differ(self, state):
+        zone = [state["mr_x"]["current_node"]]
+        context, _ = fetch_legal_moves(state, ["agent_red"])
+        annotate_zone_shrink(state, "agent_red", context, zone)
+        scored = [m for m in context["agent_red"] if "zone_size_after" in m]
+        # Either every candidate carries it, or none does - never a partial column.
+        assert len(scored) in (0, len(context["agent_red"]))
+
+    def test_standing_on_an_exit_scores_lower_than_standing_away_from_one(self, state):
+        # Build the comparison directly: a zone of one node, scored against a candidate that is
+        # one of its exits versus one that is not.
+        from scotland_yard.game_master import get_node_info, project_zone_one_hop
+
+        mr_x_node = state["mr_x"]["current_node"]
+        exits = {c["destination"] for c in get_node_info(mr_x_node)["connections"]}
+        an_exit = next(iter(exits))
+        open_space = len(project_zone_one_hop([mr_x_node]))
+        closed_space = len(project_zone_one_hop([mr_x_node], blocked_nodes={an_exit}))
+        assert closed_space < open_space
+
+    def test_the_column_is_dropped_when_it_cannot_discriminate(self, state):
+        # A zone on the far side of the board: nothing this detective can reach this round
+        # touches it, so every candidate scores identically and the field is pure prompt weight.
+        context, _ = fetch_legal_moves(state, ["agent_red"])
+        far_zone = [n for n in range(150, 160)]
+        annotate_zone_shrink(state, "agent_red", context, far_zone)
+        scores = {m.get("zone_size_after") for m in context["agent_red"]}
+        if len(scores) == 1:
+            assert scores == {None}, "an undiscriminating column must be removed entirely"
+
+    def test_no_zone_at_all_annotates_nothing(self, state):
+        context, _ = fetch_legal_moves(state, ["agent_red"])
+        annotate_zone_shrink(state, "agent_red", context, [])
+        assert all("zone_size_after" not in m for m in context["agent_red"])
+
+
+class TestRevisitAnnotation:
+    """
+    The only memory a detective has of its own movement (state.py:recent_positions). Without
+    it, stepping back onto the node it just left looks exactly as good as it did the first
+    time, which is how two nodes become a shuttle.
+    """
+
+    def test_a_node_just_vacated_is_flagged(self, state):
+        context, legal_sets = fetch_legal_moves(state, ["agent_red"])
+        target = min(legal_sets["agent_red"])
+        state["recent_positions"] = {"agent_red": [target]}
+
+        assert annotate_revisits(state, "agent_red", context) is True
+        flagged = [m for m in context["agent_red"] if m.get("you_were_here_recently")]
+        assert [m["target_node"] for m in flagged] == [target]
+
+    def test_candidates_never_visited_carry_no_flag_at_all(self, state):
+        context, legal_sets = fetch_legal_moves(state, ["agent_red"])
+        target = min(legal_sets["agent_red"])
+        state["recent_positions"] = {"agent_red": [target]}
+        annotate_revisits(state, "agent_red", context)
+
+        others = [m for m in context["agent_red"] if m["target_node"] != target]
+        assert all("you_were_here_recently" not in m for m in others), (
+            "absence means 'not a revisit' - a false flag would be noise on every candidate"
+        )
+
+    def test_no_history_means_nothing_to_warn_about(self, state):
+        context, _ = fetch_legal_moves(state, ["agent_red"])
+        assert annotate_revisits(state, "agent_red", context) is False
+        assert all("you_were_here_recently" not in m for m in context["agent_red"])
+
+    def test_history_survives_a_round_boundary(self, state):
+        # The whole point of the field: it is the one thing besides positions and tickets that
+        # build_next_round_state must NOT reset, or it can never see a two-round shuttle.
+        state["recent_positions"] = {"agent_red": [42, 43]}
+        assert build_next_round_state(state)["recent_positions"] == {"agent_red": [42, 43]}
+
+
+class TestCandidateOrdering:
+    """Best-first ordering - free to compute, and small models weight what they read first."""
+
+    def test_closest_to_the_zone_comes_first(self):
+        context = {"agent_red": [
+            {"target_node": 10, "distance_to_mrx_zone": 3, "onward_moves_after": 5},
+            {"target_node": 11, "distance_to_mrx_zone": 0, "onward_moves_after": 2},
+            {"target_node": 12, "distance_to_mrx_zone": 1, "onward_moves_after": 9},
+        ]}
+        sort_candidates(context)
+        assert [m["target_node"] for m in context["agent_red"]] == [11, 12, 10]
+
+    def test_equal_distance_breaks_on_containment_then_onward_moves(self):
+        context = {"agent_red": [
+            {"target_node": 10, "distance_to_mrx_zone": 0, "zone_size_after": 9, "onward_moves_after": 9},
+            {"target_node": 11, "distance_to_mrx_zone": 0, "zone_size_after": 4, "onward_moves_after": 1},
+            {"target_node": 12, "distance_to_mrx_zone": 0, "zone_size_after": 4, "onward_moves_after": 7},
+        ]}
+        sort_candidates(context)
+        assert [m["target_node"] for m in context["agent_red"]] == [12, 11, 10]
+
+    def test_an_unreachable_candidate_sorts_last_rather_than_crashing(self):
+        context = {"agent_red": [
+            {"target_node": 10, "distance_to_mrx_zone": None, "onward_moves_after": 9},
+            {"target_node": 11, "distance_to_mrx_zone": 4, "onward_moves_after": 1},
+        ]}
+        sort_candidates(context)
+        assert [m["target_node"] for m in context["agent_red"]] == [11, 10]

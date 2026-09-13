@@ -108,6 +108,13 @@ the original "MCP prevents hallucination" framing stopped being true and what re
   ticket inventories, `committed_moves`/`turn_records`/`captured_by` for the round in progress,
   and dictionary reducers that merge each turn's update without overwriting the previous turns'.
   `detectives` and `mr_x` now change *during* a round, as each turn applies its own move.
+  `recent_positions` is the one exception to "a round starts fresh": it carries forward, because
+  it is the only thing that lets a detective notice it is shuttling between two nodes.
+
+- `travel_log.py`: reads `transport_history` back out round-by-round (the flat log interleaves a
+  `"double"` sentinel before a double-move's two hops). Imports nothing, so the module that
+  writes the log and the module that narrows Mr. X's zone with it can agree on its format
+  without importing each other.
 
 - `agents.py`: `turn_node` — one detective's whole turn, six LLM calls (**ADR-0009**).
   - A turn is: the mover proposes and broadcasts (1 call) → the other four respond once each,
@@ -122,14 +129,23 @@ the original "MCP prevents hallucination" framing stopped being true and what re
     (`AGENT_DISPLAY_NAMES`, e.g. "Agent Red") used in all LLM-facing prompt text and the turn
     transcript, so agents refer to each other by callsign. Confirmed in practice: the model's
     own free-text rationale adopts these names unprompted.
-  - Every call injects a "Mr. X Possible-Zone Context" — a board-topology BFS
-    (`game_master.py:compute_mrx_zone`/`compute_distances_to_zone`) giving detectives spatial
-    grounding: where Mr. X could plausibly be, and each candidate move's hop-distance to that
-    zone. Memoized per round. See `game_mechanics.md` §1.
-  - Candidates also carry `onward_moves_after` — how many moves the detective would still have
-    next round from that destination, with the ticket it costs already deducted. Computed
-    deterministically for the same reason the zone distances are: it stops a detective
-    stranding itself without asking a small model to do ticket arithmetic.
+  - Every call injects a "Mr. X Possible-Zone Context" giving detectives spatial grounding they
+    otherwise have none of: where Mr. X could be, and each candidate's hop-distance to it. The
+    zone is narrowed by his own travel log — one ticket-*typed* graph layer per hop he has
+    logged since surfacing, not an untyped ball, which roughly halves it at every distance
+    (**ADR-0013**, `travel_log.py` + `game_master.py:compute_mrx_zone_from_tickets`). Black
+    tickets widen it back, by design. Recomputed per turn, since occupancy changes five times a
+    round. See `game_mechanics.md` §1.
+  - Candidates carry three more deterministic annotations, for the same reason the zone distance
+    is computed rather than asked for — a small model gets board arithmetic quietly wrong:
+    `onward_moves_after` (moves left next round, ticket already deducted — stops it stranding
+    itself), `zone_size_after` (how much of Mr. X's escape space standing there closes off —
+    expresses *containment*, which distance alone cannot, and is dropped when every candidate
+    scores alike), and `you_were_here_recently` (the only memory a detective has across rounds,
+    and what stops two nodes becoming a shuttle). Options are rendered best-first.
+  - The objective and the annotation legend live in `get_psychology_prompt`, so all six calls in
+    a turn share them. They used to sit only in the mover's proposal, which left the four
+    responders — and the mover's own final, binding commit — with no stated objective at all.
   - `turn_node` emits a custom stream event **per LLM call**, which is what lets the Chat Log
     read as a conversation unfolding rather than a stage landing all at once.
   - `apply_detective_move` ends the turn by actually moving the detective, transferring its
