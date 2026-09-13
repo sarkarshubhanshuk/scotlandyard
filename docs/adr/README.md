@@ -30,3 +30,4 @@ considered, Consequences. A decision that is later reversed gets its Status flip
 | [0008](0008-no-global-state-library-on-the-frontend.md) | No global state library on the frontend | Accepted |
 | [0009](0009-turn-wise-detective-play.md) | Turn-wise detective play: propose, respond, commit | Accepted (supersedes ADR-0006) |
 | [0010](0010-per-turn-move-application-and-pawn-handshake.md) | Moves apply per turn, and the board paces the round | Accepted (refines ADR-0009) |
+| [0011](0011-turn-halo-on-the-board.md) | A shared "whose turn is it" halo, cycling across every pawn | Accepted |

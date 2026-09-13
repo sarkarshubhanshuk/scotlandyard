@@ -115,6 +115,21 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
   const wizard = useMrXMoveWizard(gameId, gameState, onGameStateChange);
   const roundStream = useRoundStream(gameId, gameState, onGameStateChange);
 
+  // Whose pawn the board's "active turn" halo belongs on right now - cycling Mr. X -> Agent Red
+  // -> ... -> Agent Purple -> (next round) Mr. X, same order the backend actually plays in.
+  // gameState.status is the source of truth for "is it Mr. X's turn": the halo belongs on him
+  // for the whole time status is "awaiting_mr_x_move", with no event needed to turn it on (it's
+  // simply true the instant a fresh round starts) or off (submitting his move flips status away
+  // immediately, before the round stream even opens). While detectives are moving, ownership
+  // comes from roundStream's own turn_started/turn_decision tracking instead - gated on status
+  // here too, so a detective from a round that has already ended can never leak through.
+  const activeTurnPawnId =
+    gameState.status === "awaiting_mr_x_move"
+      ? "mr_x"
+      : gameState.status === "detective_loop_running"
+        ? roundStream.activeTurnDetective
+        : null;
+
   return (
     <>
       {gameState.status === "game_over" && (
@@ -128,6 +143,7 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
               gameState={gameState}
               wizard={wizard}
               onPawnSettled={roundStream.handlePawnSettled}
+              activeTurnPawnId={activeTurnPawnId}
             />
           </Suspense>
         }

@@ -201,6 +201,12 @@ Highlights:
 - **Pawn movement:** every pawn, Mr. X's and all five detectives', is reused across renders and
   tweened to its new node over `PAWN_MOVE_DURATION_MS` (`boardDimensions.ts` — the Phaser-free
   module, so `useRoundStream` can read it without pulling Phaser into the main bundle).
+- **Turn halo** (`BoardScene.ts:renderTurnHalo`, **ADR-0011**): a ring cycles across whichever
+  pawn currently has the turn — Mr. X while `gameState.status === "awaiting_mr_x_move"`, then
+  each detective in turn (`useRoundStream`'s `activeTurnDetective`, set on `turn_started` and
+  cleared on `turn_decision`), back to Mr. X once the round resolves. Same dimensions/radius rule
+  as the legal-target halo it was generalized from (`MR_X_HALO_*` renamed `TURN_HALO_*`); never
+  needs to track a moving pawn, since a pawn only starts moving the instant its own turn ends.
 - **Board pawns / Travel Log:** every pawn is hoverable; Mr. X's pawn is always rendered at his
   real node, alpha-toggled by whether he is currently surfaced (a reminder for the human
   player, not an information-hiding mechanism — ADR-0007). The Travel Log is a fixed 24-slot

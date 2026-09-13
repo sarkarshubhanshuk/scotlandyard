@@ -11,6 +11,8 @@ interface BoardCanvasProps {
   wizard: MrXMoveWizard;
   /** Fired when a pawn finishes sliding to a new node - see BoardSceneData.onPawnSettled. */
   onPawnSettled: (pawnId: string) => void;
+  /** Whose pawn currently has the "active turn" halo - "mr_x", a DetectiveId, or null between turns. */
+  activeTurnPawnId: string | null;
 }
 
 // Phaser owns the canvas imperatively once created - React never re-renders into it. The game
@@ -22,7 +24,7 @@ interface BoardCanvasProps {
 // which lines up exactly with the node's on-screen position because GameLayout's board pane has
 // no letterboxing (its own aspect-ratio already matches BOARD_WIDTH:BOARD_HEIGHT - see that
 // file's comment) - the percentage box below scales with it identically.
-export function BoardCanvas({ mapData, gameState, wizard, onPawnSettled }: BoardCanvasProps) {
+export function BoardCanvas({ mapData, gameState, wizard, onPawnSettled, activeTurnPawnId }: BoardCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
@@ -71,6 +73,7 @@ export function BoardCanvas({ mapData, gameState, wizard, onPawnSettled }: Board
       onPawnSettled: (pawnId: string) => onPawnSettledRef.current?.(pawnId),
       highlightedNodeIds,
       selectedNodeId,
+      activeTurnPawnId,
     });
     gameRef.current = game;
 
@@ -97,6 +100,14 @@ export function BoardCanvas({ mapData, gameState, wizard, onPawnSettled }: Board
     const scene = gameRef.current?.scene.getScene("BoardScene") as BoardScene | undefined;
     scene?.updateHighlights(highlightedNodeIds, selectedNodeId);
   }, [highlightedNodeIds, selectedNodeId]);
+
+  useEffect(() => {
+    // No "skip the first sync" guard, same reasoning as highlightedNodeIds above: the initial
+    // value is already passed into scene creation, and updateActiveTurn is a cheap no-op redraw
+    // when nothing actually changed (see BoardScene.ts:renderTurnHalo).
+    const scene = gameRef.current?.scene.getScene("BoardScene") as BoardScene | undefined;
+    scene?.updateActiveTurn(activeTurnPawnId);
+  }, [activeTurnPawnId]);
 
   // Clicking anywhere that isn't the popup itself deselects the pending target and closes it -
   // this also covers clicking a non-legal node or pawn (BoardScene never calls handleNodeClick

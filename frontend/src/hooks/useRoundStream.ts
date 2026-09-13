@@ -104,6 +104,11 @@ export function useRoundStream(
   // documented "adjust state during render" pattern, used elsewhere in this codebase - see
   // useMrXMoveWizard/GameScreen) so the reset doesn't cost an extra render.
   const [status, setStatus] = useState(`${DETECTIVE_LABELS.agent_red} is taking their turn`);
+  // Which detective currently has the board's "active turn" halo - see BoardScene.ts's
+  // renderTurnHalo. Only meaningful while gameState.status === "detective_loop_running";
+  // GameScreen combines this with gameState.status itself to decide whether the halo actually
+  // belongs on this detective, on Mr. X, or on nobody (see its own activeTurnPawnId comment).
+  const [activeTurnDetective, setActiveTurnDetective] = useState<DetectiveId | null>(null);
   const streamKey = `${gameState.round_number}:${gameState.status}:${retryToken}`;
   const [lastStreamKey, setLastStreamKey] = useState(streamKey);
   if (streamKey !== lastStreamKey) {
@@ -111,6 +116,11 @@ export function useRoundStream(
     if (gameState.status === "detective_loop_running") {
       setStatus(`${DETECTIVE_LABELS.agent_red} is taking their turn`);
     }
+    // Reset at every round/status boundary, not just detective_loop_running ones: a fresh
+    // round's first turn_started hasn't fired yet, and leaving a stale detective here would
+    // otherwise be masked only by GameScreen's own status gating rather than being genuinely
+    // cleared.
+    setActiveTurnDetective(null);
   }
 
   // Which pawn move the next ack belongs to, recorded when a turn_decision arrives and read back
@@ -157,6 +167,7 @@ export function useRoundStream(
       // says whose turn it is before that detective's first call has come back.
       on<TurnStartedEvent>("turn_started", (data) => {
         setStatus(`${label(data.detective)} is taking their turn`);
+        setActiveTurnDetective(data.detective);
       });
 
       on<TurnProposalEvent>("turn_proposal", (data) => {
@@ -184,6 +195,10 @@ export function useRoundStream(
       });
 
       on<TurnDecisionEvent>("turn_decision", (data) => {
+        // The turn ends here - the halo comes off this detective the same instant its own move
+        // starts animating (both driven by this one event), never mid-flight. See ADR-0011.
+        setActiveTurnDetective(null);
+
         const via = data.transport != null ? ` via ${TICKET_LABELS[data.transport]}` : "";
         const stayedPut = data.target_node === data.from_node;
         const move = stayedPut
@@ -268,5 +283,5 @@ export function useRoundStream(
     };
   }, [gameId, gameState.status, gameState.round_number, onGameStateChange, retryToken]);
 
-  return { entries, connectionError, retry, stageLabel: status, handlePawnSettled };
+  return { entries, connectionError, retry, stageLabel: status, handlePawnSettled, activeTurnDetective };
 }
