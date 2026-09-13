@@ -88,7 +88,7 @@ class ScotlandYardState(TypedDict):
     mr_x: MrXState
     
     # Detective Statuses (Keys: rules_constants.py's DETECTIVE_IDS - "agent_red",
-    # "agent_blue", "agent_green", "agent_yellow", "agent_purple"). Updated DURING a round, as
+    # "agent_blue", "agent_green", "agent_orange", "agent_purple"). Updated DURING a round, as
     # each detective's turn ends and its move is applied (ADR-0010) - not only at round
     # resolution, which is what it used to be.
     detectives: Dict[str, Detective]

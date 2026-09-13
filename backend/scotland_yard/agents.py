@@ -59,7 +59,7 @@ def responders_for(mover_id: str) -> list[str]:
     """
     The order the other four detectives respond in during `mover_id`'s turn: cyclic
     DETECTIVE_IDS order starting from the mover's immediate successor, so Agent Green's turn is
-    answered by Yellow, Purple, Red, Blue. Every non-mover responds exactly once.
+    answered by Orange, Purple, Red, Blue. Every non-mover responds exactly once.
     """
     start = DETECTIVE_IDS.index(mover_id)
     return [DETECTIVE_IDS[(start + offset) % NUM_DETECTIVES] for offset in range(1, NUM_DETECTIVES)]

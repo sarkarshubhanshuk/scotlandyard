@@ -78,15 +78,15 @@ class TestResponderOrder:
 
     def test_order_starts_at_the_movers_immediate_successor(self):
         assert responders_for("agent_red") == [
-            "agent_blue", "agent_green", "agent_yellow", "agent_purple",
+            "agent_blue", "agent_green", "agent_orange", "agent_purple",
         ]
-        # The wrap-around case: Agent Green is answered by Yellow and Purple before the order
+        # The wrap-around case: Agent Green is answered by Orange and Purple before the order
         # comes back round to Red and Blue.
         assert responders_for("agent_green") == [
-            "agent_yellow", "agent_purple", "agent_red", "agent_blue",
+            "agent_orange", "agent_purple", "agent_red", "agent_blue",
         ]
         assert responders_for("agent_purple") == [
-            "agent_red", "agent_blue", "agent_green", "agent_yellow",
+            "agent_red", "agent_blue", "agent_green", "agent_orange",
         ]
 
 

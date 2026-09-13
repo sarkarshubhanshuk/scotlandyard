@@ -118,8 +118,8 @@ it never move. Each `turn` node run is one detective's whole turn:
 
 **Phase 2 — Respond** (4 calls, sequential, everyone else)
 - Every non-mover answers exactly once, in cyclic `DETECTIVE_IDS` order starting from the
-  mover's immediate successor. Agent Red's turn is answered by Blue, Green, Yellow, Purple;
-  Agent Green's by Yellow, Purple, Red, Blue.
+  mover's immediate successor. Agent Red's turn is answered by Blue, Green, Orange, Purple;
+  Agent Green's by Orange, Purple, Red, Blue.
 - Strictly sequential by design — each responder sees the responses already given this turn and
   is told not to repeat them. This phase cannot be parallelized; that is the point.
 - Each responder sees the mover's options and proposal, **its own** legal destinations with the
@@ -324,7 +324,7 @@ ended, so `detectives` and `mr_x` are already current.
 ### Implementation References
 
 - `backend/scotland_yard/rules_constants.py:DETECTIVE_IDS` — the 5 detectives' internal identifiers (`agent_red`,
-  `agent_blue`, `agent_green`, `agent_yellow`, `agent_purple`), and the fixed turn order;
+  `agent_blue`, `agent_green`, `agent_orange`, `agent_purple`), and the fixed turn order;
   `AGENT_DISPLAY_NAMES`/`agent_names` map them to their human-readable callsigns ("Agent Red",
   etc.) used anywhere a detective's identity appears in LLM-facing prompt text or the turn
   transcript, so the agents' own reasoning refers to itself/peers by callsign rather than the

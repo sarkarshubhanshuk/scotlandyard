@@ -33,7 +33,7 @@ For the detective whose turn it is (the *mover*):
    `distance_to_mrx_zone` and `onward_moves_after`, and its own ticket inventory.
 2. **Respond (4 calls, sequential).** Every other detective answers once, in cyclic
    `DETECTIVE_IDS` order starting from the mover's immediate successor — so Agent Green's turn
-   is answered by Yellow, Purple, Red, Blue. Each responder sees the mover's options and
+   is answered by Orange, Purple, Red, Blue. Each responder sees the mover's options and
    proposal, its own options, and the responses given before it this turn.
 3. **Decide (1 call).** The mover, having heard all four, commits. **The commitment is
    final** and every later detective this round must work around it.

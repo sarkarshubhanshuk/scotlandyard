@@ -19,7 +19,7 @@ detective equivalent.
 ## Decision
 
 **One halo, generalized from Mr. X-only to "whichever pawn currently has the turn," cycling
-Mr. X → Agent Red → Agent Blue → Agent Green → Agent Yellow → Agent Purple → (next round) Mr. X →
+Mr. X → Agent Red → Agent Blue → Agent Green → Agent Orange → Agent Purple → (next round) Mr. X →
 …, matching `DETECTIVE_IDS`' own turn order.**
 
 - **Same dimensions and radius rule as the halo it replaces**: `nodeHaloBaseRadius()` (outermost

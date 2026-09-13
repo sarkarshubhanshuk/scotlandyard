@@ -55,7 +55,7 @@ export interface PublicDetective {
 
 // Mirrors backend/agents.py's DETECTIVE_IDS - the internal identifier for each detective. Their
 // human-readable callsigns ("Agent Red" etc.) live in labels.ts's DETECTIVE_LABELS.
-export const DETECTIVE_IDS = ["agent_red", "agent_blue", "agent_green", "agent_yellow", "agent_purple"] as const;
+export const DETECTIVE_IDS = ["agent_red", "agent_blue", "agent_green", "agent_orange", "agent_purple"] as const;
 export type DetectiveId = (typeof DETECTIVE_IDS)[number];
 
 export interface PublicGameState {

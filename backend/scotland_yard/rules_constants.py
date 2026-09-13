@@ -16,7 +16,7 @@ that file is immutable truth and this is a transcription of it.
 # The internal identifier for each detective, and the fixed order everything iterates in:
 # debate speaking order, proposal/ballot conflict resolution (earlier id wins a tie), and
 # move application in round resolution.
-DETECTIVE_IDS = ["agent_red", "agent_blue", "agent_green", "agent_yellow", "agent_purple"]
+DETECTIVE_IDS = ["agent_red", "agent_blue", "agent_green", "agent_orange", "agent_purple"]
 
 # Human-readable callsigns used anywhere a detective's identity appears in LLM-facing prompt
 # text (so agents reason about "Agent Red", not the internal id). DETECTIVE_IDS stays the
@@ -26,7 +26,7 @@ AGENT_DISPLAY_NAMES = {
     "agent_red": "Agent Red",
     "agent_blue": "Agent Blue",
     "agent_green": "Agent Green",
-    "agent_yellow": "Agent Yellow",
+    "agent_orange": "Agent Orange",
     "agent_purple": "Agent Purple",
 }
 
@@ -68,7 +68,7 @@ DETECTIVE_TRANSPORT_TYPES = ("taxi", "bus", "metro")
 # Detectives take their turns one at a time, in DETECTIVE_IDS order, and each commits its own
 # move at the end of its own turn. Within one detective's turn, every OTHER detective responds
 # to that detective's proposal once, in cyclic DETECTIVE_IDS order starting from the mover's
-# immediate successor (Agent Green's turn -> Yellow, Purple, Red, Blue).
+# immediate successor (Agent Green's turn -> Orange, Purple, Red, Blue).
 CALLS_PER_TURN = 1 + (NUM_DETECTIVES - 1) + 1  # proposal + one response each + final decision
 
 # How willing a detective is to weigh a teammate's argument above its own Selfish Glory goal,
