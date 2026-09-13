@@ -1,6 +1,6 @@
 /**
- * Copies the project's canonical board/ticket/pawn art from `data/` into `frontend/public/`,
- * so Vite can serve it.
+ * Copies the project's canonical board/ticket/pawn art, plus the How-to-Play screenshots,
+ * from `data/` into `frontend/public/`, so Vite can serve it.
  *
  * Vite only serves static assets from inside the frontend project, but `data/` is the single
  * source of truth for game data and art - the backend reads the board graph from the very same
@@ -29,6 +29,7 @@ const copies = [
   ["ui/pawn.svg", "pawn/pawn.svg"],
   ["ui/pawn_last_known.svg", "pawn/pawn_last_known.svg"],
   ["ui/game_logo.jpg", "game_logo.jpg"],
+  ["ui/howto", "howto"],
   ["tickets", "tickets"],
 ];
 

@@ -2,11 +2,13 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { createGame } from "../api/client";
 import { BackendUnreachable } from "../components/BackendUnreachable";
+import { HowToPlayModal } from "../components/HowToPlayModal";
 
 export function HomeScreen() {
   const navigate = useNavigate();
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showHowToPlay, setShowHowToPlay] = useState(false);
 
   async function handleNewGame() {
     setStarting(true);
@@ -39,6 +41,10 @@ export function HomeScreen() {
       <button className="sy-button" onClick={() => void handleNewGame()} disabled={starting}>
         {starting ? "Starting..." : "New Game"}
       </button>
+      <button className="sy-button" onClick={() => setShowHowToPlay(true)}>
+        How to Play
+      </button>
+      {showHowToPlay && <HowToPlayModal onClose={() => setShowHowToPlay(false)} />}
       {error && <BackendUnreachable error={error} />}
     </div>
   );
