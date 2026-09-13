@@ -42,7 +42,7 @@ const PAWN_SIZE = 24;
 // (black * anything = black) - this is what keeps every pawn's border black while only the fill
 // varies. Per-agent colors live in labels.ts (AGENT_COLORS) so TicketInventory/ChatLog can use
 // the exact same values for their text coloring.
-const MR_X_COLOR = 0x000000; // black
+const MR_X_COLOR = 0xffd700;
 // Semi-transparent on a non-surfacing round - a reminder to the human Mr. X player that
 // detectives don't currently know this position, not an actual information-hiding mechanism
 // (see renderPawns()'s own comment on why exposing current_node here is safe at all).
