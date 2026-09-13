@@ -212,6 +212,12 @@ Highlights:
   player, not an information-hiding mechanism — ADR-0007). The Travel Log is a fixed 24-slot
   grid; `transport_history` is walked round-by-round, with a `"double"` sentinel collapsing a
   double-move's two hops into one slot.
+- **Last-known-location ghost** (`BoardScene.ts:renderLastKnownGhost`, **ADR-0012**): a dashed,
+  unfilled outline of the pawn shape (`data/ui/pawn_last_known.svg` — the exact same silhouette
+  as `pawn.svg`, traced as a stroke-only path) at `mr_x.last_known_node`. Hidden before his first
+  surfacing (`last_known_node` still `null`) and during the round he surfaces
+  (`last_known_round === round_number`, since his real pawn is already opaque there that round);
+  shown every other round.
 - **Art** comes from `data/`, copied into `frontend/public/` by `scripts/sync-assets.mjs` on
   every dev/build. Edit the originals in `data/`; the copies are gitignored generated output.
 

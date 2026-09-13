@@ -113,6 +113,9 @@ export class BoardScene extends Phaser.Scene {
   private onNodeClick?: (nodeId: number) => void;
   private onPawnSettled?: (pawnId: string) => void;
   private pawns = new Map<string, Phaser.GameObjects.Image>();
+  // Mr. X's "last known location" ghost marker (ADR-0012) - a single reused Image, shown/hidden
+  // and repositioned rather than destroyed and recreated, same reuse discipline as every pawn.
+  private lastKnownGhost: Phaser.GameObjects.Image | null = null;
   // Whose pawn currently has the turn halo - see BoardSceneData.activeTurnPawnId.
   private activeTurnPawnId: string | null = null;
   private turnHalo: Phaser.GameObjects.Graphics | null = null;
@@ -173,6 +176,10 @@ export class BoardScene extends Phaser.Scene {
     // does - rasterized well above its ~24-logical-unit display footprint (see PAWN_SIZE) so it
     // stays crisp after RENDER_SCALE and Phaser.Scale.FIT both magnify it further.
     this.load.svg("pawn", "/pawn/pawn.svg", { width: 200, height: 200 });
+    // Same silhouette, traced as a dashed unfilled outline rather than a solid shape - Mr. X's
+    // "last known location" marker (ADR-0012). Same target resolution as "pawn" for the same
+    // reason.
+    this.load.svg("pawn_last_known", "/pawn/pawn_last_known.svg", { width: 200, height: 200 });
   }
 
   create() {
@@ -202,6 +209,7 @@ export class BoardScene extends Phaser.Scene {
       if (!detective) continue;
       this.renderPawn(detId, detective.node_id, AGENT_COLORS[detId], DETECTIVE_LABELS[detId]);
     }
+    this.renderLastKnownGhost();
     this.renderMrX();
     // Defensive resync, not the primary trigger (that's updateActiveTurn(), called whenever
     // activeTurnPawnId itself changes) - keeps the halo correctly placed even in the
@@ -272,6 +280,48 @@ export class BoardScene extends Phaser.Scene {
 
     this.lastNodes.set(pawnId, nodeId);
     return pawn;
+  }
+
+  /**
+   * Mr. X's "last known location" marker (ADR-0012): a dashed, hollow outline of his pawn,
+   * sitting at mr_x.last_known_node whenever that is meaningfully DIFFERENT information from
+   * what the real pawn (renderMrX(), below) already shows this round.
+   *
+   * Hidden in exactly two cases: before Mr. X has ever surfaced (last_known_node is still null -
+   * there is nothing to show), and during the round he surfaces (last_known_round equals the
+   * CURRENT round_number) - his real pawn is already opaque at that exact node this round, so a
+   * second marker on top of it would be pure redundancy. Every other round it is shown, because
+   * last_known_node is the detectives' own last confirmed sighting and may well differ from
+   * wherever his real, currently-hidden pawn actually is.
+   *
+   * Never tweened, unlike a pawn's own move - this marker doesn't represent something walking
+   * there, only a static fact ("last confirmed here") that jumps straight to its new value the
+   * round it changes.
+   */
+  private renderLastKnownGhost() {
+    const mrX = this.gameState.mr_x;
+    const isSurfacingRound = mrX.last_known_round === this.gameState.round_number;
+    const nodeId = mrX.last_known_node;
+
+    if (nodeId === null || isSurfacingRound) {
+      this.lastKnownGhost?.setVisible(false);
+      return;
+    }
+
+    const pos = this.mapData.positions[String(nodeId)];
+    if (!pos) return; // Defensive only - every node has a position entry.
+
+    if (!this.lastKnownGhost) {
+      this.lastKnownGhost = this.add
+        .image(0, 0, "pawn_last_known")
+        .setDisplaySize(PAWN_SIZE * RENDER_SCALE, PAWN_SIZE * RENDER_SCALE)
+        // Behind every real pawn (default depth 0) but in front of the halos (depth -1) - so a
+        // detective standing on the exact node Mr. X was last seen at is unambiguously the one
+        // actually there, with this hollow outline only visible around/behind it.
+        .setDepth(-0.5);
+    }
+    this.lastKnownGhost.setPosition(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE);
+    this.lastKnownGhost.setVisible(true);
   }
 
   // Mr. X's pawn is always rendered at his real current_node (see serializers.py's own note on
