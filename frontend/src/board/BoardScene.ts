@@ -333,6 +333,7 @@ export class BoardScene extends Phaser.Scene {
 
     if (nodeId === null || isRedundantWithRealPawn) {
       this.lastKnownGhost?.setVisible(false);
+      this.lastKnownGhost?.disableInteractive();
       return;
     }
 
@@ -350,6 +351,22 @@ export class BoardScene extends Phaser.Scene {
     }
     this.lastKnownGhost.setPosition(pos.x * RENDER_SCALE, pos.y * RENDER_SCALE);
     this.lastKnownGhost.setVisible(true);
+    this.makeGhostHoverable(this.lastKnownGhost, nodeId);
+  }
+
+  // Hoverable the same way every pawn is (makePawnHoverable), but as its own method: the ghost's
+  // tooltip text is fixed regardless of which pawn it stands in for (there's only ever one),
+  // unlike a real pawn's, which always leads with its own name and "Current Node N". Rebound on
+  // every render this ghost is visible - nodeId can change (a later surfacing round moves it) -
+  // clearing the previous listeners first, same reasoning as makePawnHoverable.
+  private makeGhostHoverable(ghost: Phaser.GameObjects.Image, nodeId: number) {
+    ghost.setInteractive({ useHandCursor: true });
+    ghost.off("pointerover");
+    ghost.off("pointerout");
+    ghost.on("pointerover", () =>
+      this.showPawnTooltip(ghost, ["Detectives last saw Mr. X here", `Node ${nodeId}`]),
+    );
+    ghost.on("pointerout", () => this.hidePawnTooltip());
   }
 
   // Mr. X's pawn is always rendered at his real current_node (see serializers.py's own note on
