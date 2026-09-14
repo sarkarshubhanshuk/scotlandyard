@@ -9,7 +9,7 @@ The agents never decide a move unsupervised: every proposal, every response, and
 applied move are re-derived and validated against the board graph server-side in plain Python,
 so an LLM cannot hallucinate an illegal move into the game state.
 
-![Scotland Yard](docs/ui/game_logo.jpg)
+![Scotland Yard](data/ui/game_logo.jpg)
 
 ---
 
@@ -17,7 +17,7 @@ so an LLM cannot hallucinate an illegal move into the game state.
 
 | Requirement | Version | Notes |
 |---|---|---|
-| Python | 3.12+ (developed on 3.14) | |
+| Python | 3.12+ | CI, the Dockerfile and `requires-python` all pin 3.12; also developed against 3.14. |
 | Node.js | 20+ | For the Vite/React frontend. |
 | OpenRouter API key | — | Free to create at [openrouter.ai/keys](https://openrouter.ai/keys). Required for the detective agents. |
 
@@ -122,7 +122,16 @@ live immediately.
 | Someone running up the bill | `limits.py` caps concurrent games, games per IP, and a daily call budget - **plus a hard credit limit on the OpenRouter key**, which is the only bound that survives a bug |
 
 Tunable via environment: `MAX_ACTIVE_GAMES`, `MAX_GAMES_PER_IP_PER_HOUR`,
-`DAILY_LLM_CALL_BUDGET`, `ALLOWED_ORIGINS`, `COOKIE_SECURE`, `FRONTEND_DIST`, `HOST`, `PORT`.
+`MAX_TRACKED_CLIENTS`, `DAILY_LLM_CALL_BUDGET`, `ALLOWED_ORIGINS`, `COOKIE_SECURE`,
+`TRUST_PROXY_HEADERS`, `FRONTEND_DIST`, `HOST`, `PORT`.
+
+> **`TRUST_PROXY_HEADERS` defaults to `true`, and should stay that way on Render.** The per-IP
+> limit is keyed on `X-Forwarded-For`, which Render's proxy sets. Turning this off makes every
+> visitor appear to come from the proxy itself, which collapses them into one bucket and turns
+> `MAX_GAMES_PER_IP_PER_HOUR` into a *global* cap. Set it to `false` only when the container is
+> exposed directly, with nothing in front of it. The header is spoofable either way, so the
+> per-IP cap is a speed bump, not an identity — `MAX_TRACKED_CLIENTS` bounds what spoofing can
+> cost, and the daily budget plus the key's own credit limit bound the spend.
 
 A completed 24-round game is roughly **720 LLM calls**, so size the budget accordingly. Games
 do not survive a restart, redeploy or sleep - that is ADR-0005, not a deployment bug.
@@ -136,8 +145,15 @@ pytest -m llm           # opt-in: real, billable LLM calls against a live OPENRO
 ```
 
 ```bash
+cd backend
+ruff check .            # lint
+mypy                    # type-check (scoped - see [tool.mypy] in pyproject.toml)
+```
+
+```bash
 cd frontend
 npm run lint
+npm test                # Vitest: the two hooks' state machines
 npm run build           # also guards the Phaser bundle-split (see frontend/README.md)
 ```
 
@@ -168,4 +184,4 @@ tools/                   One-off authoring utilities for the board data
 
 ## License
 
-MIT
+[MIT](LICENSE)

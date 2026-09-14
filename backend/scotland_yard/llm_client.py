@@ -5,7 +5,7 @@ There is no MCP client here any more. The agents used to bind the Game Master's 
 to the LLM, but they never actually took a tool-calling path: every call wraps the model in
 `with_structured_output(...)`, and the psychology prompt explicitly forbids tool use
 (ISSUE-003). The board lookups that looked like tool calls were pre-fetches this application
-makes on the agents' behalf, so they now call game_master.compute_valid_moves directly
+makes on the agents' behalf, so they now call board.compute_valid_moves directly
 in-process. See ADR-0001 for the full reasoning and for what still uses the MCP server.
 
 Two separately-cached clients live here, one per kind of call a turn makes:
@@ -39,6 +39,22 @@ _cached_detective_llm = None
 _detective_cache_lock = asyncio.Lock()
 _cached_debate_llm = None
 _debate_cache_lock = asyncio.Lock()
+
+
+def api_key_configured() -> bool:
+    """
+    Whether an OpenRouter key is present at all.
+
+    The key is read lazily - ChatOpenAI is only constructed on the first call of a round - which
+    is deliberate: the server boots and serves the whole SPA without one, and CI's Docker job
+    depends on exactly that. The cost is that a deployment missing its key looks perfectly
+    healthy right up until a round starts, and then fails inside the stream where an HTTP error
+    response can no longer be sent. server.py calls this before opening the round stream so that
+    failure is a plain, readable 503 instead.
+
+    Presence only, never validity - a wrong key can only be discovered by spending a call on it.
+    """
+    return bool(os.getenv("OPENROUTER_API_KEY"))
 
 
 def _build_chat_llm() -> ChatOpenAI:

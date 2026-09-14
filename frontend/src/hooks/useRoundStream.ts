@@ -6,6 +6,7 @@ import {
   DETECTIVE_IDS,
   type DetectiveId,
   type PublicGameState,
+  type RoundErrorEvent,
   type RoundFinalizedEvent,
   type RoundResultEvent,
   type TurnDecisionEvent,
@@ -329,6 +330,20 @@ export function useRoundStream(
           });
         }
         es.close();
+        onGameStateChange(data.state);
+      });
+
+      // The round failed server-side. Reported through the same connectionError channel as a
+      // dropped connection because the player's options are identical - read it, press Retry -
+      // but with the server's own wording instead of "lost connection", which is what this
+      // previously looked like and actively misled: a broken deployment read as a network blip.
+      // Closing here stops EventSource reconnecting on its own; retry() reopens deliberately,
+      // and the backend replays the round from the state this failed attempt never changed.
+      on<RoundErrorEvent>("round_error", (data) => {
+        setActiveTurnDetective(null);
+        setStatus("Round failed");
+        es.close();
+        setConnectionError(data.message);
         onGameStateChange(data.state);
       });
 

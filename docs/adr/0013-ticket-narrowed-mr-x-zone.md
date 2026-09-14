@@ -1,6 +1,6 @@
 # ADR-0013 — Mr. X's possible zone is narrowed by his own travel log
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-09-14)
 - **Area:** `backend/scotland_yard/travel_log.py`, `game_master.py`, `agents.py`
 - **Supersedes:** the "Won't Fix" decision recorded as `known_issues.md` ISSUE-015
 

@@ -1093,3 +1093,205 @@ case, the original entry has been updated too, rather than left to contradict th
   comment describes the actual current policy; the timeout comment is corrected (ISSUE-009); the
   conversational artifact is gone. The rationale these comments carried was mostly good enough to
   *relocate* into ADRs rather than rewrite — which is what `docs/adr/` largely consists of.
+
+---
+
+## Group F: Second Architecture Audit (2026-09-14)
+
+Issues found during a second full-codebase audit, covering architecture/ADRs, code quality,
+repository structure and documentation. The three recorded here are the ones that were fixed
+immediately, because each is a live defect in the deployed service rather than a quality
+concern. The remainder of that audit's findings were not defects and are not logged here.
+
+### ISSUE-039 — TTL eviction was unreachable behind the concurrent-game cap, wedging the service permanently
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/scotland_yard/session.py`, `server.py:create_game_route`
+- **Logged**: 2026-09-14
+- **Description**: `create_game_route` evaluated the concurrent-game cap with
+  `check_new_game(ip, active_games=len(GAMES))` and returned 429 on refusal. `_evict_stale_games`
+  was called from exactly one place — inside `create_game()` — which sits *below* that check.
+  So once `len(GAMES)` reached `MAX_ACTIVE_GAMES` (default 20), every request was refused before
+  the only code that could sweep the store ever ran.
+
+  The failure is self-sustaining and terminal: 20 abandoned games — page refreshes, closed tabs,
+  anyone who pressed New Game and left — permanently refuse every subsequent game. `SESSION_TTL_SECONDS`
+  correctly marks them *stale* after two hours, but nothing ever sweeps them, so they are stale
+  forever. The only recovery is a process restart, which by ADR-0005 also destroys every
+  genuinely live game. This directly defeated the purpose `session.py`'s own comment states for
+  the TTL ("without a TTL every abandoned game … leaks for the lifetime of the process") —
+  the sweep existed, it was simply unreachable from the path that needed it.
+- **Fix**: Added `session.active_game_count()`, which sweeps before counting, and switched the
+  route to it. The cap is now a bound on *live* games rather than on accumulated litter. The
+  function's docstring states that capacity checks must never use `len(GAMES)` directly, since
+  that is the shape the bug took. Covered by
+  `tests/test_api.py::TestDeploymentLimits::test_stale_games_are_swept_before_the_concurrent_cap_is_applied`,
+  which was confirmed to fail (429, expected 201) against the previous ordering.
+
+### ISSUE-040 — An exception inside the round stream ended it silently, leaving no way to tell a broken deployment from a network blip
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/scotland_yard/server.py:round_stream_route`, `llm_client.py`,
+  `frontend/src/hooks/useRoundStream.ts`, `types.ts`
+- **Logged**: 2026-09-14
+- **Description**: `round_stream_route.event_generator` had no exception handling. By the time it
+  runs, the SSE response has already begun, so `unhandled_exception_handler` cannot reach it —
+  there is no status code left to send. Any exception therefore just ended the stream, which
+  reaches the browser as a bare `EventSource.onerror` and rendered as "Lost connection to the
+  detective loop stream": indistinguishable from a dropped wifi connection.
+
+  At least three paths reached it. The most likely by far: `agents.py:turn_node` calls
+  `get_detective_llm()` *outside* `_invoke`'s try, so a missing or invalid `OPENROUTER_API_KEY`
+  raises at `ChatOpenAI` construction. That is precisely the "forgot to set the platform secret"
+  deployment mistake — and since the key is read lazily (CI's Docker job depends on the server
+  booting without one), such a deployment looks perfectly healthy until the first round starts.
+  The others: `graph.py:finalize_round_node`'s deliberate `AssertionError`, and any failure in
+  the graph outside `_invoke`'s own catch.
+- **Fix**: Two layers. (1) A pre-flight `llm_client.api_key_configured()` check before the stream
+  opens, so the commonest cause is a readable 503 naming the actual problem, logged at ERROR.
+  (2) The generator body is wrapped, emitting a terminal `round_error` event carrying a generic
+  client-facing message (the exception text stays in the server log — this endpoint is public and
+  unauthenticated) plus a fresh state snapshot. `asyncio.CancelledError` inherits from
+  `BaseException`, so an ordinary client disconnect is deliberately *not* caught and does not
+  report as a round failure.
+- **Why the session is left in `detective_loop_running`**: `run_detective_loop` assigns
+  `session.state` only once the graph runs to completion, so a mid-round failure leaves the
+  session exactly as the round started — there is no half-moved board to resume into. Leaving the
+  status alone is therefore what makes the client's Retry *correct*, not merely permitted: it
+  replays the whole round from untouched state. The frontend routes `round_error` through the
+  existing `connectionError` channel, which already renders a Retry button, so the server's own
+  wording replaces the misleading "lost connection" with no new UI.
+- **Covered by**: `tests/test_round_stream_failure.py` (terminal event, no leaked exception text,
+  state untouched, and an actual successful retry after a failure), plus
+  `tests/test_api.py::TestDeploymentLimits::test_a_round_is_refused_outright_when_no_llm_api_key_is_configured`.
+
+### ISSUE-041 — Logging was configured only in `main()`, so the documented dev command ran with none
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/scotland_yard/server.py`, `tests/test_api.py`
+- **Logged**: 2026-09-14
+- **Description**: `configure_logging()` was called from `server.main()` only. But `app` is a
+  module-level object, so every ASGI launcher builds it without ever calling `main()` — including
+  `uvicorn scotland_yard.server:app --reload`, which `README.md` documents as the development
+  command. Root logging was then never configured and fell back to `logging.lastResort`.
+
+  Two consequences, both silent. Every `logger.info` in the round loop vanished — the entire turn
+  narrative, the router's decisions, `[ZONE FALLBACK]`. And the `[VALIDATION]` warnings that did
+  survive (lastResort is WARNING-level) printed through a handler with no `GameIdFilter`, losing
+  the `[game_id]` field that `logging_config.py` exists to attach and that ISSUE-033 added
+  specifically so concurrent games stay separable.
+- **Fix**: `configure_logging()` is now called at module scope in `server.py`, which covers every
+  launcher and additionally captures the module-level lines below it (such as the "no SPA build"
+  notice) that an `on_startup` hook would run too late to see. It clears root handlers first, so
+  the call is idempotent; the redundant call in `main()` was removed. Covered by
+  `tests/test_api.py::TestLoggingConfiguration`.
+
+### ISSUE-042 — The per-IP game tracker grew a permanent entry per client address, keyed on an attacker-controlled header
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/scotland_yard/limits.py`, `server.py:create_game_route`
+- **Logged**: 2026-09-14
+- **Description**: `limits._prune` trimmed timestamps *inside* a client's deque but nothing ever
+  removed the **key**. `_game_creations` therefore grew by one permanent entry for every distinct
+  client address ever seen, for the life of the process.
+
+  What made that more than untidy is where the key comes from. `client_ip()` reads the first
+  entry of `X-Forwarded-For`, which the caller fully controls, so a script rotating that header
+  both bypassed `MAX_GAMES_PER_IP_PER_HOUR` entirely (each spoofed value is a fresh bucket) and
+  minted an unbounded number of permanent dict entries — on an unauthenticated endpoint, with no
+  length limit on the value being used as the key. `limits.py` already documented the header as
+  spoofable and the cap as "a speed bump"; what it did not say is that the same spoofability made
+  the limiter an allocator.
+- **Fix**: `_sweep_game_creations` expires every bucket and drops the ones left empty, called on
+  each `record_new_game` (creation being the only way the map can grow — the same reasoning
+  `session.py` applies to TTL eviction, and placed so it cannot sit downstream of a check that
+  returns first, per ISSUE-039). `MAX_TRACKED_CLIENTS` caps the worst case between sweeps, and
+  the forwarded value is truncated to 64 characters before it is ever used as a key.
+- **Why the cap fails open**: reaching it requires address churn, which means spoofing, which
+  means the per-IP limit was already being bypassed. Refusing at that point would punish real
+  players for an attacker's traffic while costing the attacker nothing. `MAX_ACTIVE_GAMES` and
+  the daily budget still apply, and they are what actually bound spend.
+- **Why `X-Forwarded-For` is still trusted by default**: the audit's original proposal was to
+  ignore it unless a trusted-proxy flag was set. That would have broken the live service. Render
+  terminates in front of the app, so with the header ignored every visitor carries Render's
+  internal proxy address — one shared bucket, and `MAX_GAMES_PER_IP_PER_HOUR` becomes a global
+  cap that refuses the seventh visitor of the hour. `TRUST_PROXY_HEADERS` exists for a deployment
+  with nothing in front of it, and defaults to `true`.
+- **Covered by**: `tests/test_api.py::TestDeploymentLimits` (reclaim, active-client survival,
+  fail-open at the cap, the trust switch, and the key-length bound).
+
+### ISSUE-043 — A caller could nominate its own game's owner token, including a guessable one
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/scotland_yard/server.py:create_game_route`
+- **Logged**: 2026-09-14
+- **Description**: `create_game_route` deliberately reuses the caller's existing cookie as the new
+  game's `owner_token`, so one browser can hold several games at once (ADR-0014). That reuse was
+  unconditional — `request.cookies.get(PLAYER_COOKIE) or secrets.token_urlsafe(32)` — so whatever
+  string arrived in the cookie *became* the secret. A caller could send `sy_player=a` and own a
+  game whose token anyone else could trivially set.
+
+  Self-inflicted only: a browser that sends no cookie still receives 32 random bytes, so no real
+  player's game was ever weakened by someone else's choice. But there is no reason to accept an
+  attacker-chosen secret when rejecting one is cheap.
+- **Fix**: `_known_owner_token` checks the presented value against the tokens of live sessions
+  (constant-time, at most `MAX_ACTIVE_GAMES` comparisons) and the cookie is reused only if this
+  server actually minted it. An unrecognized cookie is replaced rather than adopted. Multi-game
+  ownership is unaffected: a browser holding at least one live game still presents a known token.
+- **Testing note**: the first version of this regression test set the cookie through the test
+  client's jar, which silently dropped it for this test host — so the assertion passed against
+  the *unfixed* code too, since a request arriving with no cookie also gets a freshly minted
+  token. It now sends a raw `Cookie` header, and was confirmed to fail against the old behaviour.
+
+### ISSUE-044 — The board was the only way to play, and it is a canvas
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `frontend/src/components/KeyboardMoveList.tsx` (new), `BoardCanvas.tsx`,
+  `hooks/useMrXMoveWizard.ts`, `components/ChatLog.tsx`, `screens/GameScreen.tsx`, `index.css`
+- **Logged**: 2026-09-14
+- **Description**: Mr. X's move could only be made by clicking a node on the Phaser canvas. Canvas
+  content is invisible to assistive technology and unreachable by keyboard (**ADR-0015** records
+  that as a consequence of the rendering choice), so the game was unplayable without a mouse —
+  not degraded, unplayable, since there was no other input path at all.
+
+  Separately, a round streams in one Chat Log entry per LLM call over a minute or more with no
+  live region anywhere, so a screen-reader user got silence for the entire time the detectives
+  were deliberating, and the "lost connection" error had no way to announce itself.
+- **Fix**: `KeyboardMoveList` renders one button per legal (destination, ticket) pair — complete,
+  self-describing actions rather than the board's two-step click-then-choose-ticket mode, which is
+  harder to operate without sight. It is clipped out of view with `clip-path` and revealed by
+  `:focus-within`, deliberately **not** `display: none` or `hidden`: both would remove it from the
+  tab order and defeat the entire purpose. `ChatLog` became a `role="log"` with
+  `aria-relevant="additions"` (so the auto-scroll does not re-announce), its error block a
+  `role="alert"`, and the sidebar's phase line a `role="status"`.
+- **A bug found while wiring it up**: the first version called
+  `handleNodeClick(node)` then `chooseTicket(ticket)` in one handler, mirroring what a board click
+  does. That cannot work — `setPendingTarget` is asynchronous, so `chooseTicket` still reads the
+  previous value and returns early, and the move would have silently done nothing.
+  `useMrXMoveWizard.chooseMove(target, ticket)` was extracted for callers that already hold both
+  halves; `chooseTicket` now delegates to it.
+- **Covered by**: `frontend/src/components/KeyboardMoveList.test.tsx` — including an explicit
+  assertion that the region is hidden by a clipping class and not by anything that would make it
+  unfocusable.
+
+### ISSUE-045 — `types.ts` mirrored the backend payloads by hand with nothing to catch drift
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/tests/test_serialization_contract.py` (new), `frontend/README.md`
+- **Logged**: 2026-09-14
+- **Description**: The backend is Starlette and has no OpenAPI schema (**ADR-0002**), so
+  `frontend/src/types.ts` mirrors `serializers.py` by hand. `frontend/README.md` stated the risk
+  accurately — "nothing will catch it otherwise" — which is exactly the kind of honestly
+  documented gap that is cheaper to close than to keep documenting. A renamed or dropped key
+  reads as `undefined` on the client, with no error anywhere. ISSUE-029 was already one instance.
+- **Fix**: A backend test that parses the real `PublicGameState` / `PublicMrX` / `PublicDetective`
+  interfaces out of `types.ts` and compares their field names against what `serialize_public_state`
+  actually returns, failing in either direction with a message naming the offending field and the
+  file to fix. It reads the live TypeScript rather than a checked-in copy of the expected shape,
+  which would just be a third hand-maintained list free to drift on its own schedule.
+- **Scope**: a field-*name* contract, not a type contract — names are where the drift bites, and
+  matching TypeScript's type syntax from Python would be a parser rather than a test. The parser
+  it does need is itself tested (comments, nested object literals), since one that silently
+  returned an empty set would make every other assertion in the file pass vacuously.
+- **Not covered**: `labels.ts`'s mirrors of `MAX_ROUND` / `SURFACING_ROUNDS` / `DETECTIVE_LABELS`,
+  which remain hand-maintained and unguarded.

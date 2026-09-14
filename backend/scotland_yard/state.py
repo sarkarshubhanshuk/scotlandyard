@@ -1,6 +1,8 @@
-from typing import Annotated, Dict, List, TypedDict, Optional
 import operator
+from typing import Annotated, Dict, List, Optional, TypedDict
+
 from langchain_core.messages import BaseMessage
+
 
 # Reducer function to merge dictionary updates cleanly across nodes
 def update_dict(existing: dict, new: dict) -> dict:

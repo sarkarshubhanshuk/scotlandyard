@@ -69,17 +69,17 @@ tools/                One-off board-data authoring utilities
 Every LLM output is treated as untrusted, and re-derived against the board before it can
 affect game state. There are four independent layers, and each one is load-bearing:
 
-- `agents.py:fetch_legal_moves` computes the mover's legal targets **before** building any
+- `candidates.py:fetch_legal_moves` computes the mover's legal targets **before** building any
   prompt, so the model is only ever offered real options — every node another detective is
   standing on is excluded. Since ADR-0010 each move is applied at the end of its own turn, so
   that exclusion is exact rather than reconstructed, and it is what makes two detectives sharing
   a node **structurally impossible**: a constraint on what can be proposed, not a check applied
   afterwards.
-- `agents.py:_enforce_legal_node` overrides whatever the model actually named if it isn't in
+- `llm_calls.py:_enforce_legal_node` overrides whatever the model actually named if it isn't in
   that set. The mover gets one self-correction retry; the deterministic pass is what guarantees
   correctness. A responder's *advisory* preference is dropped rather than rewritten, so an
   invented node never feeds into the mover's decision prompt.
-- `agents.py:_invoke` bounds every call with a real wall-clock deadline
+- `llm_calls.py:_invoke` bounds every call with a real wall-clock deadline
   (`LLM_CALL_DEADLINE_SECONDS`), so a hung or slow call resolves deterministically instead of
   stalling the round — `llm_client.py`'s own `timeout=45` is only an idle-gap timeout
   (ISSUE-009), which mattered far less when calls ran concurrently.
@@ -87,10 +87,13 @@ affect game state. There are four independent layers, and each one is load-beari
   `round_resolver.py:resolve_round` re-derives legality once more before deducting a single
   ticket.
 
-`game_master.py` still exposes this logic over MCP (`python -m scotland_yard.game_master`,
-wired up in `.cursor/mcp.json`) for external clients such as an IDE assistant — but the
-application itself calls the plain functions in-process. **See ADR-0001**, which records why
-the original "MCP prevents hallucination" framing stopped being true and what replaced it.
+That logic lives in `board.py`, which imports nothing beyond the standard library.
+`game_master.py` is a thin adapter that registers a few of its functions as MCP tools
+(`python -m scotland_yard.game_master`, wired up in `.cursor/mcp.json`) for an external client
+such as an IDE assistant — the application itself imports `board.py` directly and never goes
+near MCP. The two used to be one file, which put the whole FastMCP framework on the import path
+of every board lookup; the dependency now points the way **ADR-0001** says it should. That ADR
+also records why the original "MCP prevents hallucination" framing stopped being true.
 
 - `llm_client.py` holds the two cached OpenRouter chat clients (a mover's proposal/decision,
   and a responder's answer). Neither binds tools.
@@ -116,7 +119,15 @@ the original "MCP prevents hallucination" framing stopped being true and what re
   writes the log and the module that narrows Mr. X's zone with it can agree on its format
   without importing each other.
 
-- `agents.py`: `turn_node` — one detective's whole turn, six LLM calls (**ADR-0009**).
+- A turn is assembled from three single-purpose modules, each changing on its own cadence:
+  `candidates.py` (what a detective's options are, and the deterministic numbers scoring them),
+  `prompts.py` (the Mr. X zone intel and every block of text a detective reads), and
+  `llm_calls.py` (the response schemas, the deadline-bounded call, and legality enforcement).
+  They were one 1030-line `agents.py`, which meant retuning a prompt had the same blast radius
+  as changing ticket arithmetic.
+
+- `agents.py`: `turn_node` — one detective's whole turn, six LLM calls (**ADR-0009**). Now
+  orchestration only: the sequence below, and the move application that ends it.
   - A turn is: the mover proposes and broadcasts (1 call) → the other four respond once each,
     sequentially, in cyclic order from the mover's successor (4 calls) → the mover commits
     (1 call). Responses are **advisory**: a responder states what it would do on its own turn
@@ -133,7 +144,7 @@ the original "MCP prevents hallucination" framing stopped being true and what re
     otherwise have none of: where Mr. X could be, and each candidate's hop-distance to it. The
     zone is narrowed by his own travel log — one ticket-*typed* graph layer per hop he has
     logged since surfacing, not an untyped ball, which roughly halves it at every distance
-    (**ADR-0013**, `travel_log.py` + `game_master.py:compute_mrx_zone_from_tickets`). Black
+    (**ADR-0013**, `travel_log.py` + `board.py:compute_mrx_zone_from_tickets`). Black
     tickets widen it back, by design. Recomputed per turn, since occupancy changes five times a
     round. See `game_mechanics.md` §1.
   - Candidates carry three more deterministic annotations, for the same reason the zone distance
@@ -207,8 +218,9 @@ the original "MCP prevents hallucination" framing stopped being true and what re
 Commands, component map, and the constraints worth knowing are in `frontend/README.md`.
 Highlights:
 
-- **Tech Stack:** React 19 (`react-router-dom` for `/` and `/game/:gameId`) + Phaser 4. No
-  global state library — **ADR-0008**.
+- **Tech Stack:** React 19 (`react-router-dom` for `/` and `/game/:gameId`) + Phaser 4 for the
+  board (**ADR-0015**, which also records what that costs). No global state library —
+  **ADR-0008**.
 - **Bundle splitting:** `GameScreen.tsx` lazy-loads `BoardCanvas` so Phaser only downloads once
   a game is entered. Easy to undo by accident; CI now fails if the main chunk exceeds 600 kB
   (it should sit around 245 kB). See ISSUE-019 and `frontend/README.md`.
@@ -261,8 +273,13 @@ Highlights:
 ```bash
 cd backend && pytest          # fast: unit + API, no network, no API key
 cd backend && pytest -m llm   # opt-in: real, billable LLM calls
-cd frontend && npm run lint && npm run build
+cd backend && ruff check . && mypy   # lint + types (mypy is scoped; see pyproject.toml)
+cd frontend && npm run lint && npm test && npm run build
 ```
 
-CI (`.github/workflows/ci.yml`) runs the fast suite, the frontend lint/build, and the bundle
+The strategy behind this split — deterministic and free in CI, real calls opt-in — is
+**ADR-0016**.
+
+CI (`.github/workflows/ci.yml`) runs ruff, mypy, the fast suite with a coverage floor, the
+frontend lint/tests/build, and the bundle
 size guard. It has no API key and should never be given one.

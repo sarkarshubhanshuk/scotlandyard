@@ -47,6 +47,25 @@ def seed_positions():
 
 
 @pytest.fixture(autouse=True)
+def _assume_llm_key_configured(monkeypatch):
+    """
+    Makes the fast suite behave as though an OpenRouter key is configured.
+
+    server.py refuses to open a round stream without one (it would otherwise fail inside the
+    SSE body, where no status code can be sent any more). Every route test here stubs the
+    detective loop and never makes a real call, so that check is pure environment coupling: it
+    passes on a developer machine - where backend/.env exists and llm_client imports it - and
+    503s in CI, which deliberately has no key. Pinning it true keeps the suite's stated contract
+    ("no network, no API key") true of the route tests as well, and keeps a future stream test
+    from quietly acquiring the same environment dependency.
+
+    The refusal path itself is covered explicitly, by overriding this in
+    test_api.py::TestDeploymentLimits.
+    """
+    monkeypatch.setattr("scotland_yard.server.api_key_configured", lambda: True)
+
+
+@pytest.fixture(autouse=True)
 def _reset_deployment_limits():
     """
     Clears limits.py's counters around every test.

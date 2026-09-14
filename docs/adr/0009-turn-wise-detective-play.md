@@ -1,6 +1,6 @@
 # ADR-0009 — Turn-wise detective play: propose, respond, commit
 
-- **Status:** Accepted — supersedes [ADR-0006](0006-sequential-debate-and-majority-vote.md),
+- **Status:** Accepted (2026-09-13) — supersedes [ADR-0006](0006-sequential-debate-and-majority-vote.md),
   refined by [ADR-0010](0010-per-turn-move-application-and-pawn-handshake.md)
 - **Area:** `backend/scotland_yard/agents.py`, `graph.py`, `state.py`, `rules_constants.py`,
   `serializers.py`, `server.py`, `frontend/src/hooks/useRoundStream.ts`,

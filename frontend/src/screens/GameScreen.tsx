@@ -233,6 +233,10 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
                     together don't fit. */}
                 <span style={{ fontWeight: 700, flexShrink: 0 }}>Round {gameState.round_number}</span>
                 <span
+                  // The concise counterpart to ChatLog's role="log": one line naming whose turn
+                  // it is and what they are doing. A screen-reader user tracking the round wants
+                  // this far more often than the full rationales.
+                  role="status"
                   style={{
                     fontSize: 13,
                     fontWeight: 400,
@@ -247,7 +251,10 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
                   <OngoingActionText text={ongoingActionLabel} />
                 </span>
               </h2>
-              <TicketInventory gameState={gameState} />
+              {/* Same activeTurnPawnId the board's halo uses, so the sidebar's highlighted
+                  row and the ring on the board are two renderings of one answer rather than two
+                  independent guesses that can disagree. */}
+              <TicketInventory gameState={gameState} activeTurnPawnId={activeTurnPawnId} />
             </div>
             <ChatLog
               entries={roundStream.entries}

@@ -1,7 +1,8 @@
-from typing import List, Optional
+from typing import List, Mapping, Optional
 
-from .game_master import compute_valid_moves
+from .board import compute_valid_moves
 from .rules_constants import DETECTIVE_TRANSPORT_TYPES
+from .state import Detective
 
 # Tie-break when a target node is reachable via more than one transport type: prefer whichever
 # type the detective currently holds the most tickets of (conserves the scarce metro allotment
@@ -14,7 +15,7 @@ TRANSPORT_PRIORITY = {
 }
 
 
-def pick_transport(available_transports: List[str], ticket_counts: dict) -> str:
+def pick_transport(available_transports: List[str], ticket_counts: Mapping[str, int]) -> str:
     """
     Deterministic apply-time transport choice for a detective's move. Detectives never choose
     this themselves - agents.py's MoveChoice schema only ever asks for a target node, never a
@@ -26,7 +27,23 @@ def pick_transport(available_transports: List[str], ticket_counts: dict) -> str:
     return max(available_transports, key=sort_key)
 
 
-def determine_move_transport(detective: dict, target_node: int, occupied_nodes: List[int]) -> Optional[str]:
+def detective_ticket_counts(detective: Detective) -> dict:
+    """
+    This detective's three ticket counts as a plain, int-valued mapping.
+
+    Spelled out key by key rather than derived from DETECTIVE_TRANSPORT_TYPES because a TypedDict
+    can only be indexed by a literal key. It exists at all because `dict(detective)` - which two
+    callers used to do - widens every value to `object`, so the ticket arithmetic downstream of
+    it was silently untyped, which is exactly where a rules error would hide.
+    """
+    return {
+        "taxi_tickets": detective["taxi_tickets"],
+        "bus_tickets": detective["bus_tickets"],
+        "metro_tickets": detective["metro_tickets"],
+    }
+
+
+def determine_move_transport(detective: Detective, target_node: int, occupied_nodes: List[int]) -> Optional[str]:
     """
     Which transport type a detective's move from their current node to target_node would spend,
     using the exact same legality + tie-break logic round_resolver.py:resolve_round uses to
@@ -45,4 +62,4 @@ def determine_move_transport(detective: dict, target_node: int, occupied_nodes: 
     available_transports = [m["transport_used"] for m in legal_moves if m.get("target_node") == target_node]
     if not available_transports:
         return None
-    return pick_transport(available_transports, detective)
+    return pick_transport(available_transports, detective_ticket_counts(detective))

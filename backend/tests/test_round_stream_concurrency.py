@@ -20,8 +20,8 @@ import httpx
 import pytest
 
 from scotland_yard import server
-from scotland_yard.session import GAMES, create_game
 from scotland_yard.server import PLAYER_COOKIE
+from scotland_yard.session import GAMES, create_game
 
 OWNER_TOKEN = "test-owner-token"
 

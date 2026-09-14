@@ -1,6 +1,6 @@
 # ADR-0010 — Moves apply per turn, and the board paces the round
 
-- **Status:** Accepted — refines [ADR-0009](0009-turn-wise-detective-play.md)
+- **Status:** Accepted (2026-09-13) — refines [ADR-0009](0009-turn-wise-detective-play.md)
 - **Area:** `backend/scotland_yard/agents.py`, `graph.py`, `round_resolver.py`, `state.py`,
   `session.py`, `server.py`, `requests.py`, `rules_constants.py`,
   `frontend/src/board/BoardScene.ts`, `hooks/useRoundStream.ts`

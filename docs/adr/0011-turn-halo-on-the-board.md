@@ -1,6 +1,6 @@
 # ADR-0011 — A shared "whose turn is it" halo, cycling across every pawn
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-09-13)
 - **Area:** `frontend/src/board/BoardScene.ts`, `BoardCanvas.tsx`, `hooks/useRoundStream.ts`,
   `screens/GameScreen.tsx`
 

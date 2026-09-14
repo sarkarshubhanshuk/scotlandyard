@@ -49,6 +49,9 @@ dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "httpx==0.28.1",                # Required by starlette.testclient.TestClient.
+    "pytest-cov==7.1.0",
+    "ruff==0.16.7",
+    "mypy==2.3.1",
 ]
 
 [project.scripts]
@@ -56,6 +59,79 @@ scotland-yard-server = "scotland_yard.server:main"
 
 [tool.setuptools.packages.find]
 include = ["scotland_yard*"]
+
+# --- Linting -----------------------------------------------------------------------------
+# The backend is where the money and the game rules are, and it was the half with no quality
+# gate beyond the tests - the frontend already had eslint plus a type-checked build. These
+# close that asymmetry.
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/F: pyflakes + pycodestyle errors. I: import sorting, which this package already follows by
+# hand. B: bugbear. C4/SIM: comprehension and branch simplification.
+#
+# UP (pyupgrade) is deliberately NOT selected yet. It is clean to satisfy - 89 autofixable hits,
+# almost all `Optional[X]` -> `X | None` and `Dict`/`List` -> `dict`/`list` - but that is a style
+# migration, not a defect class: the existing annotations are valid, internally consistent, and
+# sit on heavily-commented signature lines that a mass rewrite would churn for no behavioural
+# gain. Worth doing as its own commit, where the diff is reviewable as what it is, rather than
+# smuggled in alongside the gate that introduced it.
+select = ["E", "F", "I", "B", "C4", "SIM"]
+# E501 is deliberately off. This codebase carries an unusual amount of its documentation in
+# comments and docstrings, several of which are tables, measured figures or quoted rules text
+# that reflowing would damage. line-length above still drives the formatter's own decisions.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# compute_valid_moves' ticket check is a line-by-line transcription of rules.md section 3 - one
+# branch per transport type, each independently readable against the rule it encodes. SIM114
+# would collapse the four into a single `or` chain, which is shorter and materially harder to
+# check against the rules document. The structure is the point.
+"scotland_yard/board.py" = ["SIM114"]
+# Tests insert the package directory onto sys.path before importing it (see conftest.py), so
+# their imports genuinely cannot all sit at the top of the file.
+"tests/*" = ["E402"]
+
+# --- Type checking -----------------------------------------------------------------------
+# Scoped deliberately rather than pointed at everything. The modules below are the game's
+# factual core - board topology, the rules transcription, ticket arithmetic, the travel log,
+# the state schema - where a type error is a rules error, and all of them are free of
+# third-party types. The LangGraph/LangChain-facing modules are excluded for now: their
+# signatures are dominated by library generics whose stubs would dictate the work, which is a
+# separate exercise from checking this project's own logic.
+[tool.mypy]
+python_version = "3.12"
+files = [
+    "scotland_yard/board.py",
+    "scotland_yard/rules_constants.py",
+    "scotland_yard/travel_log.py",
+    "scotland_yard/transport.py",
+    "scotland_yard/state.py",
+    "scotland_yard/candidates.py",
+    "scotland_yard/limits.py",
+    "scotland_yard/serializers.py",
+]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+check_untyped_defs = true
+
+# --- Coverage ----------------------------------------------------------------------------
+# Deliberately NOT in pytest's addopts: a bare `pytest` should stay fast for local use. CI runs
+# it with --cov explicitly.
+[tool.coverage.run]
+source = ["scotland_yard"]
+
+[tool.coverage.report]
+show_missing = true
+# A floor, not a target - set below the current figure so it fails on a real regression rather
+# than on ordinary variation. game_master.py is counted even though it sits at 0%: it is an
+# adapter with no in-application consumer (ADR-0001), and excluding it to flatter the number
+# would be exactly the wrong instinct.
+fail_under = 80
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

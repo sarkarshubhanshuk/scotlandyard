@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, List, Optional
 
-from .game_master import get_node_info
+from .board import get_node_info
 from .rules_constants import SURFACING_ROUNDS, VALID_TICKET_TYPES
 from .session import GameSession
 from .travel_log import DOUBLE_SENTINEL
@@ -116,7 +116,7 @@ def submit_mr_x_move(session: GameSession, move_request: dict) -> dict:
     """
     Validates and atomically applies a human-submitted Mr. X move for the current round, then
     flips session.status to "detective_loop_running" - the signal an API layer uses to know the
-    detective propose/debate/vote cycle (round_resolver.run_detective_loop) should start next.
+    turn-wise detective loop (round_resolver.run_detective_loop) should start next.
 
     move_request shapes:
       {"move_type": "single", "target_node": int, "ticket_type_spent": "taxi"|"bus"|"metro"|"black"}

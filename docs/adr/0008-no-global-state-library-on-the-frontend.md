@@ -1,6 +1,6 @@
 # ADR-0008 — No global state library on the frontend
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-09-13)
 - **Area:** `frontend/src/screens/GameScreen.tsx`, `frontend/src/hooks/`
 
 ## Context

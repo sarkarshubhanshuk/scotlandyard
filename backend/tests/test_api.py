@@ -10,10 +10,14 @@ so it lives in test_full_round_e2e_llm.py behind the `llm` marker. What IS cover
 every path that rejects a request before any model is involved - which is where the
 structural-validation bugs lived.
 """
+import logging
+
 import pytest
 from starlette.testclient import TestClient
 
 from scotland_yard import limits, server
+from scotland_yard import session as session_module
+from scotland_yard.logging_config import GameIdFilter, game_log_context
 from scotland_yard.rules_constants import DETECTIVE_IDS
 
 
@@ -323,11 +327,88 @@ class TestGameOwnership:
             assert stranger.get("/games/does-not-exist").status_code == 404
 
 
+class TestOwnerTokenMinting:
+    """
+    Where a game's owner token comes from. It is reused from the caller's cookie so one browser
+    can hold several games, but only when the server actually minted it - otherwise a caller
+    could nominate its own game's secret, and nominate a guessable one.
+    """
+
+    def test_a_browser_holding_a_live_game_keeps_its_token_across_new_games(self, client):
+        first = client.post("/games")
+        assert first.status_code == 201
+        token = client.cookies[server.PLAYER_COOKIE]
+
+        second = client.post("/games")
+        assert second.status_code == 201
+        # Same token, so both games remain reachable from this browser.
+        assert client.cookies[server.PLAYER_COOKIE] == token
+        for body in (first.json(), second.json()):
+            assert client.get(f"/games/{body['game_id']}").status_code == 200
+
+    def test_an_attacker_chosen_cookie_is_replaced_rather_than_adopted(self, client):
+        # Sent as a raw header rather than through the client's cookie jar: an attacker crafts
+        # the request directly, and the jar's own domain matching would silently drop a value
+        # set against this test host - which would make this assertion pass for the wrong
+        # reason, since a request arriving with NO cookie also gets a freshly minted token.
+        chosen = {"Cookie": f"{server.PLAYER_COOKIE}=a"}
+        response = client.post("/games", headers=chosen)
+        assert response.status_code == 201
+
+        game_id = response.json()["game_id"]
+        # Adopting the cookie verbatim - which is what used to happen - would let a caller pick
+        # a one-character "secret" that anyone else could set just as easily.
+        assert server.GAMES[game_id].owner_token != "a"
+        assert len(server.GAMES[game_id].owner_token) >= 32
+
+        # And the guessable value genuinely does not open the game.
+        with TestClient(server.app, base_url="https://testserver") as stranger:
+            assert stranger.get(f"/games/{game_id}", headers=chosen).status_code == 403
+
+
 class TestSpaAndHealth:
     def test_health_is_ok(self, client):
         response = client.get("/health")
         assert response.status_code == 200
         assert response.text == "ok"
+
+
+class TestLoggingConfiguration:
+    """
+    Regression: logging was configured only inside server.main().
+
+    `app` is a module-level object, so every ASGI launcher - including the
+    `uvicorn scotland_yard.server:app --reload` that README.md documents for development -
+    builds it without ever calling main(). Root logging was left unconfigured, so the round
+    loop's whole INFO narrative vanished and the [VALIDATION] warnings that did survive came
+    out through logging.lastResort, with no [game_id] attached. Importing the module has to be
+    enough.
+    """
+
+    def test_importing_the_app_configures_root_logging(self):
+        root = logging.getLogger()
+        assert root.handlers, "importing scotland_yard.server must configure root logging"
+        assert any(
+            isinstance(f, GameIdFilter) for handler in root.handlers for f in handler.filters
+        ), "the game-id filter must be attached, or every log line loses its game attribution"
+
+    def test_a_log_record_renders_with_a_game_id(self, caplog):
+        """The formatter references %(game_id)s, so a record without it would raise on format."""
+        handler = next(h for h in logging.getLogger().handlers if h.filters)
+        record = logging.LogRecord(
+            "scotland_yard.test", logging.WARNING, __file__, 1, "[VALIDATION] x", None, None
+        )
+        for f in handler.filters:
+            f.filter(record)
+        assert handler.format(record).count("[-]") == 1
+
+        with game_log_context("game-123"):
+            record = logging.LogRecord(
+                "scotland_yard.test", logging.WARNING, __file__, 1, "[VALIDATION] x", None, None
+            )
+            for f in handler.filters:
+                f.filter(record)
+            assert "[game-123]" in handler.format(record)
 
 
 class TestDeploymentLimits:
@@ -374,6 +455,122 @@ class TestDeploymentLimits:
         refused = client.get(f"/games/{game_id}/round/stream")
         assert refused.status_code == 503
         assert "thinking limit" in refused.json()["error"]
+
+    def test_stale_games_are_swept_before_the_concurrent_cap_is_applied(self, client, monkeypatch):
+        """
+        Regression: the cap used to be checked against a store nothing had swept.
+
+        Eviction lived only inside create_game, which sits BELOW the cap check, so once enough
+        abandoned games accumulated every POST /games returned 429 and returned before the only
+        code that could have evicted them ever ran. The service stayed wedged until a restart -
+        which would also have destroyed every genuinely live game. The cap has to bound games
+        that are actually alive, so the sweep must happen before the count is taken.
+        """
+        monkeypatch.setattr(limits, "MAX_ACTIVE_GAMES", 2)
+        first = client.post("/games")
+        second = client.post("/games")
+        assert first.status_code == 201
+        assert second.status_code == 201
+        # At the cap, with both games live: correctly refused.
+        assert client.post("/games").status_code == 429
+
+        # Now age both of them past the TTL without touching them - the abandoned-tab case.
+        for session in server.GAMES.values():
+            session.last_touched_at -= session_module.SESSION_TTL_SECONDS + 1
+
+        allowed = client.post("/games")
+        assert allowed.status_code == 201, (
+            "A store holding only TTL-expired games must not refuse a new one - "
+            "the stale games should have been swept before the cap was evaluated."
+        )
+        assert len(server.GAMES) == 1, "the two expired games should be gone, not merely ignored"
+
+    def test_a_round_is_refused_outright_when_no_llm_api_key_is_configured(
+        self, client, game, monkeypatch
+    ):
+        """
+        The key is read lazily, so a deployment missing it looks healthy until a round starts -
+        at which point the failure would land INSIDE the SSE body, where no status code can be
+        sent and the player sees nothing but a dropped connection. Checked before the stream
+        opens so it is a readable 503 instead.
+
+        Overrides conftest's autouse _assume_llm_key_configured, which pins this true for every
+        other route test.
+        """
+        monkeypatch.setattr(server, "api_key_configured", lambda: False)
+        game_id, _ = game
+        server.GAMES[game_id].status = "detective_loop_running"
+
+        refused = client.get(f"/games/{game_id}/round/stream")
+        assert refused.status_code == 503
+        assert "no LLM API key" in refused.json()["error"]
+
+    def test_the_per_client_tracker_reclaims_clients_instead_of_growing_forever(self):
+        """
+        Regression: _prune emptied a client's deque but never removed the KEY.
+
+        The tracker is keyed by client_ip(), which reads an attacker-controlled header, so every
+        spoofed value minted a permanent entry - an unbounded allocator behind an unauthenticated
+        endpoint. Sweeping on write is what bounds it.
+        """
+        limits.reset_for_tests()
+        start = 1000.0
+        for i in range(50):
+            limits.record_new_game(f"10.0.0.{i}", now=start)
+        assert len(limits._game_creations) == 50
+
+        # An hour later every one of those is expired. The next record must reclaim them, not
+        # merely leave 50 empty deques behind.
+        limits.record_new_game("10.0.0.200", now=start + limits._HOUR_SECONDS + 1)
+        assert len(limits._game_creations) == 1, (
+            "expired clients must be dropped, not left as empty buckets"
+        )
+
+    def test_a_still_active_client_is_not_swept(self):
+        limits.reset_for_tests()
+        start = 1000.0
+        limits.record_new_game("10.0.0.1", now=start)
+        # Half an hour on: still inside the window, so this client must survive the sweep and
+        # keep its recorded game counting against it.
+        limits.record_new_game("10.0.0.2", now=start + limits._HOUR_SECONDS / 2)
+        assert set(limits._game_creations) == {"10.0.0.1", "10.0.0.2"}
+
+    def test_tracking_fails_open_at_the_client_cap_rather_than_refusing_real_players(
+        self, monkeypatch
+    ):
+        """
+        The cap can only be reached by address churn, i.e. spoofing - at which point the per-IP
+        limit is already being bypassed. Refusing here would punish real players for an
+        attacker's traffic; MAX_ACTIVE_GAMES and the daily budget still bound the spend.
+        """
+        limits.reset_for_tests()
+        monkeypatch.setattr(limits, "MAX_TRACKED_CLIENTS", 3)
+        for i in range(5):
+            limits.record_new_game(f"10.0.0.{i}", now=1000.0)
+
+        assert len(limits._game_creations) == 3
+        # Untracked, so not refused - check_new_game still allows them through.
+        assert limits.check_new_game("10.0.0.4", active_games=0, now=1000.0) is None
+
+    def test_the_forwarded_header_can_be_distrusted_for_a_direct_deployment(self, monkeypatch):
+        class FakeRequest:
+            headers = {"x-forwarded-for": "1.2.3.4"}
+            client = type("C", (), {"host": "10.0.0.9"})()
+
+        monkeypatch.setattr(limits, "TRUST_PROXY_HEADERS", True)
+        assert limits.client_ip(FakeRequest()) == "1.2.3.4"
+
+        # Behind no proxy, the header is pure attacker input and the socket peer is the truth.
+        monkeypatch.setattr(limits, "TRUST_PROXY_HEADERS", False)
+        assert limits.client_ip(FakeRequest()) == "10.0.0.9"
+
+    def test_a_spoofed_forwarded_header_cannot_be_an_unbounded_dict_key(self, monkeypatch):
+        class FakeRequest:
+            headers = {"x-forwarded-for": "A" * 5000}
+            client = None
+
+        monkeypatch.setattr(limits, "TRUST_PROXY_HEADERS", True)
+        assert len(limits.client_ip(FakeRequest())) <= 64
 
     def test_every_llm_attempt_counts_including_failures(self):
         # _invoke records before it calls, so a timeout or an auth error still counts - it has

@@ -68,11 +68,22 @@ export function ChatLog({ entries, connectionError, onRetry }: ChatLogProps) {
   }
 
   return (
-    <section style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <h3 style={{ margin: "0 0 8px" }}>Chat Log</h3>
+    <section
+      aria-labelledby="chat-log-heading"
+      style={{ display: "flex", flexDirection: "column", minHeight: 0 }}
+    >
+      <h3 id="chat-log-heading" style={{ margin: "0 0 8px" }}>Chat Log</h3>
       <div
         ref={scrollRef}
         onScroll={handleScroll}
+        // A round streams in one entry per LLM call over a minute or more, and without this a
+        // screen-reader user gets silence for the entire time the detectives are deliberating.
+        // role="log" is the role defined for exactly this shape - a running list appended to at
+        // the end - and carries an implicit polite live region, so new entries are announced
+        // without interrupting. aria-relevant="additions" keeps the auto-scroll above from
+        // re-announcing anything it merely moved.
+        role="log"
+        aria-relevant="additions"
         style={{
           border: "1px solid #ddd",
           borderRadius: 4,
@@ -130,7 +141,10 @@ export function ChatLog({ entries, connectionError, onRetry }: ChatLogProps) {
         })}
       </div>
       {connectionError && (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+        <div
+          role="alert"
+          style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}
+        >
           <p style={{ fontSize: 12, color: "var(--color-error)", margin: 0 }}>{connectionError}</p>
           <button onClick={onRetry}>Retry</button>
         </div>

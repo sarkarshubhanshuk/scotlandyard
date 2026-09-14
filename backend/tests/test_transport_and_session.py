@@ -8,8 +8,7 @@ property is asserted directly here.
 """
 import time
 
-from scotland_yard import session as session_module
-from scotland_yard.game_master import compute_valid_moves
+from scotland_yard.board import compute_valid_moves
 from scotland_yard.rules_constants import (
     DETECTIVE_IDS,
     DETECTIVE_STARTING_TICKETS,

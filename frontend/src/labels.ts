@@ -44,6 +44,11 @@ export const AGENT_COLORS: Record<DetectiveId, number> = {
   agent_purple: 0x9966cc,
 };
 
+// Mr. X's pawn colour. Lives here rather than in BoardScene.ts for the same reason
+// AGENT_COLORS does: TicketInventory needs it for the active-turn row marker and is in the main
+// bundle, so it must not import a Phaser module to get it.
+export const MR_X_COLOR = 0x3a3a3a;
+
 export function toCssColor(hex: number): string {
   return `#${hex.toString(16).padStart(6, "0")}`;
 }

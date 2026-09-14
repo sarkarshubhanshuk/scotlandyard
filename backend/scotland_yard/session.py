@@ -112,10 +112,9 @@ GAMES: Dict[str, GameSession] = {}
 
 def _evict_stale_games(now: Optional[float] = None) -> int:
     """
-    Drops every game untouched for longer than SESSION_TTL_SECONDS. Called on each
-    create_game rather than from a background task - new-game creation is the only way
-    the store can grow, so it is also the only moment eviction can ever be needed, and
-    doing it inline keeps the module free of any background-task lifecycle to manage.
+    Drops every game untouched for longer than SESSION_TTL_SECONDS. Swept inline - on each
+    create_game, and on each active_game_count() - rather than from a background task, which
+    keeps the module free of any background-task lifecycle to manage.
 
     Returns how many games were evicted (for logging/tests).
     """
@@ -129,6 +128,24 @@ def _evict_stale_games(now: Optional[float] = None) -> int:
     if stale:
         logger.info("Evicted %d game(s) idle for over %ds", len(stale), SESSION_TTL_SECONDS)
     return len(stale)
+
+
+def active_game_count() -> int:
+    """
+    How many games are genuinely still alive - stale ones swept first.
+
+    The sweep here is not an optimization, it is the entire point of the function. server.py's
+    new-game cap (limits.MAX_ACTIVE_GAMES) is checked against this number, and eviction used to
+    happen ONLY inside create_game - which sits downstream of that check. So a store that had
+    filled up with abandoned games refused every new game with a 429 and, because the refusal
+    returned before create_game ever ran, never swept the games causing the refusal. The service
+    stayed wedged that way until the process restarted, taking every live game with it.
+
+    Counting through this function is what makes the cap a bound on LIVE games rather than on
+    accumulated litter. Anything checking capacity must ask here, never `len(GAMES)`.
+    """
+    _evict_stale_games()
+    return len(GAMES)
 
 
 def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
@@ -145,7 +162,9 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
     else:
         drawn = random.sample(STARTING_NODE_POOL, 6)
         positions = {"mr_x": drawn[0]}
-        for det_id, node in zip(DETECTIVE_IDS, drawn[1:]):
+        # strict: the draw and DETECTIVE_IDS must stay the same length. Silently zipping
+        # short would leave a detective with no starting node at all.
+        for det_id, node in zip(DETECTIVE_IDS, drawn[1:], strict=True):
             positions[det_id] = node
 
     state: ScotlandYardState = {
@@ -156,15 +175,25 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
             "last_known_node": None,
             "last_known_round": None,
             "transport_history": [],
-            **MR_X_STARTING_TICKETS,
+            # mypy cannot verify a `**dict[str, int]` expansion against a TypedDict's field
+            # list, and the alternative - restating all five ticket fields here - would put a
+            # second copy of a rules.md value outside rules_constants.py, which is the one thing
+            # that module exists to prevent. The starting inventories stay the single
+            # transcription; this pair of ignores is the price. warn_unused_ignores is on, so
+            # they will be flagged the moment mypy learns to check this.
+            **MR_X_STARTING_TICKETS,  # type: ignore[typeddict-item]
         },
         "detectives": {
-            det_id: {"node_id": positions[det_id], **DETECTIVE_STARTING_TICKETS}
+            det_id: {"node_id": positions[det_id], **DETECTIVE_STARTING_TICKETS}  # type: ignore[typeddict-item]
             for det_id in DETECTIVE_IDS
         },
         "messages": [],
         "committed_moves": {},
         "turn_records": {},
+        # Explicit rather than relied upon: ScotlandYardState is a total TypedDict, so omitting
+        # this was a schema violation that happened to work only because every reader used
+        # .get(). graph.py's router treats a truthy value as "the game just ended".
+        "captured_by": None,
         "final_moves": {},
         "final_move_details": {},
         "recent_positions": {},

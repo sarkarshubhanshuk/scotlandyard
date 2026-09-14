@@ -1,6 +1,6 @@
 # ADR-0014 — One container, one origin, and a cookie instead of accounts
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-09-14)
 - **Area:** `Dockerfile`, `backend/scotland_yard/server.py`, `limits.py`, `session.py`,
   `frontend/src/api/client.ts`
 

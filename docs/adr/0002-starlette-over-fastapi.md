@@ -1,6 +1,6 @@
 # ADR-0002 — Starlette over FastAPI for the API layer
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-09-13)
 - **Area:** `backend/scotland_yard/server.py`, `requests.py`
 
 ## Context

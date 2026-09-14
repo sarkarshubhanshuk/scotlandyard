@@ -226,11 +226,17 @@ export function useMrXMoveWizard(
     [gameId, onMoved, beginMovingHop],
   );
 
-  const chooseTicket = useCallback(
-    async (ticket: TicketType) => {
-      if (!pendingTarget) return;
-      const target = pendingTarget.target;
-
+  /**
+   * Commit to a destination and its ticket in one call.
+   *
+   * Split out of chooseTicket so a caller that already knows BOTH - the keyboard move list,
+   * which offers complete (node, ticket) actions rather than the board's two-step click-then-
+   * choose - can act without first round-tripping through pendingTarget state. Setting that
+   * state and reading it back in the same handler would not work anyway: the setter is
+   * asynchronous, so chooseTicket would still see the previous value and bail.
+   */
+  const chooseMove = useCallback(
+    async (target: number, ticket: TicketType) => {
       if (hop1 === null) {
         if (!doubleMode) {
           setPendingTarget(null);
@@ -254,7 +260,15 @@ export function useMrXMoveWizard(
       setPendingTarget(null);
       await submitDouble(hop1, { target, ticket });
     },
-    [pendingTarget, hop1, doubleMode, gameId, submitSingle, submitDouble],
+    [hop1, doubleMode, gameId, submitSingle, submitDouble],
+  );
+
+  const chooseTicket = useCallback(
+    async (ticket: TicketType) => {
+      if (!pendingTarget) return;
+      await chooseMove(pendingTarget.target, ticket);
+    },
+    [pendingTarget, chooseMove],
   );
 
   const cancelPendingTarget = useCallback(() => setPendingTarget(null), []);
@@ -279,6 +293,7 @@ export function useMrXMoveWizard(
     error,
     handleNodeClick,
     chooseTicket,
+    chooseMove,
     cancelPendingTarget,
     cancelHop1,
   };

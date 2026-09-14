@@ -1,6 +1,6 @@
 # ADR-0012 — A dashed "last known location" ghost for Mr. X
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-09-13)
 - **Area:** `data/ui/pawn_last_known.svg` (new), `frontend/scripts/sync-assets.mjs`,
   `frontend/src/board/BoardScene.ts`
 
