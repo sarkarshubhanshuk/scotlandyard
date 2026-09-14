@@ -12,6 +12,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # So the Docker job below can be run on demand from any branch, without waiting for a PR.
+  workflow_dispatch:
 
 jobs:
   backend:
@@ -66,3 +68,61 @@ jobs:
             echo "::error::Main chunk is ${size} bytes - Phaser has likely been pulled back into it (see ISSUE-019)."
             exit 1
           fi
+
+  # The deployment guard. Everything above tests the source; this tests the artifact that
+  # actually ships (ADR-0014). It exists because the Dockerfile encodes assumptions no unit test
+  # can reach: that the build context is the REPO ROOT, that game_master's BASE_DIR still
+  # resolves three parents up to a directory containing data/, and that the SPA lands where
+  # FRONTEND_DIST expects it. Each of those breaks silently at runtime, not at build time, which
+  # is why this job runs the image rather than only building it.
+  #
+  # No secret, in keeping with the rest of this file: the OpenRouter key is read lazily, on the
+  # first LLM call, so the server boots and serves the whole SPA without one. A round would fail
+  # here - nothing below starts one.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -t scotland-yard .
+
+      - name: Run it with no API key
+        run: docker run -d --name sy -p 7860:7860 scotland-yard
+
+      - name: Wait for the container to come up
+        run: |
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:7860/health >/dev/null 2>&1; then
+              echo "healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Container never answered /health. Logs follow."
+          docker logs sy
+          exit 1
+
+      - name: The image serves what the deployment depends on
+        run: |
+          fail() { echo "::error::$1"; docker logs sy; exit 1; }
+          check() {
+            # `|| true` so a dead container reports as an empty code with its logs attached,
+            # rather than killing the step under `set -e` with nothing to read.
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:7860$1" || true)
+            [ "$code" = "$2" ] || fail "GET $1 -> ${code:-no response} (expected $2)"
+            echo "GET $1 -> $code"
+          }
+          # The SPA was copied out of the build stage and FRONTEND_DIST found it.
+          check /                    200
+          # The catch-all serves deep links, so a shared /game/<id> link does not 404.
+          check /game/does-not-exist 200
+          # sync-assets.mjs ran in the build stage: data/ art made it into dist/.
+          check /board/board.svg     200
+          check /pawn/pawn.svg       200
+          # And the catch-all did NOT shadow the API: a real route still answers as itself.
+          check /games/does-not-exist 404
+
+      - name: Stop the container
+        if: always()
+        run: docker rm -f sy || true
