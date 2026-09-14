@@ -83,9 +83,14 @@ Then open <http://localhost:5173> and click **New Game**.
 
 ## Deploying it for other people
 
+**Live:** <https://scotland-yard-e8cz.onrender.com>
+
 The whole app - SPA and API - ships as one container (`Dockerfile`, built from the repository
-root). It is designed for a **Hugging Face Docker Space**, which is free, needs no card, and
-only sleeps after long inactivity:
+root). It runs on **Render**, on a paid instance type (Render's free tier can't sleep mid-round
+without breaking the turn-ack handshake below, and Hugging Face's equivalent free tier turned out
+to require a PRO subscription for any Docker Space - see the **Update** in **ADR-0014** for why
+the platform choice changed). Render builds straight from this Dockerfile on every push to
+`main`, using whatever Docker or Docker-Compose-compatible host you prefer works the same way:
 
 ```bash
 docker build -t scotland-yard .
@@ -93,13 +98,19 @@ docker run --rm -p 7860:7860   -e OPENROUTER_API_KEY=sk-...   scotland-yard
 # then open http://localhost:7860
 ```
 
-Name the Space `scotland-yard` and it is reachable at
-`https://<your-user>-scotland-yard.hf.space`. Set `OPENROUTER_API_KEY` as a Space **secret** -
-never in the image; `.dockerignore` excludes `.env` so it cannot be copied in by accident.
+Set `OPENROUTER_API_KEY` as a platform secret/environment variable - never in the image;
+`.dockerignore` excludes `.env` so it cannot be copied in by accident. The container listens on
+whatever `PORT` the platform injects (Render's default is `10000`; `7860` is only the Dockerfile's
+own fallback for a bare `docker run`), so no Dockerfile change is needed to move platforms.
 
-**Run exactly one replica.** Games live in memory and `/turn-ack` has to reach the very
+**Run exactly one replica/instance.** Games live in memory and `/turn-ack` has to reach the very
 coroutine awaiting it (ADR-0005, ADR-0010), so a second replica would strand acks on the wrong
-process and stall every turn. See **ADR-0014** for the full reasoning.
+process and stall every turn. See **ADR-0014** for the full reasoning. On Render, confirm the
+service's Scaling settings are fixed at one instance rather than autoscaling.
+
+Since the deploy is connected to this GitHub repo, **merging to `main` redeploys automatically** -
+there is no separate push-to-deploy step to remember, but it also means a merge to `main` goes
+live immediately.
 
 ### What protects a public link
 
