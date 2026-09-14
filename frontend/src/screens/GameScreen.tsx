@@ -201,20 +201,37 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
             {/* Header + Ticket Inventory grouped with their own tighter gap, distinct from the
                 sidebar's regular section-to-section gap (set on GameLayout's outer flex column). */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <h2 style={{ margin: 0, display: "flex", alignItems: "center" }}>
+              <h2 style={{ margin: 0, display: "flex", alignItems: "center", minWidth: 0 }}>
                 {/* Round number stays at h2's own (larger, bold-by-default) size; the ongoing-
-                    action label gets its own smaller, constant size regardless of phase, so a
-                    longer phase (e.g. "is finalizing their move from 70") still reads as one
-                    line rather than wrapping. display:flex + alignItems:center is what actually
-                    centers the shorter span against the taller one - vertical-align is defined
-                    relative to the parent line box's own baseline/x-height, not to a sibling's
-                    box, so setting it on just one span (as this used to) doesn't align it to the
-                    OTHER span at all. The separating space lives inside the second span's own
-                    text (rather than as a bare text node between the two spans) because a flex
-                    container drops a whitespace-only text node entirely, which would have closed
-                    the gap and shifted this label left. */}
-                <span style={{ fontWeight: 700 }}>Round {gameState.round_number}</span>
-                <span style={{ fontSize: 13, fontWeight: 400, color: "var(--color-text-muted)" }}>
+                    action label gets its own smaller, constant size regardless of phase.
+                    display:flex + alignItems:center is what actually centers the shorter span
+                    against the taller one - vertical-align is defined relative to the parent line
+                    box's own baseline/x-height, not to a sibling's box, so setting it on just one
+                    span (as this used to) doesn't align it to the OTHER span at all. The
+                    separating space lives inside the second span's own text (rather than as a
+                    bare text node between the two spans) because a flex container drops a
+                    whitespace-only text node entirely, which would have closed the gap and
+                    shifted this label left.
+
+                    A narrow sidebar (a laptop at 150% display scaling measured ~210px of sidebar
+                    width against a board pane sized from viewport HEIGHT, not width) used to wrap
+                    this onto a second line - shrinking the font only delayed that, it never
+                    prevented it. flexShrink: 0 on "Round N" keeps the one thing worth always
+                    reading intact; minWidth: 0 + overflow/ellipsis on the status span is what
+                    actually forces a single line, by truncating instead of wrapping when the two
+                    together don't fit. */}
+                <span style={{ fontWeight: 700, flexShrink: 0 }}>Round {gameState.round_number}</span>
+                <span
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 400,
+                    color: "var(--color-text-muted)",
+                    minWidth: 0,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
                   {" - "}
                   <OngoingActionText text={ongoingActionLabel} />
                 </span>
