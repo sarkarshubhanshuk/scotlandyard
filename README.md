@@ -136,8 +136,15 @@ pytest -m llm           # opt-in: real, billable LLM calls against a live OPENRO
 ```
 
 ```bash
+cd backend
+ruff check .            # lint
+mypy                    # type-check (scoped - see [tool.mypy] in pyproject.toml)
+```
+
+```bash
 cd frontend
 npm run lint
+npm test                # Vitest: the two hooks' state machines
 npm run build           # also guards the Phaser bundle-split (see frontend/README.md)
 ```
 

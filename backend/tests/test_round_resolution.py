@@ -5,10 +5,10 @@ that does call the model) is covered separately in test_full_round_e2e_llm.py.
 """
 import pytest
 
-from scotland_yard.game_master import compute_valid_moves
+from scotland_yard.board import compute_valid_moves
 from scotland_yard.mrx_turn import IllegalMoveError, get_mr_x_legal_moves, submit_mr_x_move
 from scotland_yard.round_resolver import resolve_round
-from scotland_yard.rules_constants import DETECTIVE_IDS, MAX_ROUND
+from scotland_yard.rules_constants import MAX_ROUND
 from scotland_yard.session import create_game
 
 from .conftest import SEED_POSITIONS

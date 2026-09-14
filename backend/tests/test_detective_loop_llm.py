@@ -6,12 +6,12 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+import pytest
 from langchain_core.callbacks import AsyncCallbackHandler
+
 from scotland_yard.graph import build_next_round_state
 from scotland_yard.round_resolver import detective_graph
 from scotland_yard.rules_constants import DETECTIVE_IDS, NUM_DETECTIVES
-
-import pytest
 
 # Every test in this module makes real, billable OpenRouter calls.
 pytestmark = pytest.mark.llm
@@ -182,7 +182,7 @@ async def run_test_round():
     # We use astream() to process the graph asynchronously and watch the steps unfold
     async for output in detective_graph.astream(initial_state, config=GRAPH_CONFIG):
         # Output is a dict showing which node just completed
-        for node_name, state_update in output.items():
+        for node_name in output:
             print(f"\n[SYSTEM] --> Node '{node_name.upper()}' finished execution.")
 
     print("\n=== ROUND COMPLETE ===")

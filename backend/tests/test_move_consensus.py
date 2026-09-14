@@ -14,20 +14,18 @@ hand-built state.
 """
 import pytest
 
-from scotland_yard.agents import (
-    _enforce_legal_node,
+from scotland_yard.agents import apply_detective_move, responders_for
+from scotland_yard.candidates import (
     annotate_onward_options,
     annotate_revisits,
     annotate_zone_shrink,
-    apply_detective_move,
     fetch_legal_moves,
-    get_collaboration_tier,
-    get_surfacing_proximity_prompt,
     other_detective_nodes,
-    responders_for,
     sort_candidates,
 )
 from scotland_yard.graph import build_next_round_state, finalize_round_node
+from scotland_yard.llm_calls import _enforce_legal_node
+from scotland_yard.prompts import get_collaboration_tier, get_surfacing_proximity_prompt
 from scotland_yard.rules_constants import (
     COLLABORATION_TIERS,
     DETECTIVE_IDS,
@@ -513,7 +511,7 @@ class TestRoundReset:
     def test_per_round_turn_state_is_cleared(self, state, seed_positions):
         state.update(
             turn_index=NUM_DETECTIVES,
-            committed_moves={d: 1 for d in DETECTIVE_IDS},
+            committed_moves=dict.fromkeys(DETECTIVE_IDS, 1),
             turn_records={d: {} for d in DETECTIVE_IDS},
             captured_by="agent_red",
         )
@@ -557,7 +555,7 @@ class TestZoneShrinkAnnotation:
     def test_standing_on_an_exit_scores_lower_than_standing_away_from_one(self, state):
         # Build the comparison directly: a zone of one node, scored against a candidate that is
         # one of its exits versus one that is not.
-        from scotland_yard.game_master import get_node_info, project_zone_one_hop
+        from scotland_yard.board import get_node_info, project_zone_one_hop
 
         mr_x_node = state["mr_x"]["current_node"]
         exits = {c["destination"] for c in get_node_info(mr_x_node)["connections"]}
@@ -570,7 +568,7 @@ class TestZoneShrinkAnnotation:
         # A zone on the far side of the board: nothing this detective can reach this round
         # touches it, so every candidate scores identically and the field is pure prompt weight.
         context, _ = fetch_legal_moves(state, ["agent_red"])
-        far_zone = [n for n in range(150, 160)]
+        far_zone = list(range(150, 160))
         annotate_zone_shrink(state, "agent_red", context, far_zone)
         scores = {m.get("zone_size_after") for m in context["agent_red"]}
         if len(scores) == 1:

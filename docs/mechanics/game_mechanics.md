@@ -176,7 +176,7 @@ it never move. Each `turn` node run is one detective's whole turn:
 - Mr. X's own move needs no ack: the client simply holds the round stream closed for the
   animation's duration, and the backend does not start the round until that stream opens.
 
-**Deterministic enforcement** (`agents.py:_enforce_legal_node`)
+**Deterministic enforcement** (`llm_calls.py:_enforce_legal_node`)
 - Applies to both of the mover's calls. Whatever the model named, the node actually recorded
   must be in the legal set this module computed itself.
 - An illegal or missing answer is reassigned to the mover's **lowest-numbered free legal move**
@@ -186,7 +186,7 @@ it never move. Each `turn` node run is one detective's whole turn:
   discarding it. There is no tally now, so this is the only thing between a hallucinated node
   and `committed_moves`.
 
-**Per-call deadline** (`agents.py:_invoke`)
+**Per-call deadline** (`llm_calls.py:_invoke`)
 - Every call is wrapped in `asyncio.wait_for(LLM_CALL_DEADLINE_SECONDS)`. `llm_client.py`'s
   `timeout=45` is enforced by the HTTP client as an *idle-gap* timeout, reset by each streamed
   chunk — it kills a genuinely stuck call but not a merely slow one (`known_issues.md`
@@ -196,7 +196,7 @@ it never move. Each `turn` node run is one detective's whole turn:
 - A timeout or error is logged at WARNING and returns `None` rather than raising — every caller
   has a deterministic fallback, and a round must always produce a legal move for every detective.
 
-**Mr. X Possible-Zone Context** (shared by all six calls — `agents.py:compute_mrx_zone_context`)
+**Mr. X Possible-Zone Context** (shared by all six calls — `prompts.py:compute_mrx_zone_context`)
 - Computed from `mr_x.last_known_node`/`last_known_round` and the board graph, then injected as
   prompt text into every proposal, response, and decision call. Gives detectives spatial
   grounding they otherwise have none of — see `docs/issues/known_issues.md` ISSUE-005.
@@ -236,7 +236,7 @@ it never move. Each `turn` node run is one detective's whole turn:
 - Every prompt also carries a "use only the data given to you in this prompt, do not seek
   outside information" instruction (`get_psychology_prompt`), added alongside this context.
 
-**Onward-Move Annotation** (`agents.py:annotate_onward_options`)
+**Onward-Move Annotation** (`candidates.py:annotate_onward_options`)
 - Each candidate destination also carries `onward_moves_after`: how many distinct nodes that
   detective would still be able to reach **next** round from there, with the ticket this move
   costs already deducted. A `0` is a dead end.
@@ -251,7 +251,7 @@ it never move. Each `turn` node run is one detective's whole turn:
   ticket arithmetic is exactly the kind of thing it gets quietly wrong. Costs one integer per
   candidate.
 
-**Containment Annotation** (`agents.py:annotate_zone_shrink`) — **ADR-0013**
+**Containment Annotation** (`candidates.py:annotate_zone_shrink`) — **ADR-0013**
 - Each candidate also carries `zone_size_after`: how many nodes Mr. X could still reach next
   round *if this detective stands there*, computed by re-projecting the zone one untyped hop
   with that destination blocked. Lower is better — it means standing on an escape route rather
@@ -267,7 +267,7 @@ it never move. Each `turn` node run is one detective's whole turn:
   several hops out, where nothing it can reach this round touches his space. A column of
   identical numbers is prompt weight carrying no decision.
 
-**Revisit Annotation** (`agents.py:annotate_revisits`, `state.py:recent_positions`)
+**Revisit Annotation** (`candidates.py:annotate_revisits`, `state.py:recent_positions`)
 - Flags candidates the detective vacated within the last two rounds, and reports whether any
   exist so `format_options_block` can omit the whole warning when nothing can trigger it.
 - Detectives are otherwise **completely stateless across rounds**: `messages` is written once per
@@ -278,13 +278,13 @@ it never move. Each `turn` node run is one detective's whole turn:
 - Only recorded when the detective actually moved: a forfeited turn leaves it standing where it
   was, and "recently vacated" would then flag the node it is still on.
 
-**Candidate Ordering** (`agents.py:sort_candidates`)
+**Candidate Ordering** (`candidates.py:sort_candidates`)
 - Options are rendered best-first — `(distance asc, zone_size_after asc, onward desc, node id)`.
   The list previously came out in `map.json`'s own connection order, which carries no meaning.
   Free in both tokens and latency, and small models weight what they read first. The node-id tie
   break exists purely so the ordering is reproducible.
 
-**Intel-Freshness Ladder** (`agents.py:get_surfacing_proximity_prompt`, injected by `get_psychology_prompt`)
+**Intel-Freshness Ladder** (`prompts.py:get_surfacing_proximity_prompt`, injected by `get_psychology_prompt`)
 - How much Mr. X's location is worth knowing swings on a fixed cycle, so the emphasis swings
   with it. Four rungs, keyed purely on `round_number`:
 
@@ -315,7 +315,7 @@ it never move. Each `turn` node run is one detective's whole turn:
   and final decision *and* every other detective's advisory own-move preference identically,
   with no per-detective distance check.
 
-**Collaboration tendency** (`agents.py:get_collaboration_tier`, `get_psychology_prompt`)
+**Collaboration tendency** (`prompts.py:get_collaboration_tier`, `get_psychology_prompt`)
 - `get_psychology_prompt` keeps its three motivations unchanged (1. Team Win, 2. Selfish Glory,
   3. Efficiency). The ladder underneath them used to be a 3-step *desperation* scale whose job
   was to make the vote converge before the loop cap. There is no vote and no cap now, so it
@@ -420,9 +420,9 @@ ended, so `detectives` and `mr_x` are already current.
 - `backend/scotland_yard/server.py:turn_ack_route` — `POST /games/{id}/turn-ack`, which
   deliberately does not take `session.lock` (the round holds it)
 - `backend/scotland_yard/agents.py:responders_for` — the cyclic response order for a given mover
-- `backend/scotland_yard/agents.py:get_psychology_prompt`, `get_collaboration_tier` — the 3 motivations and the
+- `backend/scotland_yard/prompts.py:get_psychology_prompt`, `get_collaboration_tier` — the 3 motivations and the
   round-based collaboration ladder
-- `backend/scotland_yard/agents.py:get_surfacing_proximity_prompt`, `SURFACING_PROXIMITY_GUIDANCE`,
+- `backend/scotland_yard/prompts.py:get_surfacing_proximity_prompt`, `SURFACING_PROXIMITY_GUIDANCE`,
   `SURFACING_RECENCY_GUIDANCE`, `HOW_TO_READ_YOUR_OPTIONS` — the intel-freshness ladder, and the
   annotation legend every one of a turn's six calls now shares (it used to appear only in the
   mover's proposal, leaving the four responders and the mover's own final commit with no stated
@@ -430,27 +430,27 @@ ended, so `detectives` and `mr_x` are already current.
 - `backend/scotland_yard/travel_log.py:hops_since_surfacing`, `bucket_hops_by_round` — re-deriving
   which logged hops belong to which round, including the surfacing-round double-move case where
   the reveal is the intermediate node (**ADR-0013**)
-- `backend/scotland_yard/game_master.py:compute_mrx_zone_from_tickets`, `project_zone_one_hop` —
+- `backend/scotland_yard/board.py:compute_mrx_zone_from_tickets`, `project_zone_one_hop` —
   the ticket-typed zone walk and the one-hop containment projection
-- `backend/scotland_yard/agents.py:annotate_zone_shrink`, `annotate_revisits`, `sort_candidates`
+- `backend/scotland_yard/candidates.py:annotate_zone_shrink`, `annotate_revisits`, `sort_candidates`
 - `backend/scotland_yard/agents.py:MoveChoice`, `TurnResponseChoice` — the two fixed structured-output schemas
-- `backend/scotland_yard/agents.py:_invoke`, `_choose_move`, `_enforce_legal_node` — the per-call deadline, the
+- `backend/scotland_yard/llm_calls.py:_invoke`, `_choose_move`, `_enforce_legal_node` — the per-call deadline, the
   one-retry wrapper, and the deterministic enforcement that backs it
-- `backend/scotland_yard/agents.py:format_board_block`, `format_options_block` — the prompt blocks every call
+- `backend/scotland_yard/prompts.py:format_board_block`, `format_options_block` — the prompt blocks every call
   in a turn shares, so all six demonstrably reason about the same board
 - `backend/scotland_yard/graph.py:build_detective_graph` (and its `check_turn_status` router), `finalize_round_node`, `build_next_round_state`
-- `backend/scotland_yard/game_master.py:compute_valid_moves` — ticket + occupancy legality, server-side
-- `backend/scotland_yard/agents.py:fetch_legal_moves` — the single legal-move lookup, and the
+- `backend/scotland_yard/board.py:compute_valid_moves` — ticket + occupancy legality, server-side
+- `backend/scotland_yard/candidates.py:fetch_legal_moves` — the single legal-move lookup, and the
   occupancy exclusion that makes duplicate destinations structurally impossible
 - `backend/scotland_yard/llm_client.py:get_detective_llm` — cached LLM for the mover's proposal and decision
 - `backend/scotland_yard/llm_client.py:get_debate_llm`, `_build_chat_llm` — the responders' cached, non-tool-
   bound LLM instance (see ISSUE-003) and the shared OpenRouter config helper both LLM getters
   build on
-- `backend/scotland_yard/game_master.py:compute_mrx_zone`, `compute_distances_to_zone` — the board-topology
+- `backend/scotland_yard/board.py:compute_mrx_zone`, `compute_distances_to_zone` — the board-topology
   BFS behind the Mr. X Possible-Zone Context described above
-- `backend/scotland_yard/agents.py:compute_mrx_zone_context`, `format_mrx_zone_block` — builds and renders that
+- `backend/scotland_yard/prompts.py:compute_mrx_zone_context`, `format_mrx_zone_block` — builds and renders that
   context into every prompt
-- `backend/scotland_yard/agents.py:annotate_onward_options`, `other_detective_nodes` — the
+- `backend/scotland_yard/candidates.py:annotate_onward_options`, `other_detective_nodes` — the
   anti-stranding annotation and the live occupancy it is computed against
 - `backend/scotland_yard/transport.py:pick_transport`, `determine_move_transport` — the transport
   legality/tie-break logic shared by `finalize_round_node`'s Chat-Log preview (here),
@@ -658,7 +658,7 @@ Starlette API (`backend/scotland_yard/server.py`).
 ### Implementation References
 
 - `backend/scotland_yard/state.py` — `MrXState.current_node` (additive field)
-- `backend/scotland_yard/game_master.py:compute_valid_moves` — pure function extracted from the `get_valid_moves`
+- `backend/scotland_yard/board.py:compute_valid_moves` — pure function extracted from the `get_valid_moves`
   MCP tool so server-side code can call it in-process, without the MCP stdio subprocess round-trip
   that only LLM tool-calling actually needs
 - `backend/scotland_yard/session.py:GameSession`, `create_game`

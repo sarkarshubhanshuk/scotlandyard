@@ -26,7 +26,10 @@ def serialize_public_state(session: GameSession) -> dict:
     than only in the ADR.
     """
     state = session.state
-    mr_x_public = {field: state["mr_x"][field] for field in _MR_X_PUBLIC_FIELDS}
+    # dict() first: MrXState is a TypedDict, which can only be indexed by a literal key, and
+    # this is deliberately a projection over a named field list rather than field-by-field.
+    mr_x_all = dict(state["mr_x"])
+    mr_x_public = {field: mr_x_all[field] for field in _MR_X_PUBLIC_FIELDS}
 
     return {
         "game_id": session.game_id,

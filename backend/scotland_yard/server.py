@@ -21,7 +21,7 @@ from starlette.responses import FileResponse, JSONResponse, PlainTextResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from .game_master import BASE_DIR, map_data, node_positions
+from .board import BASE_DIR, map_data, node_positions
 from .limits import (
     check_new_game,
     check_round_budget,

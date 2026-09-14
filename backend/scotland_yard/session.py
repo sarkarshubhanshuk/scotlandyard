@@ -162,7 +162,9 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
     else:
         drawn = random.sample(STARTING_NODE_POOL, 6)
         positions = {"mr_x": drawn[0]}
-        for det_id, node in zip(DETECTIVE_IDS, drawn[1:]):
+        # strict: the draw and DETECTIVE_IDS must stay the same length. Silently zipping
+        # short would leave a detective with no starting node at all.
+        for det_id, node in zip(DETECTIVE_IDS, drawn[1:], strict=True):
             positions[det_id] = node
 
     state: ScotlandYardState = {
@@ -173,15 +175,25 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
             "last_known_node": None,
             "last_known_round": None,
             "transport_history": [],
-            **MR_X_STARTING_TICKETS,
+            # mypy cannot verify a `**dict[str, int]` expansion against a TypedDict's field
+            # list, and the alternative - restating all five ticket fields here - would put a
+            # second copy of a rules.md value outside rules_constants.py, which is the one thing
+            # that module exists to prevent. The starting inventories stay the single
+            # transcription; this pair of ignores is the price. warn_unused_ignores is on, so
+            # they will be flagged the moment mypy learns to check this.
+            **MR_X_STARTING_TICKETS,  # type: ignore[typeddict-item]
         },
         "detectives": {
-            det_id: {"node_id": positions[det_id], **DETECTIVE_STARTING_TICKETS}
+            det_id: {"node_id": positions[det_id], **DETECTIVE_STARTING_TICKETS}  # type: ignore[typeddict-item]
             for det_id in DETECTIVE_IDS
         },
         "messages": [],
         "committed_moves": {},
         "turn_records": {},
+        # Explicit rather than relied upon: ScotlandYardState is a total TypedDict, so omitting
+        # this was a schema violation that happened to work only because every reader used
+        # .get(). graph.py's router treats a truthy value as "the game just ended".
+        "captured_by": None,
         "final_moves": {},
         "final_move_details": {},
         "recent_positions": {},

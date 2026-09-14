@@ -8,7 +8,7 @@ more - each happens at the end of its own detective's turn (ADR-0010).
 import logging
 from typing import AsyncIterator, Optional, TypedDict
 
-from .game_master import compute_valid_moves
+from .board import compute_valid_moves
 from .graph import build_detective_graph, build_next_round_state
 from .rules_constants import DETECTIVE_IDS, MAX_ROUND
 from .session import GameSession

@@ -47,14 +47,13 @@ async def _event_names_and_data(session) -> tuple[list[str], list[str]]:
     data: list[str] = []
     async with httpx.AsyncClient(
         transport=transport, base_url="https://testserver", cookies={PLAYER_COOKIE: OWNER_TOKEN}
-    ) as client:
-        async with client.stream("GET", f"/games/{session.game_id}/round/stream") as response:
-            assert response.status_code == 200
-            async for line in response.aiter_lines():
-                if line.startswith("event:"):
-                    names.append(line.split(":", 1)[1].strip())
-                elif line.startswith("data:"):
-                    data.append(line.split(":", 1)[1].strip())
+    ) as client, client.stream("GET", f"/games/{session.game_id}/round/stream") as response:
+        assert response.status_code == 200
+        async for line in response.aiter_lines():
+            if line.startswith("event:"):
+                names.append(line.split(":", 1)[1].strip())
+            elif line.startswith("data:"):
+                data.append(line.split(":", 1)[1].strip())
     return names, data
 
 

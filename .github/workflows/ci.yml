@@ -31,8 +31,20 @@ jobs:
       - name: Install backend with dev extras
         run: pip install -e ".[dev]"
 
-      - name: Run tests
-        run: pytest -q
+      # The backend is where the money and the game rules are, and it was the half with no
+      # quality gate beyond the tests - the frontend already had eslint plus a type-checked
+      # build. Lint and types run BEFORE the tests so an obvious defect fails in seconds
+      # rather than after the whole suite.
+      - name: Lint (ruff)
+        run: ruff check .
+
+      # Scoped to the game's factual core - see [tool.mypy] in pyproject.toml for why the
+      # LangGraph-facing modules are not in that list yet.
+      - name: Type-check (mypy)
+        run: mypy
+
+      - name: Run tests with coverage
+        run: pytest -q --cov=scotland_yard
 
   frontend:
     runs-on: ubuntu-latest
@@ -51,6 +63,10 @@ jobs:
       - run: npm ci
 
       - run: npm run lint
+
+      # The two hooks duplicate backend rules so the board can stay live mid-round (ADR-0010).
+      # Nothing else in this job can see a wrong ticket or a mis-paired turn-ack.
+      - run: npm test
 
       # Also runs sync-assets (prebuild), so this verifies data/ -> public/ still resolves.
       - run: npm run build

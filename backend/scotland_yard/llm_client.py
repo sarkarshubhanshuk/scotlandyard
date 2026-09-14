@@ -5,7 +5,7 @@ There is no MCP client here any more. The agents used to bind the Game Master's 
 to the LLM, but they never actually took a tool-calling path: every call wraps the model in
 `with_structured_output(...)`, and the psychology prompt explicitly forbids tool use
 (ISSUE-003). The board lookups that looked like tool calls were pre-fetches this application
-makes on the agents' behalf, so they now call game_master.compute_valid_moves directly
+makes on the agents' behalf, so they now call board.compute_valid_moves directly
 in-process. See ADR-0001 for the full reasoning and for what still uses the MCP server.
 
 Two separately-cached clients live here, one per kind of call a turn makes:

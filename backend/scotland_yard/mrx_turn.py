@@ -1,7 +1,7 @@
 import logging
 from typing import Dict, List, Optional
 
-from .game_master import get_node_info
+from .board import get_node_info
 from .rules_constants import SURFACING_ROUNDS, VALID_TICKET_TYPES
 from .session import GameSession
 from .travel_log import DOUBLE_SENTINEL

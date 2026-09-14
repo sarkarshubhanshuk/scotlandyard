@@ -91,7 +91,8 @@ assert COLLABORATION_TIERS[-1][0] >= MAX_ROUND, (
     f"{COLLABORATION_TIERS[-1][0]}."
 )
 assert all(
-    earlier[0] < later[0] for earlier, later in zip(COLLABORATION_TIERS, COLLABORATION_TIERS[1:])
+    earlier[0] < later[0]
+    for earlier, later in zip(COLLABORATION_TIERS, COLLABORATION_TIERS[1:], strict=False)
 ), f"COLLABORATION_TIERS' round bounds must be strictly increasing: {COLLABORATION_TIERS}"
 
 # --- Pawn-animation handshake (see ADR-0010) -------------------------------------------

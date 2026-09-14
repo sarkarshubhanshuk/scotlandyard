@@ -1,5 +1,5 @@
 """
-Unit tests for game_master's pure board-graph functions.
+Unit tests for board.py's pure board-graph functions.
 
 These are the functions every other layer trusts for legality and spatial reasoning, and
 until now they had no direct coverage at all - they were only ever exercised incidentally
@@ -7,7 +7,7 @@ through a full LLM round, which is slow, costs money, and is non-deterministic.
 """
 import random
 
-from scotland_yard.game_master import (
+from scotland_yard.board import (
     _bfs_from,
     compute_distances_to_zone,
     compute_mrx_zone,

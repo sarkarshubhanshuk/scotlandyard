@@ -8,7 +8,7 @@ unfolds), this asserts the structural invariants the pipeline must uphold regard
 the LLM actually said this run: every detective took exactly one turn, no two ended up on the
 same final node, every committed move survives into final_moves unchanged, and every final
 move was actually legally reachable from that detective's OWN starting position (recomputed
-independently via game_master.compute_valid_moves rather than trusting the graph's own
+independently via board.compute_valid_moves rather than trusting the graph's own
 bookkeeping).
 
 Assertion 4 is the one that catches a whole class of regression: it would have failed the old
@@ -29,8 +29,9 @@ from typing import Any
 from uuid import UUID
 
 from langchain_core.callbacks import AsyncCallbackHandler
+
 from scotland_yard.agents import responders_for
-from scotland_yard.game_master import compute_valid_moves
+from scotland_yard.board import compute_valid_moves
 from scotland_yard.round_resolver import detective_graph
 from scotland_yard.rules_constants import DETECTIVE_IDS, NUM_DETECTIVES
 
