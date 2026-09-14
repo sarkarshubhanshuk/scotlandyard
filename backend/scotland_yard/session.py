@@ -112,10 +112,9 @@ GAMES: Dict[str, GameSession] = {}
 
 def _evict_stale_games(now: Optional[float] = None) -> int:
     """
-    Drops every game untouched for longer than SESSION_TTL_SECONDS. Called on each
-    create_game rather than from a background task - new-game creation is the only way
-    the store can grow, so it is also the only moment eviction can ever be needed, and
-    doing it inline keeps the module free of any background-task lifecycle to manage.
+    Drops every game untouched for longer than SESSION_TTL_SECONDS. Swept inline - on each
+    create_game, and on each active_game_count() - rather than from a background task, which
+    keeps the module free of any background-task lifecycle to manage.
 
     Returns how many games were evicted (for logging/tests).
     """
@@ -129,6 +128,24 @@ def _evict_stale_games(now: Optional[float] = None) -> int:
     if stale:
         logger.info("Evicted %d game(s) idle for over %ds", len(stale), SESSION_TTL_SECONDS)
     return len(stale)
+
+
+def active_game_count() -> int:
+    """
+    How many games are genuinely still alive - stale ones swept first.
+
+    The sweep here is not an optimization, it is the entire point of the function. server.py's
+    new-game cap (limits.MAX_ACTIVE_GAMES) is checked against this number, and eviction used to
+    happen ONLY inside create_game - which sits downstream of that check. So a store that had
+    filled up with abandoned games refused every new game with a 429 and, because the refusal
+    returned before create_game ever ran, never swept the games causing the refusal. The service
+    stayed wedged that way until the process restarted, taking every live game with it.
+
+    Counting through this function is what makes the cap a bound on LIVE games rather than on
+    accumulated litter. Anything checking capacity must ask here, never `len(GAMES)`.
+    """
+    _evict_stale_games()
+    return len(GAMES)
 
 
 def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:

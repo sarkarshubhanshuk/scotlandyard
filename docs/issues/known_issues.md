@@ -1093,3 +1093,95 @@ case, the original entry has been updated too, rather than left to contradict th
   comment describes the actual current policy; the timeout comment is corrected (ISSUE-009); the
   conversational artifact is gone. The rationale these comments carried was mostly good enough to
   *relocate* into ADRs rather than rewrite — which is what `docs/adr/` largely consists of.
+
+---
+
+## Group F: Second Architecture Audit (2026-09-14)
+
+Issues found during a second full-codebase audit, covering architecture/ADRs, code quality,
+repository structure and documentation. The three recorded here are the ones that were fixed
+immediately, because each is a live defect in the deployed service rather than a quality
+concern. The remainder of that audit's findings were not defects and are not logged here.
+
+### ISSUE-039 — TTL eviction was unreachable behind the concurrent-game cap, wedging the service permanently
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/scotland_yard/session.py`, `server.py:create_game_route`
+- **Logged**: 2026-09-14
+- **Description**: `create_game_route` evaluated the concurrent-game cap with
+  `check_new_game(ip, active_games=len(GAMES))` and returned 429 on refusal. `_evict_stale_games`
+  was called from exactly one place — inside `create_game()` — which sits *below* that check.
+  So once `len(GAMES)` reached `MAX_ACTIVE_GAMES` (default 20), every request was refused before
+  the only code that could sweep the store ever ran.
+
+  The failure is self-sustaining and terminal: 20 abandoned games — page refreshes, closed tabs,
+  anyone who pressed New Game and left — permanently refuse every subsequent game. `SESSION_TTL_SECONDS`
+  correctly marks them *stale* after two hours, but nothing ever sweeps them, so they are stale
+  forever. The only recovery is a process restart, which by ADR-0005 also destroys every
+  genuinely live game. This directly defeated the purpose `session.py`'s own comment states for
+  the TTL ("without a TTL every abandoned game … leaks for the lifetime of the process") —
+  the sweep existed, it was simply unreachable from the path that needed it.
+- **Fix**: Added `session.active_game_count()`, which sweeps before counting, and switched the
+  route to it. The cap is now a bound on *live* games rather than on accumulated litter. The
+  function's docstring states that capacity checks must never use `len(GAMES)` directly, since
+  that is the shape the bug took. Covered by
+  `tests/test_api.py::TestDeploymentLimits::test_stale_games_are_swept_before_the_concurrent_cap_is_applied`,
+  which was confirmed to fail (429, expected 201) against the previous ordering.
+
+### ISSUE-040 — An exception inside the round stream ended it silently, leaving no way to tell a broken deployment from a network blip
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/scotland_yard/server.py:round_stream_route`, `llm_client.py`,
+  `frontend/src/hooks/useRoundStream.ts`, `types.ts`
+- **Logged**: 2026-09-14
+- **Description**: `round_stream_route.event_generator` had no exception handling. By the time it
+  runs, the SSE response has already begun, so `unhandled_exception_handler` cannot reach it —
+  there is no status code left to send. Any exception therefore just ended the stream, which
+  reaches the browser as a bare `EventSource.onerror` and rendered as "Lost connection to the
+  detective loop stream": indistinguishable from a dropped wifi connection.
+
+  At least three paths reached it. The most likely by far: `agents.py:turn_node` calls
+  `get_detective_llm()` *outside* `_invoke`'s try, so a missing or invalid `OPENROUTER_API_KEY`
+  raises at `ChatOpenAI` construction. That is precisely the "forgot to set the platform secret"
+  deployment mistake — and since the key is read lazily (CI's Docker job depends on the server
+  booting without one), such a deployment looks perfectly healthy until the first round starts.
+  The others: `graph.py:finalize_round_node`'s deliberate `AssertionError`, and any failure in
+  the graph outside `_invoke`'s own catch.
+- **Fix**: Two layers. (1) A pre-flight `llm_client.api_key_configured()` check before the stream
+  opens, so the commonest cause is a readable 503 naming the actual problem, logged at ERROR.
+  (2) The generator body is wrapped, emitting a terminal `round_error` event carrying a generic
+  client-facing message (the exception text stays in the server log — this endpoint is public and
+  unauthenticated) plus a fresh state snapshot. `asyncio.CancelledError` inherits from
+  `BaseException`, so an ordinary client disconnect is deliberately *not* caught and does not
+  report as a round failure.
+- **Why the session is left in `detective_loop_running`**: `run_detective_loop` assigns
+  `session.state` only once the graph runs to completion, so a mid-round failure leaves the
+  session exactly as the round started — there is no half-moved board to resume into. Leaving the
+  status alone is therefore what makes the client's Retry *correct*, not merely permitted: it
+  replays the whole round from untouched state. The frontend routes `round_error` through the
+  existing `connectionError` channel, which already renders a Retry button, so the server's own
+  wording replaces the misleading "lost connection" with no new UI.
+- **Covered by**: `tests/test_round_stream_failure.py` (terminal event, no leaked exception text,
+  state untouched, and an actual successful retry after a failure), plus
+  `tests/test_api.py::TestDeploymentLimits::test_a_round_is_refused_outright_when_no_llm_api_key_is_configured`.
+
+### ISSUE-041 — Logging was configured only in `main()`, so the documented dev command ran with none
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/scotland_yard/server.py`, `tests/test_api.py`
+- **Logged**: 2026-09-14
+- **Description**: `configure_logging()` was called from `server.main()` only. But `app` is a
+  module-level object, so every ASGI launcher builds it without ever calling `main()` — including
+  `uvicorn scotland_yard.server:app --reload`, which `README.md` documents as the development
+  command. Root logging was then never configured and fell back to `logging.lastResort`.
+
+  Two consequences, both silent. Every `logger.info` in the round loop vanished — the entire turn
+  narrative, the router's decisions, `[ZONE FALLBACK]`. And the `[VALIDATION]` warnings that did
+  survive (lastResort is WARNING-level) printed through a handler with no `GameIdFilter`, losing
+  the `[game_id]` field that `logging_config.py` exists to attach and that ISSUE-033 added
+  specifically so concurrent games stay separable.
+- **Fix**: `configure_logging()` is now called at module scope in `server.py`, which covers every
+  launcher and additionally captures the module-level lines below it (such as the "no SPA build"
+  notice) that an `on_startup` hook would run too late to see. It clears root handlers first, so
+  the call is idempotent; the redundant call in `main()` was removed. Covered by
+  `tests/test_api.py::TestLoggingConfiguration`.

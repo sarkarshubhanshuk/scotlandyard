@@ -28,14 +28,26 @@ from .limits import (
     client_ip,
     record_new_game,
 )
+from .llm_client import api_key_configured
 from .logging_config import configure_logging, game_log_context
 from .mrx_turn import IllegalMoveError, get_mr_x_legal_moves, submit_mr_x_move
 from .requests import MR_X_MOVE_ADAPTER, Hop2PreviewQuery, TurnAckRequest
 from .round_resolver import resolve_round, run_detective_loop
 from .serializers import serialize_loop_event, serialize_public_state
-from .session import GAMES, SESSION_TTL_SECONDS, create_game
+from .session import GAMES, SESSION_TTL_SECONDS, active_game_count, create_game
 
 logger = logging.getLogger(__name__)
+
+# Configured HERE, at import, rather than only in main(). `app` is a module-level object, so
+# every ASGI launcher - `uvicorn scotland_yard.server:app --reload` (which README.md documents
+# for development), gunicorn, a platform's own runner - builds it WITHOUT ever calling main().
+# Root logging was then left unconfigured, falling back to logging.lastResort: every logger.info
+# in the round loop vanished, and the [VALIDATION] warnings that survived printed through a
+# handler with no [game_id] field, which is the one thing logging_config exists to attach.
+# Doing it at import also captures the module-level lines below (e.g. the "no SPA build" notice),
+# which an on_startup hook would run too late to see. configure_logging clears root handlers
+# first, so calling it once here is idempotent and safe to repeat.
+configure_logging()
 
 # Origins allowed to call this API. Defaults to the Vite dev server only - the previous
 # wildcard was opened before the frontend existed and was never narrowed once it did. Every
@@ -130,7 +142,11 @@ async def create_game_route(request: Request) -> JSONResponse:
     expire out from under them mid-session.
     """
     ip = client_ip(request)
-    refusal = check_new_game(ip, active_games=len(GAMES))
+    # active_game_count(), never len(GAMES): it sweeps TTL-expired games before counting. The
+    # cap is meant to bound how many games are RUNNING, and eviction used to happen only inside
+    # create_game - below this check - so a store full of abandoned games refused every new game
+    # and never swept the games doing the refusing. See session.active_game_count.
+    refusal = check_new_game(ip, active_games=active_game_count())
     if refusal is not None:
         logger.info("Refused a new game for %s: %s", ip, refusal)
         return _error(refusal, 429)
@@ -286,6 +302,18 @@ async def round_stream_route(request: Request):
         logger.warning("Refused a round for game %s: %s", session.game_id, refusal)
         return _error(refusal, 503)
 
+    # Checked before the stream opens, for the same reason the budget is: once the SSE response
+    # has started there is no status code left to send, and a missing key would otherwise surface
+    # to the player as nothing but a dropped connection. This is a deployment misconfiguration
+    # (the key is supplied as a platform secret), so it is logged at ERROR and named plainly.
+    if not api_key_configured():
+        logger.error(
+            "Refused a round for game %s: OPENROUTER_API_KEY is not set on this deployment.",
+            session.game_id)
+        return _error(
+            "The detectives are unavailable - this deployment has no LLM API key configured.",
+            503)
+
     async def event_generator():
         with game_log_context(session.game_id):
             async with session.lock:
@@ -302,29 +330,59 @@ async def round_stream_route(request: Request):
                     }
                     return
 
-                async for event in run_detective_loop(session):
-                    if event["type"] == "turn_event":
-                        # One LLM call's worth of a detective's turn, streamed the moment it
-                        # completed. agents.py names the event ("turn_started",
-                        # "turn_proposal", "turn_response", "turn_decision"); the SSE event
-                        # name is taken from that so the client can register one listener per
-                        # kind, exactly as it does for the node-level events below.
-                        turn_event = dict(event["payload"])
-                        payload = {"type": turn_event.pop("event"), **turn_event}
-                    else:
-                        payload = serialize_loop_event(event["node"], event["update"])
-                    yield {"event": payload["type"], "data": json.dumps(payload)}
+                # Every failure inside the round has to become an EVENT, because by the time
+                # anything here runs the response has already started and no status code can be
+                # sent any more. Without this, an exception escaping the loop just ended the
+                # stream: the browser reported a generic "lost connection", and the player had
+                # no way to tell a network blip apart from a broken deployment.
+                #
+                # asyncio.CancelledError inherits from BaseException, so a client that simply
+                # disconnects is NOT caught here - it stays an ordinary cancellation rather than
+                # being reported as a round failure.
+                try:
+                    async for event in run_detective_loop(session):
+                        if event["type"] == "turn_event":
+                            # One LLM call's worth of a detective's turn, streamed the moment it
+                            # completed. agents.py names the event ("turn_started",
+                            # "turn_proposal", "turn_response", "turn_decision"); the SSE event
+                            # name is taken from that so the client can register one listener per
+                            # kind, exactly as it does for the node-level events below.
+                            turn_event = dict(event["payload"])
+                            payload = {"type": turn_event.pop("event"), **turn_event}
+                        else:
+                            payload = serialize_loop_event(event["node"], event["update"])
+                        yield {"event": payload["type"], "data": json.dumps(payload)}
 
-                round_result = resolve_round(session)
-                # "type" is included for consistency with every other event's payload (and
-                # with frontend/src/types.ts's RoundResultEvent, which declares it) - this
-                # one payload was assembled by spreading RoundResult and never carried it.
-                final_payload = {
-                    "type": "round_result",
-                    **round_result,
-                    "state": serialize_public_state(session),
-                }
-                yield {"event": "round_result", "data": json.dumps(final_payload)}
+                    round_result = resolve_round(session)
+                    # "type" is included for consistency with every other event's payload (and
+                    # with frontend/src/types.ts's RoundResultEvent, which declares it) - this
+                    # one payload was assembled by spreading RoundResult and never carried it.
+                    final_payload = {
+                        "type": "round_result",
+                        **round_result,
+                        "state": serialize_public_state(session),
+                    }
+                    yield {"event": "round_result", "data": json.dumps(final_payload)}
+                except Exception:
+                    # session.status is deliberately LEFT at "detective_loop_running", which is
+                    # what makes the client's retry correct rather than merely permitted:
+                    # run_detective_loop only assigns session.state once the graph has run to
+                    # completion, so a mid-round failure leaves the session exactly as the round
+                    # started. Retrying replays the whole round from that untouched state; it
+                    # cannot resume into a half-moved board, because no half-moved board was ever
+                    # committed.
+                    logger.exception("Round failed for game %s", session.game_id)
+                    yield {
+                        "event": "round_error",
+                        "data": json.dumps({
+                            "type": "round_error",
+                            # Deliberately generic: this endpoint is public and unauthenticated,
+                            # and the exception text is in the server log for whoever can read it.
+                            "message": ("The detectives hit an unexpected problem this round. "
+                                        "The round was not applied - you can try again."),
+                            "state": serialize_public_state(session),
+                        }),
+                    }
 
     return EventSourceResponse(event_generator())
 
@@ -415,7 +473,8 @@ def main() -> None:
     """
     import uvicorn
 
-    configure_logging()
+    # Logging is already configured at import (see the configure_logging call at the top of this
+    # module), which covers this entrypoint and every ASGI launcher alike.
     host = os.getenv("HOST", "127.0.0.1")
     port = int(os.getenv("PORT", "8000"))
     logger.info("Starting Scotland Yard API on http://%s:%d (CORS: %s)",

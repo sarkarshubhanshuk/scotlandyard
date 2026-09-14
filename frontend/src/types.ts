@@ -150,6 +150,20 @@ export interface RoundFinalizedEvent {
   final_moves: Record<string, FinalizedMove>;
 }
 
+// The round failed server-side and was NOT applied. Terminal, like round_result: the stream
+// ends here. Emitted as an event rather than an HTTP error because the SSE response has already
+// started by the time a round can fail, so there is no status code left to send - without it the
+// stream simply stopped, which reaches the browser as an indistinguishable generic `onerror`.
+//
+// `state` is the server's snapshot, unchanged by the failed round: the backend only commits a
+// round's state once the whole graph completes, so reopening the stream replays the round from
+// the start rather than resuming a half-moved board. That is why this is retryable.
+export interface RoundErrorEvent {
+  type: "round_error";
+  message: string;
+  state: PublicGameState;
+}
+
 export interface RoundResultEvent {
   type: "round_result";
   status: GameStatus;

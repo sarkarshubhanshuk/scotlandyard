@@ -41,6 +41,22 @@ _cached_debate_llm = None
 _debate_cache_lock = asyncio.Lock()
 
 
+def api_key_configured() -> bool:
+    """
+    Whether an OpenRouter key is present at all.
+
+    The key is read lazily - ChatOpenAI is only constructed on the first call of a round - which
+    is deliberate: the server boots and serves the whole SPA without one, and CI's Docker job
+    depends on exactly that. The cost is that a deployment missing its key looks perfectly
+    healthy right up until a round starts, and then fails inside the stream where an HTTP error
+    response can no longer be sent. server.py calls this before opening the round stream so that
+    failure is a plain, readable 503 instead.
+
+    Presence only, never validity - a wrong key can only be discovered by spending a call on it.
+    """
+    return bool(os.getenv("OPENROUTER_API_KEY"))
+
+
 def _build_chat_llm() -> ChatOpenAI:
     """
     Shared OpenRouter client config for every detective-facing LLM instance (tool-bound or

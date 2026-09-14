@@ -10,10 +10,14 @@ so it lives in test_full_round_e2e_llm.py behind the `llm` marker. What IS cover
 every path that rejects a request before any model is involved - which is where the
 structural-validation bugs lived.
 """
+import logging
+
 import pytest
 from starlette.testclient import TestClient
 
 from scotland_yard import limits, server
+from scotland_yard import session as session_module
+from scotland_yard.logging_config import GameIdFilter, game_log_context
 from scotland_yard.rules_constants import DETECTIVE_IDS
 
 
@@ -330,6 +334,44 @@ class TestSpaAndHealth:
         assert response.text == "ok"
 
 
+class TestLoggingConfiguration:
+    """
+    Regression: logging was configured only inside server.main().
+
+    `app` is a module-level object, so every ASGI launcher - including the
+    `uvicorn scotland_yard.server:app --reload` that README.md documents for development -
+    builds it without ever calling main(). Root logging was left unconfigured, so the round
+    loop's whole INFO narrative vanished and the [VALIDATION] warnings that did survive came
+    out through logging.lastResort, with no [game_id] attached. Importing the module has to be
+    enough.
+    """
+
+    def test_importing_the_app_configures_root_logging(self):
+        root = logging.getLogger()
+        assert root.handlers, "importing scotland_yard.server must configure root logging"
+        assert any(
+            isinstance(f, GameIdFilter) for handler in root.handlers for f in handler.filters
+        ), "the game-id filter must be attached, or every log line loses its game attribution"
+
+    def test_a_log_record_renders_with_a_game_id(self, caplog):
+        """The formatter references %(game_id)s, so a record without it would raise on format."""
+        handler = next(h for h in logging.getLogger().handlers if h.filters)
+        record = logging.LogRecord(
+            "scotland_yard.test", logging.WARNING, __file__, 1, "[VALIDATION] x", None, None
+        )
+        for f in handler.filters:
+            f.filter(record)
+        assert handler.format(record).count("[-]") == 1
+
+        with game_log_context("game-123"):
+            record = logging.LogRecord(
+                "scotland_yard.test", logging.WARNING, __file__, 1, "[VALIDATION] x", None, None
+            )
+            for f in handler.filters:
+                f.filter(record)
+            assert "[game-123]" in handler.format(record)
+
+
 class TestDeploymentLimits:
     """
     The caps that make a public, loginless link survivable: a completed game is roughly 720 LLM
@@ -374,6 +416,55 @@ class TestDeploymentLimits:
         refused = client.get(f"/games/{game_id}/round/stream")
         assert refused.status_code == 503
         assert "thinking limit" in refused.json()["error"]
+
+    def test_stale_games_are_swept_before_the_concurrent_cap_is_applied(self, client, monkeypatch):
+        """
+        Regression: the cap used to be checked against a store nothing had swept.
+
+        Eviction lived only inside create_game, which sits BELOW the cap check, so once enough
+        abandoned games accumulated every POST /games returned 429 and returned before the only
+        code that could have evicted them ever ran. The service stayed wedged until a restart -
+        which would also have destroyed every genuinely live game. The cap has to bound games
+        that are actually alive, so the sweep must happen before the count is taken.
+        """
+        monkeypatch.setattr(limits, "MAX_ACTIVE_GAMES", 2)
+        first = client.post("/games")
+        second = client.post("/games")
+        assert first.status_code == 201
+        assert second.status_code == 201
+        # At the cap, with both games live: correctly refused.
+        assert client.post("/games").status_code == 429
+
+        # Now age both of them past the TTL without touching them - the abandoned-tab case.
+        for session in server.GAMES.values():
+            session.last_touched_at -= session_module.SESSION_TTL_SECONDS + 1
+
+        allowed = client.post("/games")
+        assert allowed.status_code == 201, (
+            "A store holding only TTL-expired games must not refuse a new one - "
+            "the stale games should have been swept before the cap was evaluated."
+        )
+        assert len(server.GAMES) == 1, "the two expired games should be gone, not merely ignored"
+
+    def test_a_round_is_refused_outright_when_no_llm_api_key_is_configured(
+        self, client, game, monkeypatch
+    ):
+        """
+        The key is read lazily, so a deployment missing it looks healthy until a round starts -
+        at which point the failure would land INSIDE the SSE body, where no status code can be
+        sent and the player sees nothing but a dropped connection. Checked before the stream
+        opens so it is a readable 503 instead.
+
+        Overrides conftest's autouse _assume_llm_key_configured, which pins this true for every
+        other route test.
+        """
+        monkeypatch.setattr(server, "api_key_configured", lambda: False)
+        game_id, _ = game
+        server.GAMES[game_id].status = "detective_loop_running"
+
+        refused = client.get(f"/games/{game_id}/round/stream")
+        assert refused.status_code == 503
+        assert "no LLM API key" in refused.json()["error"]
 
     def test_every_llm_attempt_counts_including_failures(self):
         # _invoke records before it calls, so a timeout or an auth error still counts - it has
