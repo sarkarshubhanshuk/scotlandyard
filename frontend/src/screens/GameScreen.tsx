@@ -251,7 +251,10 @@ function LoadedGame({ gameId, mapData, gameState, onGameStateChange }: LoadedGam
                   <OngoingActionText text={ongoingActionLabel} />
                 </span>
               </h2>
-              <TicketInventory gameState={gameState} />
+              {/* Same activeTurnPawnId the board's halo uses, so the sidebar's highlighted
+                  row and the ring on the board are two renderings of one answer rather than two
+                  independent guesses that can disagree. */}
+              <TicketInventory gameState={gameState} activeTurnPawnId={activeTurnPawnId} />
             </div>
             <ChatLog
               entries={roundStream.entries}

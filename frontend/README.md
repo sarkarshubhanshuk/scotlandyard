@@ -80,7 +80,26 @@ top-level `data/` directory on every `dev`/`build`. Those paths are gitignored �
 originals in `data/`**, not the copies. `favicon.svg` is real committed frontend source and is
 not touched by the sync.
 
-### 4. StrictMode double-invoke
+### 4. The Ticket Inventory table has a width floor
+
+Its five column headers are full labels ("Metro Tickets", "Double Moves") kept on a single line
+at 10px, which is a deliberate choice rather than a default. Measured in the running app, the
+table compresses down to a **383px floor** and clips below that:
+
+| Sidebar width | Result |
+|---|---|
+| 530px (a 1536px viewport) | fits at natural width |
+| 433px | fits, compressed |
+| 383px | the floor — exactly fits |
+| 300px | overflows by 83px |
+| 210px (a laptop at 150% display scaling) | overflows by 173px |
+
+The sidebar takes whatever width the board pane leaves, and the board is sized from viewport
+*height* (see GameLayout), so a short-and-wide window is the comfortable case and a tall-and-narrow
+one is not. If the floor is ever a problem, letting the headers wrap to two lines is the fix —
+they only stay on one line because nothing yet needed them not to.
+
+### 5. StrictMode double-invoke
 
 `main.tsx` uses `<StrictMode>`, so in development React mounts → unmounts → remounts effects
 once. This has bitten this project twice:

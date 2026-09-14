@@ -1,5 +1,5 @@
 import Phaser from "phaser";
-import { AGENT_COLORS, DETECTIVE_LABELS } from "../labels";
+import { AGENT_COLORS, DETECTIVE_LABELS, MR_X_COLOR } from "../labels";
 import { DETECTIVE_IDS, type DetectiveId, type MapData, type MapNode, type PublicGameState } from "../types";
 import { BOARD_HEIGHT, BOARD_WIDTH, PAWN_MOVE_DURATION_MS } from "./boardDimensions";
 
@@ -42,7 +42,6 @@ const PAWN_SIZE = 24;
 // (black * anything = black) - this is what keeps every pawn's border black while only the fill
 // varies. Per-agent colors live in labels.ts (AGENT_COLORS) so TicketInventory/ChatLog can use
 // the exact same values for their text coloring.
-const MR_X_COLOR = 0x3a3a3a;
 // Semi-transparent on a non-surfacing round - a reminder to the human Mr. X player that
 // detectives don't currently know this position, not an actual information-hiding mechanism
 // (see renderPawns()'s own comment on why exposing current_node here is safe at all).
