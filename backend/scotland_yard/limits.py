@@ -42,6 +42,35 @@ MAX_ACTIVE_GAMES = _int_env("MAX_ACTIVE_GAMES", 20)
 # loop game creation from a script.
 MAX_GAMES_PER_IP_PER_HOUR = _int_env("MAX_GAMES_PER_IP_PER_HOUR", 6)
 
+# How many distinct clients the per-IP tracker will hold at once.
+#
+# This is the bound that actually matters, because the key it tracks by is not trustworthy.
+# client_ip() reads X-Forwarded-For, which the caller controls, so a script rotating that header
+# mints a brand-new bucket on every request. Buckets were previously created and never removed -
+# empty deques stayed in the dict forever - which made an unauthenticated endpoint an unbounded
+# allocator. Sweeping reclaims them; this caps the worst case between sweeps.
+#
+# Generous relative to MAX_ACTIVE_GAMES: this counts everyone who STARTED a game in the last
+# hour, not everyone currently playing, and refusing to track someone silently weakens the limit
+# rather than announcing itself.
+MAX_TRACKED_CLIENTS = _int_env("MAX_TRACKED_CLIENTS", 10_000)
+
+# Whether to believe X-Forwarded-For at all.
+#
+# Defaults to TRUE, and deliberately so: the deployment sits behind Render's proxy, which is what
+# sets the header. Ignoring it would collapse every visitor onto the proxy's own address - one
+# shared bucket - turning MAX_GAMES_PER_IP_PER_HOUR from a per-person limit into a GLOBAL one,
+# and refusing the seventh visitor of the hour. The header is spoofable and the per-IP cap is
+# therefore a speed bump rather than an identity, which is exactly what it has always claimed to
+# be; MAX_TRACKED_CLIENTS above bounds the damage spoofing can do, and the daily budget plus the
+# key's own credit limit are what actually bound spend.
+#
+# Set TRUST_PROXY_HEADERS=false when the app is exposed directly, with no proxy in front of it -
+# there the socket address IS the client and the header is pure attacker input.
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "true").strip().lower() not in {
+    "false", "0", "no",
+}
+
 # The backstop: LLM calls allowed per rolling day. ~5000 is roughly seven complete games.
 # Checked before a ROUND starts rather than before each call, so the cap can never strand a
 # game halfway through a round with half its detectives moved.
@@ -61,16 +90,18 @@ def _prune(timestamps: Deque[float], window: float, now: float) -> None:
 
 def client_ip(request) -> str:
     """
-    The caller's address, honouring X-Forwarded-For because the deployment sits behind a proxy.
+    The caller's address: X-Forwarded-For's first entry (the original client; everything after
+    it is the chain of proxies), falling back to the socket peer.
 
-    Takes the FIRST entry, which is the original client; everything after it is the chain of
-    proxies. This is spoofable by a client that sets the header itself, so it is a speed bump
-    against casual scripted abuse, not an identity - the budget below is what actually bounds
-    the damage.
+    Spoofable by any caller that sets the header itself, so this is a speed bump against casual
+    scripted abuse and never an identity. See TRUST_PROXY_HEADERS for why it is still trusted by
+    default, and MAX_TRACKED_CLIENTS for what bounds the damage when it is abused.
     """
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    if TRUST_PROXY_HEADERS:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            # Cap the length: this string becomes a dict key, and it is attacker-controlled.
+            return forwarded.split(",")[0].strip()[:64]
     return request.client.host if request.client else "unknown"
 
 
@@ -94,9 +125,48 @@ def check_new_game(ip: str, active_games: int, now: Optional[float] = None) -> O
     return None
 
 
+def _sweep_game_creations(now: float) -> int:
+    """
+    Expires every client's timestamps and drops the ones left holding nothing.
+
+    Dropping the empties is the part that matters. `_prune` only ever emptied a deque; the KEY
+    stayed in the dict for the life of the process, so the tracker grew by one entry per distinct
+    client address seen - forever, on a public endpoint, keyed by a header the caller controls.
+
+    Called on each record_new_game: new-game creation is the only way this map can grow, so it is
+    also the only moment it can need sweeping - the same reasoning session.py applies to its own
+    TTL eviction, and with the same caveat that the sweep must not sit downstream of a check that
+    can return first (ISSUE-039).
+
+    Returns how many clients were dropped (for logging/tests).
+    """
+    stale = []
+    for ip, seen in _game_creations.items():
+        _prune(seen, _HOUR_SECONDS, now)
+        if not seen:
+            stale.append(ip)
+    for ip in stale:
+        del _game_creations[ip]
+    return len(stale)
+
+
 def record_new_game(ip: str, now: Optional[float] = None) -> None:
     now = time.monotonic() if now is None else now
-    seen = _game_creations.setdefault(ip, deque())
+    _sweep_game_creations(now)
+
+    seen = _game_creations.get(ip)
+    if seen is None:
+        if len(_game_creations) >= MAX_TRACKED_CLIENTS:
+            # Deliberately fails OPEN for the per-IP limit rather than refusing the game. This
+            # cap can only be reached by address churn, which means spoofing, which means the
+            # per-IP limit was already being bypassed - refusing here would punish real players
+            # for an attacker's traffic while doing nothing to the attacker. MAX_ACTIVE_GAMES
+            # and the daily budget still apply, and they are what bounds the actual spend.
+            logger.warning(
+                "Per-client game tracking is at its %d-client cap; not tracking %s. The global "
+                "caps still apply.", MAX_TRACKED_CLIENTS, ip)
+            return
+        seen = _game_creations.setdefault(ip, deque())
     _prune(seen, _HOUR_SECONDS, now)
     seen.append(now)
 

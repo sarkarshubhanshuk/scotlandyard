@@ -122,7 +122,16 @@ live immediately.
 | Someone running up the bill | `limits.py` caps concurrent games, games per IP, and a daily call budget - **plus a hard credit limit on the OpenRouter key**, which is the only bound that survives a bug |
 
 Tunable via environment: `MAX_ACTIVE_GAMES`, `MAX_GAMES_PER_IP_PER_HOUR`,
-`DAILY_LLM_CALL_BUDGET`, `ALLOWED_ORIGINS`, `COOKIE_SECURE`, `FRONTEND_DIST`, `HOST`, `PORT`.
+`MAX_TRACKED_CLIENTS`, `DAILY_LLM_CALL_BUDGET`, `ALLOWED_ORIGINS`, `COOKIE_SECURE`,
+`TRUST_PROXY_HEADERS`, `FRONTEND_DIST`, `HOST`, `PORT`.
+
+> **`TRUST_PROXY_HEADERS` defaults to `true`, and should stay that way on Render.** The per-IP
+> limit is keyed on `X-Forwarded-For`, which Render's proxy sets. Turning this off makes every
+> visitor appear to come from the proxy itself, which collapses them into one bucket and turns
+> `MAX_GAMES_PER_IP_PER_HOUR` into a *global* cap. Set it to `false` only when the container is
+> exposed directly, with nothing in front of it. The header is spoofable either way, so the
+> per-IP cap is a speed bump, not an identity — `MAX_TRACKED_CLIENTS` bounds what spoofing can
+> cost, and the daily budget plus the key's own credit limit bound the spend.
 
 A completed 24-round game is roughly **720 LLM calls**, so size the budget accordingly. Games
 do not survive a restart, redeploy or sleep - that is ADR-0005, not a deployment bug.

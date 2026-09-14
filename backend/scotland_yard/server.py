@@ -113,6 +113,30 @@ def _get_session(request: Request):
     return session
 
 
+def _known_owner_token(presented: str) -> bool:
+    """
+    Whether this token is one this server actually minted - i.e. some live game is already owned
+    by it.
+
+    create_game reuses the caller's existing cookie so one browser can hold several games at
+    once, and that reuse used to be unconditional: whatever string arrived in the cookie became
+    the new game's owner token. A caller could therefore choose its own, and choose a guessable
+    one - `sy_player=a` - which anyone else could then set to reach that game. Only self-inflicted,
+    since a browser that sends no cookie still gets 32 random bytes, but there is no reason to
+    accept an attacker-chosen secret when checking it costs a walk over at most MAX_ACTIVE_GAMES
+    sessions.
+
+    compare_digest per candidate rather than a set lookup: this compares secrets, and a dict or
+    set probe on the raw value is not constant-time.
+    """
+    if not presented:
+        return False
+    return any(
+        session.owner_token and hmac.compare_digest(presented, session.owner_token)
+        for session in GAMES.values()
+    )
+
+
 def _load_owned_game(request: Request):
     """
     The game named in the path, but only for the browser that created it.
@@ -137,8 +161,10 @@ async def create_game_route(request: Request) -> JSONResponse:
     Starts a game and binds it to the calling browser.
 
     A browser that already has a token keeps it, so one person can hold several games at once
-    (an abandoned tab, a fresh start) without the newest invalidating the others. Re-setting the
-    cookie on every creation also refreshes its Max-Age, so an active player's token does not
+    (an abandoned tab, a fresh start) without the newest invalidating the others - but only if
+    that token is one this server minted (see _known_owner_token). An unrecognized cookie is
+    replaced rather than adopted, so a caller cannot nominate its own game's secret. Re-setting
+    the cookie on every creation also refreshes its Max-Age, so an active player's token does not
     expire out from under them mid-session.
     """
     ip = client_ip(request)
@@ -151,7 +177,8 @@ async def create_game_route(request: Request) -> JSONResponse:
         logger.info("Refused a new game for %s: %s", ip, refusal)
         return _error(refusal, 429)
 
-    token = request.cookies.get(PLAYER_COOKIE) or secrets.token_urlsafe(32)
+    presented = request.cookies.get(PLAYER_COOKIE) or ""
+    token = presented if _known_owner_token(presented) else secrets.token_urlsafe(32)
     session = create_game()
     record_new_game(ip)
     session.owner_token = token

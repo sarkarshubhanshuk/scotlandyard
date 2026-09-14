@@ -1185,3 +1185,60 @@ concern. The remainder of that audit's findings were not defects and are not log
   notice) that an `on_startup` hook would run too late to see. It clears root handlers first, so
   the call is idempotent; the redundant call in `main()` was removed. Covered by
   `tests/test_api.py::TestLoggingConfiguration`.
+
+### ISSUE-042 — The per-IP game tracker grew a permanent entry per client address, keyed on an attacker-controlled header
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/scotland_yard/limits.py`, `server.py:create_game_route`
+- **Logged**: 2026-09-14
+- **Description**: `limits._prune` trimmed timestamps *inside* a client's deque but nothing ever
+  removed the **key**. `_game_creations` therefore grew by one permanent entry for every distinct
+  client address ever seen, for the life of the process.
+
+  What made that more than untidy is where the key comes from. `client_ip()` reads the first
+  entry of `X-Forwarded-For`, which the caller fully controls, so a script rotating that header
+  both bypassed `MAX_GAMES_PER_IP_PER_HOUR` entirely (each spoofed value is a fresh bucket) and
+  minted an unbounded number of permanent dict entries — on an unauthenticated endpoint, with no
+  length limit on the value being used as the key. `limits.py` already documented the header as
+  spoofable and the cap as "a speed bump"; what it did not say is that the same spoofability made
+  the limiter an allocator.
+- **Fix**: `_sweep_game_creations` expires every bucket and drops the ones left empty, called on
+  each `record_new_game` (creation being the only way the map can grow — the same reasoning
+  `session.py` applies to TTL eviction, and placed so it cannot sit downstream of a check that
+  returns first, per ISSUE-039). `MAX_TRACKED_CLIENTS` caps the worst case between sweeps, and
+  the forwarded value is truncated to 64 characters before it is ever used as a key.
+- **Why the cap fails open**: reaching it requires address churn, which means spoofing, which
+  means the per-IP limit was already being bypassed. Refusing at that point would punish real
+  players for an attacker's traffic while costing the attacker nothing. `MAX_ACTIVE_GAMES` and
+  the daily budget still apply, and they are what actually bound spend.
+- **Why `X-Forwarded-For` is still trusted by default**: the audit's original proposal was to
+  ignore it unless a trusted-proxy flag was set. That would have broken the live service. Render
+  terminates in front of the app, so with the header ignored every visitor carries Render's
+  internal proxy address — one shared bucket, and `MAX_GAMES_PER_IP_PER_HOUR` becomes a global
+  cap that refuses the seventh visitor of the hour. `TRUST_PROXY_HEADERS` exists for a deployment
+  with nothing in front of it, and defaults to `true`.
+- **Covered by**: `tests/test_api.py::TestDeploymentLimits` (reclaim, active-client survival,
+  fail-open at the cap, the trust switch, and the key-length bound).
+
+### ISSUE-043 — A caller could nominate its own game's owner token, including a guessable one
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/scotland_yard/server.py:create_game_route`
+- **Logged**: 2026-09-14
+- **Description**: `create_game_route` deliberately reuses the caller's existing cookie as the new
+  game's `owner_token`, so one browser can hold several games at once (ADR-0014). That reuse was
+  unconditional — `request.cookies.get(PLAYER_COOKIE) or secrets.token_urlsafe(32)` — so whatever
+  string arrived in the cookie *became* the secret. A caller could send `sy_player=a` and own a
+  game whose token anyone else could trivially set.
+
+  Self-inflicted only: a browser that sends no cookie still receives 32 random bytes, so no real
+  player's game was ever weakened by someone else's choice. But there is no reason to accept an
+  attacker-chosen secret when rejecting one is cheap.
+- **Fix**: `_known_owner_token` checks the presented value against the tokens of live sessions
+  (constant-time, at most `MAX_ACTIVE_GAMES` comparisons) and the cookie is reused only if this
+  server actually minted it. An unrecognized cookie is replaced rather than adopted. Multi-game
+  ownership is unaffected: a browser holding at least one live game still presents a known token.
+- **Testing note**: the first version of this regression test set the cookie through the test
+  client's jar, which silently dropped it for this test host — so the assertion passed against
+  the *unfixed* code too, since a request arriving with no cookie also gets a freshly minted
+  token. It now sends a raw `Cookie` header, and was confirmed to fail against the old behaviour.
