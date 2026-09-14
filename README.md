@@ -9,7 +9,7 @@ The agents never decide a move unsupervised: every proposal, every response, and
 applied move are re-derived and validated against the board graph server-side in plain Python,
 so an LLM cannot hallucinate an illegal move into the game state.
 
-![Scotland Yard](docs/ui/game_logo.jpg)
+![Scotland Yard](data/ui/game_logo.jpg)
 
 ---
 
@@ -17,7 +17,7 @@ so an LLM cannot hallucinate an illegal move into the game state.
 
 | Requirement | Version | Notes |
 |---|---|---|
-| Python | 3.12+ (developed on 3.14) | |
+| Python | 3.12+ | CI, the Dockerfile and `requires-python` all pin 3.12; also developed against 3.14. |
 | Node.js | 20+ | For the Vite/React frontend. |
 | OpenRouter API key | — | Free to create at [openrouter.ai/keys](https://openrouter.ai/keys). Required for the detective agents. |
 
@@ -184,4 +184,4 @@ tools/                   One-off authoring utilities for the board data
 
 ## License
 
-MIT
+[MIT](LICENSE)

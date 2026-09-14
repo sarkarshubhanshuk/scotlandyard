@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { useEffect, useRef } from "react";
+import { KeyboardMoveList } from "../components/KeyboardMoveList";
 import type { MrXMoveWizard } from "../hooks/useMrXMoveWizard";
 import { TICKET_LABELS } from "../labels";
 import type { MapData, PublicGameState } from "../types";
@@ -149,6 +150,18 @@ export function BoardCanvas({ mapData, gameState, wizard, onPawnSettled, activeT
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+
+      {/* First in the tab order within the board pane, so Tab reaches the way to actually play
+          before anything else here. See KeyboardMoveList for why the canvas needs it at all. */}
+      <KeyboardMoveList
+        legalMoves={wizard.hop1 === null ? wizard.legalMoves : (wizard.hop2Options ?? [])}
+        isMrXTurn={wizard.isMrXTurn}
+        submitting={wizard.submitting}
+        hopLabel={wizard.hop1 === null ? null : "Double move, hop 2"}
+        // chooseMove, not handleNodeClick + chooseTicket: setPendingTarget is asynchronous, so
+        // chooseTicket called in the same handler would still read the previous value and bail.
+        onChoose={(targetNode, ticket) => void wizard.chooseMove(targetNode, ticket)}
+      />
 
       {/* Once hop 1 is locked in, its own popup is long gone (replaced by hop 2's) - this is the
           only remaining way to back out of a double-move already in progress rather than being

@@ -12,9 +12,10 @@ the original now carries a one-line pointer here instead of the full argument.
 ## Format
 
 Lightweight [MADR](https://adr.github.io/madr/): Status, Context, Decision, Alternatives
-considered, Consequences. A decision that is later reversed gets its Status flipped to
-`Superseded by ADR-NNNN` — records are never deleted or rewritten, so the history stays true
-(the same discipline `docs/issues/known_issues.md` applies to issue entries).
+considered, Consequences. **Status carries the date the decision was recorded** — without it a
+supersession chain cannot be read in order. A decision that is later reversed gets its Status
+flipped to `Superseded by ADR-NNNN` — records are never deleted or rewritten, so the history
+stays true (the same discipline `docs/issues/known_issues.md` applies to issue entries).
 
 ## Index
 
@@ -34,3 +35,5 @@ considered, Consequences. A decision that is later reversed gets its Status flip
 | [0012](0012-mr-x-last-known-location-ghost.md) | A dashed "last known location" ghost for Mr. X | Accepted |
 | [0013](0013-ticket-narrowed-mr-x-zone.md) | Mr. X's possible zone is narrowed by his own travel log | Accepted (supersedes ISSUE-015) |
 | [0014](0014-public-deployment-shape.md) | One container, one origin, and a cookie instead of accounts | Accepted |
+| [0015](0015-phaser-for-the-board.md) | Phaser for the board, not DOM or SVG | Accepted |
+| [0016](0016-testing-strategy.md) | Deterministic tests only in CI; real LLM calls are opt-in | Accepted |

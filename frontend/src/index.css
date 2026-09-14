@@ -71,3 +71,67 @@ body,
   cursor: default;
   opacity: 0.6;
 }
+
+/*
+ * The keyboard/screen-reader route to Mr. X's move (KeyboardMoveList).
+ *
+ * The board is a Phaser canvas, so its nodes are unreachable by keyboard and invisible to
+ * assistive technology - this is the parallel affordance. Clipped out of sight rather than
+ * `display: none`, because a hidden element is not focusable and the whole point is that Tab
+ * reaches it. `:focus-within` reveals it in place once it has focus, so a keyboard user can see
+ * what they are choosing; a mouse user never sees it at all.
+ */
+.sy-keyboard-moves {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  z-index: 40;
+}
+
+.sy-keyboard-moves:focus-within {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  width: auto;
+  height: auto;
+  max-height: calc(100% - 24px);
+  margin: 0;
+  padding: var(--space-3);
+  overflow-y: auto;
+  clip-path: none;
+  white-space: normal;
+  background: var(--color-surface);
+  border: 2px solid var(--color-border-strong);
+  border-radius: var(--radius);
+}
+
+.sy-keyboard-moves h2 {
+  margin: 0 0 var(--space-1);
+  font-size: 15px;
+}
+
+.sy-keyboard-moves p {
+  margin: 0 0 var(--space-2);
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.sy-keyboard-moves ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sy-keyboard-moves li {
+  display: flex;
+  gap: var(--space-1);
+}

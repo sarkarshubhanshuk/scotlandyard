@@ -1,6 +1,6 @@
 # ADR-0006 — Sequential debate, 3/5 majority vote, 3-loop cap
 
-- **Status:** Superseded by [ADR-0009](0009-turn-wise-detective-play.md)
+- **Status:** Superseded by [ADR-0009](0009-turn-wise-detective-play.md) (recorded 2026-09-13)
 - **Area:** `backend/scotland_yard/agents.py`, `graph.py`, `rules_constants.py`
 
 ## Superseded

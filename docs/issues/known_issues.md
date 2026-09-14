@@ -1242,3 +1242,56 @@ concern. The remainder of that audit's findings were not defects and are not log
   client's jar, which silently dropped it for this test host — so the assertion passed against
   the *unfixed* code too, since a request arriving with no cookie also gets a freshly minted
   token. It now sends a raw `Cookie` header, and was confirmed to fail against the old behaviour.
+
+### ISSUE-044 — The board was the only way to play, and it is a canvas
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `frontend/src/components/KeyboardMoveList.tsx` (new), `BoardCanvas.tsx`,
+  `hooks/useMrXMoveWizard.ts`, `components/ChatLog.tsx`, `screens/GameScreen.tsx`, `index.css`
+- **Logged**: 2026-09-14
+- **Description**: Mr. X's move could only be made by clicking a node on the Phaser canvas. Canvas
+  content is invisible to assistive technology and unreachable by keyboard (**ADR-0015** records
+  that as a consequence of the rendering choice), so the game was unplayable without a mouse —
+  not degraded, unplayable, since there was no other input path at all.
+
+  Separately, a round streams in one Chat Log entry per LLM call over a minute or more with no
+  live region anywhere, so a screen-reader user got silence for the entire time the detectives
+  were deliberating, and the "lost connection" error had no way to announce itself.
+- **Fix**: `KeyboardMoveList` renders one button per legal (destination, ticket) pair — complete,
+  self-describing actions rather than the board's two-step click-then-choose-ticket mode, which is
+  harder to operate without sight. It is clipped out of view with `clip-path` and revealed by
+  `:focus-within`, deliberately **not** `display: none` or `hidden`: both would remove it from the
+  tab order and defeat the entire purpose. `ChatLog` became a `role="log"` with
+  `aria-relevant="additions"` (so the auto-scroll does not re-announce), its error block a
+  `role="alert"`, and the sidebar's phase line a `role="status"`.
+- **A bug found while wiring it up**: the first version called
+  `handleNodeClick(node)` then `chooseTicket(ticket)` in one handler, mirroring what a board click
+  does. That cannot work — `setPendingTarget` is asynchronous, so `chooseTicket` still reads the
+  previous value and returns early, and the move would have silently done nothing.
+  `useMrXMoveWizard.chooseMove(target, ticket)` was extracted for callers that already hold both
+  halves; `chooseTicket` now delegates to it.
+- **Covered by**: `frontend/src/components/KeyboardMoveList.test.tsx` — including an explicit
+  assertion that the region is hidden by a clipping class and not by anything that would make it
+  unfocusable.
+
+### ISSUE-045 — `types.ts` mirrored the backend payloads by hand with nothing to catch drift
+
+- **Status**: Fixed (2026-09-14)
+- **Area**: `backend/tests/test_serialization_contract.py` (new), `frontend/README.md`
+- **Logged**: 2026-09-14
+- **Description**: The backend is Starlette and has no OpenAPI schema (**ADR-0002**), so
+  `frontend/src/types.ts` mirrors `serializers.py` by hand. `frontend/README.md` stated the risk
+  accurately — "nothing will catch it otherwise" — which is exactly the kind of honestly
+  documented gap that is cheaper to close than to keep documenting. A renamed or dropped key
+  reads as `undefined` on the client, with no error anywhere. ISSUE-029 was already one instance.
+- **Fix**: A backend test that parses the real `PublicGameState` / `PublicMrX` / `PublicDetective`
+  interfaces out of `types.ts` and compares their field names against what `serialize_public_state`
+  actually returns, failing in either direction with a message naming the offending field and the
+  file to fix. It reads the live TypeScript rather than a checked-in copy of the expected shape,
+  which would just be a third hand-maintained list free to drift on its own schedule.
+- **Scope**: a field-*name* contract, not a type contract — names are where the drift bites, and
+  matching TypeScript's type syntax from Python would be a parser rather than a test. The parser
+  it does need is itself tested (comments, nested object literals), since one that silently
+  returned an empty set would make every other assertion in the file pass vacuously.
+- **Not covered**: `labels.ts`'s mirrors of `MAX_ROUND` / `SURFACING_ROUNDS` / `DETECTIVE_LABELS`,
+  which remain hand-maintained and unguarded.

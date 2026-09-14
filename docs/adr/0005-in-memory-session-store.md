@@ -1,6 +1,6 @@
 # ADR-0005 — In-memory game sessions with TTL eviction, no database
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-09-13)
 - **Area:** `backend/scotland_yard/session.py`
 
 ## Context

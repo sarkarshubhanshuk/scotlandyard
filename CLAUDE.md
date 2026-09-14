@@ -218,8 +218,9 @@ also records why the original "MCP prevents hallucination" framing stopped being
 Commands, component map, and the constraints worth knowing are in `frontend/README.md`.
 Highlights:
 
-- **Tech Stack:** React 19 (`react-router-dom` for `/` and `/game/:gameId`) + Phaser 4. No
-  global state library — **ADR-0008**.
+- **Tech Stack:** React 19 (`react-router-dom` for `/` and `/game/:gameId`) + Phaser 4 for the
+  board (**ADR-0015**, which also records what that costs). No global state library —
+  **ADR-0008**.
 - **Bundle splitting:** `GameScreen.tsx` lazy-loads `BoardCanvas` so Phaser only downloads once
   a game is entered. Easy to undo by accident; CI now fails if the main chunk exceeds 600 kB
   (it should sit around 245 kB). See ISSUE-019 and `frontend/README.md`.
@@ -275,6 +276,9 @@ cd backend && pytest -m llm   # opt-in: real, billable LLM calls
 cd backend && ruff check . && mypy   # lint + types (mypy is scoped; see pyproject.toml)
 cd frontend && npm run lint && npm test && npm run build
 ```
+
+The strategy behind this split — deterministic and free in CI, real calls opt-in — is
+**ADR-0016**.
 
 CI (`.github/workflows/ci.yml`) runs ruff, mypy, the fast suite with a coverage floor, the
 frontend lint/tests/build, and the bundle

@@ -1,6 +1,6 @@
 # ADR-0004 — OpenRouter + DeepSeek v4 Flash, with reasoning disabled
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-09-13)
 - **Area:** `backend/scotland_yard/llm_client.py`
 
 ## Context

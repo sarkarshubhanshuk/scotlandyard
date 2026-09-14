@@ -1,6 +1,6 @@
 # ADR-0003 — Mr. X is human; only the detectives are agents
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-09-13)
 - **Area:** Whole system
 
 ## Context

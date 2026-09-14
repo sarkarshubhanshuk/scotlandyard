@@ -1,6 +1,6 @@
 # ADR-0007 — Mr. X's true position is serialized to the client
 
-- **Status:** Accepted
+- **Status:** Accepted (2026-09-13)
 - **Area:** `backend/scotland_yard/serializers.py`, `state.py`, `frontend/src/board/BoardScene.ts`
 
 ## Context
