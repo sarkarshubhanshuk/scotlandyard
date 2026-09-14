@@ -69,3 +69,29 @@ because the round is the unit that must complete.
   model, so the exposure is quantity, not content.
 - **Games are lost on restart, redeploy or sleep.** Unchanged from ADR-0005, but now visible to
   strangers rather than only to the developer.
+
+## Update (2026-09-14) — the platform is Render, not Hugging Face
+
+Everything above the "Consequences" section was written, and this app built, against the
+assumption that a Hugging Face Docker Space was free. It is not: free HF accounts can only create
+**Static** Spaces, and creating a Docker (or Gradio) Space requires a **PRO subscription**
+($9/month) - discovered only by attempting it, since nothing in HF's Space-creation flow up to
+that point mentioned a paid plan. None of the reasoning above changed - one container, one origin,
+a bearer cookie, never two replicas, a hard credit cap on the OpenRouter key - only the host.
+
+**Chosen instead: Render**, a Docker-native PaaS that deploys straight from this Dockerfile with
+no changes (it reads whatever `PORT` the platform injects, already parameterized in `server.py`)
+and connects directly to this GitHub repo rather than requiring a second git remote and a
+platform-specific access token, as Hugging Face's git-based Spaces do. Render's actual free tier
+was considered and rejected for this specific app: it sleeps after 15 minutes idle, and a detective
+round can run for minutes across ~30 sequential LLM calls (see "Context" above) - a cold start
+mid-round is a strictly worse failure mode than a slow one, so the deployed instance is on a paid
+tier instead. This is a cost trade the free-tier design in the rest of this document was trying to
+avoid, made only because the original zero-cost assumption (Hugging Face) turned out to be false.
+Render's free tier remains the right default recommendation for anyone re-deploying this from
+scratch who can tolerate the sleep/cold-start behavior; the live deployment did not.
+
+Verified on the live Render deployment (not just locally, as the original "Verified by" section
+above was scoped to): HTTPS end to end so the `Secure` cookie attribute actually takes effect
+(the original verification could only fake this locally), SPA root and deep links, static art,
+404 for an unknown game, and 200-owner/403-cookieless ownership over a real cookie jar.
