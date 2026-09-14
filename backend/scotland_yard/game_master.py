@@ -147,6 +147,83 @@ def compute_mrx_zone(last_known_node: int, max_hops: int, occupied_nodes: Option
     """
     return _bfs_from({last_known_node}, max_hops=max_hops, blocked_nodes=set(occupied_nodes or []))
 
+# Every transport type a board edge can carry. A black ticket pays for any of them (rules.md
+# §3), which is exactly why a black-ticket hop below restores the full untyped fan-out.
+ALL_TRANSPORT_TYPES = frozenset({"taxi", "bus", "metro", "boat"})
+
+
+def _step_typed(frontier: Iterable[int], allowed_types: Iterable[str], blocked: set) -> set:
+    """One hop from every node in `frontier`, over edges whose type is in `allowed_types`."""
+    allowed = set(allowed_types)
+    reached = set()
+    for node in frontier:
+        node_info = get_node_info(node)
+        if "error" in node_info:
+            continue
+        for connection in node_info["connections"]:
+            destination = connection["destination"]
+            if connection["type"] in allowed and destination not in blocked:
+                reached.add(destination)
+    return reached
+
+
+def compute_mrx_zone_from_tickets(
+    last_known_node: int,
+    tickets_spent: Iterable[str],
+    occupied_nodes: Optional[List[int]] = None,
+) -> Optional[set]:
+    """
+    Where Mr. X can be after spending EXACTLY this sequence of tickets from his last-known
+    node - the ticket-typed replacement for `compute_mrx_zone`'s untyped ball.
+
+    The travel log is public and exact (rules.md §2), so each hop's connection type is known,
+    not guessed: a `"bus"` entry means that hop crossed a bus edge and nothing else. Walking
+    the graph one typed layer at a time is therefore not a heuristic - it is the precise set of
+    nodes consistent with what the detectives have actually been told. Measured on the real
+    board this is roughly half the size of the untyped ball at every hop count (9.5 vs 18.2
+    nodes at 2 hops, 35 vs 88 at 4).
+
+    This is a different technique from the one `known_issues.md` ISSUE-015 declined, and the
+    distinction is the whole reason it is safe: that proposal was to model whether Mr. X's
+    remaining INVENTORY could have afforded a hypothetical path, which gets harder as his
+    inventory shrinks. This models only which edges the tickets he demonstrably spent are able
+    to cross. A `"black"` entry widens back to every type, since that is precisely what a black
+    ticket buys him - the obfuscation still works, it just now costs him a scarce ticket.
+
+    Returns the set of nodes at exactly `len(tickets_spent)` hops - not a ball, because Mr. X
+    must move every round, so he cannot still be standing where he was last seen after one hop
+    (he can of course return there later, and a longer walk will include it again).
+
+    Returns None if the walk dead-ends, which can only mean an input disagrees with the board
+    (a ticket type that crosses no edge from anywhere reachable). Callers fall back rather than
+    hand detectives an empty or wrong zone: this set is used to RULE OUT locations, so being a
+    superset of the truth is safe and being a subset is not.
+    """
+    blocked = set(occupied_nodes or [])
+    frontier = {last_known_node}
+    for ticket in tickets_spent:
+        allowed = ALL_TRANSPORT_TYPES if ticket == "black" else {ticket}
+        frontier = _step_typed(frontier, allowed, blocked)
+        if not frontier:
+            return None
+    return frontier
+
+
+def project_zone_one_hop(zone_nodes: Iterable[int], blocked_nodes: Optional[Iterable[int]] = None) -> set:
+    """
+    Where Mr. X could be one round from now, given where he could be now.
+
+    Untyped on purpose: his NEXT ticket has not been played yet, so unlike
+    `compute_mrx_zone_from_tickets` there is nothing to filter the edges by. Boat edges are
+    included without checking that he still holds a black ticket to pay for one - the same
+    deliberate over-inclusion as ISSUE-015, and safe for the same reason (a superset).
+
+    Used to score a candidate destination by how much of Mr. X's escape space standing there
+    would close off, by passing that destination in `blocked_nodes`.
+    """
+    return _step_typed(zone_nodes, ALL_TRANSPORT_TYPES, set(blocked_nodes or []))
+
+
 def compute_distances_to_zone(zone_nodes: Iterable[int]) -> Dict[int, int]:
     """
     {node_id: hops_to_nearest_zone_node} for every node on the board, computed as a single

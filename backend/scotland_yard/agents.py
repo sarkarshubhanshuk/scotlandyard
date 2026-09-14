@@ -33,7 +33,14 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.config import get_stream_writer
 from pydantic import BaseModel, Field
 
-from .game_master import compute_distances_to_zone, compute_mrx_zone, compute_valid_moves
+from .game_master import (
+    compute_distances_to_zone,
+    compute_mrx_zone,
+    compute_mrx_zone_from_tickets,
+    compute_valid_moves,
+    project_zone_one_hop,
+)
+from .limits import record_llm_call
 from .llm_client import get_debate_llm, get_detective_llm
 from .rules_constants import (
     AGENT_DISPLAY_NAMES,
@@ -42,10 +49,12 @@ from .rules_constants import (
     LLM_CALL_DEADLINE_SECONDS,
     MAX_ROUND,
     NUM_DETECTIVES,
+    SURFACING_ROUNDS,
     TURN_ACK_TIMEOUT_SECONDS,
 )
 from .state import ScotlandYardState
 from .transport import determine_move_transport
+from .travel_log import hops_since_surfacing
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +178,91 @@ def annotate_onward_options(
         move["onward_moves_after"] = onward_cache[target]
 
 
+def annotate_zone_shrink(
+    state: ScotlandYardState, det_id: str, legal_moves_context: dict, zone_nodes: list
+) -> None:
+    """
+    Adds "zone_size_after" to every candidate: how many nodes Mr. X could be on NEXT round if
+    this detective takes that destination - lower means more of his escape space is closed off.
+
+    This is the metric that actually expresses "converge on him". Distance alone does not:
+    five detectives each minimising their own hop-distance all pile onto whichever side of the
+    zone faces them, and he simply leaves by the other (the convergence-not-triangulation trap
+    already recorded in known_issues.md ISSUE-016). Standing ON an exit is what shrinks the
+    zone, and the shrink is directly measurable, so it is measured here rather than described
+    to the model in words it would have to apply geometrically.
+
+    Untyped by necessity - his next ticket has not been played yet, so there is nothing to
+    filter by. See project_zone_one_hop.
+
+    **Dropped entirely when every candidate scores the same.** That is the common case for a
+    detective still several hops out, where nowhere it can stand this round touches his space
+    at all, and a column of identical numbers is prompt weight that carries no decision.
+    """
+    if not zone_nodes:
+        return
+
+    moves = legal_moves_context.get(det_id, [])
+    others = set(other_detective_nodes(state, det_id))
+    shrink_cache: dict[int, int] = {}
+
+    for move in moves:
+        target = move.get("target_node")
+        if target is None:
+            continue
+        if target not in shrink_cache:
+            shrink_cache[target] = len(
+                project_zone_one_hop(zone_nodes, blocked_nodes=others | {target}))
+        move["zone_size_after"] = shrink_cache[target]
+
+    if len(set(shrink_cache.values())) <= 1:
+        for move in moves:
+            move.pop("zone_size_after", None)
+
+
+def annotate_revisits(
+    state: ScotlandYardState, det_id: str, legal_moves_context: dict
+) -> bool:
+    """
+    Flags candidates this detective has recently vacated, and reports whether any exist.
+
+    A detective has no other memory of its own movement (state.py:recent_positions explains
+    why), so without this, stepping back to the node it just left looks exactly as attractive
+    as it did the first time - which is how two nodes turn into a shuttle. The flag is only set
+    on the offending candidates; absence means "not a revisit", and a caller that gets False
+    back leaves the whole explanation out of the prompt rather than explaining a rule that
+    nothing this turn can break.
+    """
+    recent = set((state.get("recent_positions") or {}).get(det_id) or [])
+    if not recent:
+        return False
+
+    flagged = False
+    for move in legal_moves_context.get(det_id, []):
+        if move.get("target_node") in recent:
+            move["you_were_here_recently"] = True
+            flagged = True
+    return flagged
+
+
+def sort_candidates(legal_moves_context: dict) -> None:
+    """
+    Orders every detective's candidate list best-first, in place.
+
+    Costs nothing - no tokens, no latency, no extra computation - and small models weight what
+    they read first. The list previously came out in map.json's own connection order, which
+    carries no meaning at all. Ties break on node id purely so the ordering is reproducible.
+    """
+    for moves in legal_moves_context.values():
+        moves.sort(key=lambda move: (
+            # An unreachable candidate (no path to the zone) sorts last rather than crashing.
+            move.get("distance_to_mrx_zone") if move.get("distance_to_mrx_zone") is not None else 1_000,
+            move.get("zone_size_after", 0),          # absent (undiscriminating) == neutral
+            -(move.get("onward_moves_after") or 0),  # more onward options first
+            move.get("target_node", 0),
+        ))
+
+
 # --- STRUCTURED LLM OUTPUT SCHEMAS ---
 # Fixed, not built per call. Under the old simultaneous design every call had to name a node
 # for all five detectives, so the schemas were generated dynamically from whichever ones were
@@ -197,27 +291,36 @@ class TurnResponseChoice(BaseModel):
 # sequential and pays its latency directly (ISSUE-009, ADR-0009).
 MRX_ZONE_LIST_THRESHOLD = 20  # show the literal node list only up to this many possible nodes
 
+# Only ever applied to the untyped FALLBACK ball. The typed walk needs no cap: every one of its
+# levels is filtered to the single connection type that hop's ticket actually pays for, so the
+# set grows far more slowly (measured on the real board: 35 nodes at 4 hops against the untyped
+# ball's 88, which is where this cap's original "~84% of the board" saturation argument came
+# from). The cap cannot be applied to a typed walk anyway - "the last 4 tickets" is meaningless
+# without knowing which set they were spent FROM.
+UNTYPED_ZONE_HOP_CAP = 4
+
 def compute_mrx_zone_context(state: ScotlandYardState) -> Optional[dict]:
     """
     Everywhere Mr. X could plausibly be standing right now, and the hop-distance from every
     board node to the nearest such node. Returns None during rounds 1-2, before he has ever
     surfaced (no last-known node to search from).
 
-    turns_since_surfacing is capped at 4 regardless of the raw round gap - even that cap
-    already covers up to ~84% of the 199-node board (empirically checked against
-    docs/map/map.json), so a larger cap would add cost without adding useful information. This
-    also cleanly absorbs the one asymmetric surfacing gap (round 18 -> round 24 is 6 rounds,
-    not 5): the rounds that would otherwise compute 5 hops are already "saturated" at 4 anyway.
+    Narrowed by his own travel log: the ticket spent on every hop is public and exact, so
+    `compute_mrx_zone_from_tickets` walks one typed layer per hop rather than an untyped ball
+    (see that function for why this is not the ISSUE-015 approach). On the surfacing round
+    itself this resolves to the single node he is actually standing on, because the detectives
+    move after he does and he has not moved since.
+
+    Falls back to the untyped, hop-capped ball whenever the log cannot be reconciled with the
+    round number (`hops_since_surfacing` returns None) or the typed walk dead-ends. That is
+    logged at WARNING because it should never happen in a healthy game - but the fallback has
+    to exist and has to be the WIDER set, since this zone is used to rule locations OUT.
 
     Recomputed at the start of every turn rather than memoized once per round. Its occupancy
-    input is no longer constant across a round: detectives physically move as their turns end
-    (ADR-0010), so the nodes the BFS is blocked through change five times per round. A
+    input is not constant across a round: detectives physically move as their turns end
+    (ADR-0010), so the nodes the walk is blocked through change five times per round. A
     round-start snapshot would show a later detective paths blocked through nodes its teammates
-    had since vacated. Five BFS pairs per round instead of one is nothing next to 30 LLM calls.
-
-    Still ticket-blind - the zone is a strict superset of where Mr. X could really be, because
-    the BFS does not check that his remaining inventory could actually pay for a given path.
-    See ISSUE-015; narrowing this using his travel log is deliberately a separate change.
+    had since vacated. Ten graph walks per round is nothing next to 30 LLM calls.
     """
     mr_x = state["mr_x"]
     last_known_node = mr_x.get("last_known_node")
@@ -225,15 +328,37 @@ def compute_mrx_zone_context(state: ScotlandYardState) -> Optional[dict]:
     if last_known_node is None:
         return None
 
-    turns_since_surfacing = min(state["round_number"] - last_known_round, 4)
+    round_number = state["round_number"]
+    turns_since_surfacing = round_number - last_known_round
     occupied = {d["node_id"] for d in state["detectives"].values()}
-    zone = compute_mrx_zone(last_known_node, turns_since_surfacing, occupied_nodes=occupied)
+
+    tickets = hops_since_surfacing(
+        mr_x.get("transport_history", []), last_known_round, round_number)
+    zone_nodes = (
+        compute_mrx_zone_from_tickets(last_known_node, tickets, occupied_nodes=occupied)
+        if tickets is not None else None
+    )
+
+    if zone_nodes is None:
+        logger.warning(
+            "[ZONE FALLBACK] Could not narrow Mr. X's zone from his travel log %s "
+            "(last seen Node %s in round %s, now round %s) - falling back to the untyped ball.",
+            mr_x.get("transport_history"), last_known_node, last_known_round, round_number)
+        tickets = None
+        zone_nodes = set(compute_mrx_zone(
+            last_known_node,
+            min(turns_since_surfacing, UNTYPED_ZONE_HOP_CAP),
+            occupied_nodes=occupied,
+        ).keys())
+
     return {
         "last_known_node": last_known_node,
         "last_known_round": last_known_round,
         "turns_since_surfacing": turns_since_surfacing,
-        "zone_nodes": sorted(zone.keys()),
-        "distances_to_zone": compute_distances_to_zone(zone.keys()),
+        # The exact ticket sequence the zone was narrowed by - None when the fallback is in use.
+        "tickets_since_surfacing": tickets,
+        "zone_nodes": sorted(zone_nodes),
+        "distances_to_zone": compute_distances_to_zone(zone_nodes),
     }
 
 def format_mrx_zone_block(zone_context: Optional[dict]) -> str:
@@ -255,10 +380,29 @@ def format_mrx_zone_block(zone_context: Optional[dict]) -> str:
             f"Possible locations right now: {len(zone_nodes)} nodes (too many to list - his "
             "position is broadly uncertain right now)"
         )
+
+    # Stating what the narrowing is BASED on, not just its result: the difference between "he
+    # might be in these 4 nodes" and "he spent a bus ticket, so he must be on one of the 4 bus
+    # connections" is the difference between a number to trust and a number to argue with.
+    tickets = zone_context["tickets_since_surfacing"]
+    if tickets is None:
+        ticket_line = ""
+    elif not tickets:
+        ticket_line = (
+            "He has NOT MOVED since that sighting - the node below is his exact, confirmed "
+            "current position.\n        "
+        )
+    else:
+        ticket_line = (
+            f"Tickets he has spent since then, in order: {', '.join(tickets)}. The possible "
+            "locations below are already narrowed to the nodes those exact connection types "
+            "can reach - you do not need to work that out yourself.\n        "
+        )
+
     return (
         f"Last seen: Node {zone_context['last_known_node']} (Round {zone_context['last_known_round']}). "
         f"Turns elapsed since then: {zone_context['turns_since_surfacing']}.\n"
-        f"        {location_line}"
+        f"        {ticket_line}{location_line}"
     )
 
 
@@ -306,8 +450,101 @@ def get_collaboration_tier(round_number: int) -> tuple[int, str]:
     return COLLABORATION_TIERS[-1][1], COLLABORATION_TIERS[-1][2]
 
 
+# --- INTEL FRESHNESS LADDER ---
+# How much Mr. X's location is actually WORTH knowing swings on a fixed 5-round cycle, and the
+# right behaviour swings with it. The two rounds before a reveal, closing distance chases an
+# estimate that is about to be thrown away, so flexibility is worth more. The reveal round and
+# the one after it are the opposite: the zone is at its tightest it will ever be, every round
+# of hesitation widens it again, and this is the only window where converging can actually
+# corner him. Everything in between is the balanced default.
+#
+# Deliberately prompt emphasis rather than new machinery: "onward_moves_after" and
+# "zone_size_after" already measure flexibility and containment respectively, so these tiers
+# only change which of the numbers already on the table a detective should be weighing.
+# Gated purely on round_number (project owner's decision), not on any detective's own distance.
+
+# Keyed by how many rounds have passed SINCE the reveal - 0 is the surfacing round itself.
+SURFACING_RECENCY_GUIDANCE = {
+    0: (
+        'MR. X HAS JUST SURFACED. His possible zone above is his EXACT node - he has not moved '
+        'since, and he moves before you next round. This is the single best chance of this '
+        'whole cycle and it will not come again for five rounds. CONVERGE ON HIM: take the '
+        'destination with the lowest "distance_to_mrx_zone", and where that ties, the lowest '
+        '"zone_size_after" (it closes off more of his escape routes). Do NOT move away from him '
+        'to reposition, and do not trade closing distance for your own flexibility this round - '
+        'every node you fail to close now is a node he escapes through next round.'
+    ),
+    1: (
+        'Mr. X surfaced only one round ago and his possible zone is still tightly narrowed, so '
+        'the team is still close to him. KEEP CLOSING: prioritise the lowest '
+        '"distance_to_mrx_zone" and, where it ties, the lowest "zone_size_after". His zone '
+        'widens every single round from here, so ground given up now cannot be recovered - do '
+        'not drift off to reposition while the trail is still this warm.'
+    ),
+}
+
+# Keyed by how many rounds REMAIN until the next reveal - 1 is the round immediately before it.
+SURFACING_PROXIMITY_GUIDANCE = {
+    # 1 round out: the reveal lands before this detective's NEXT turn, so today's zone
+    # progress is about to be moot - flexibility now matters more than closing distance.
+    1: (
+        'Mr. X will reveal his exact position at the end of THIS round - before your next '
+        'turn. Today\'s "possible zone" estimate is about to be replaced by his real location, '
+        'so closing distance to it right now is worth less than usual. Strongly prefer '
+        'whichever legal destination leaves you with the highest "onward_moves_after" (the '
+        'most options next round), even at some cost to "distance_to_mrx_zone", so you can '
+        'react decisively the instant his real position is known.'
+    ),
+    # 2 rounds out: softer - still make real zone progress, but start weighing flexibility
+    # too, not just as a last-resort dead-end check.
+    2: (
+        'Mr. X will reveal his exact position in 2 rounds. Today\'s "possible zone" estimate '
+        'will soon be replaced by his real location, so start weighing a legal destination\'s '
+        '"onward_moves_after" (options next round) somewhat more than usual, alongside - not '
+        'instead of - closing "distance_to_mrx_zone".'
+    ),
+}
+
+
+def get_surfacing_proximity_prompt(round_number: int) -> str:
+    """
+    This round's rung of the intel-freshness ladder - empty on a round that is neither just
+    after a reveal nor just before one.
+
+    Recency is checked first: a reveal that has ALREADY happened beats one that is coming,
+    because acting on a known position outranks preparing for an unknown one. In practice they
+    can never both match (SURFACING_ROUNDS are at least 5 rounds apart and only two rungs
+    reach in each direction), so the ordering is a statement of intent rather than a tiebreak.
+    """
+    for rounds_since, text in SURFACING_RECENCY_GUIDANCE.items():
+        if round_number - rounds_since in SURFACING_ROUNDS:
+            return f"\n    {text}\n"
+    for rounds_remaining, text in SURFACING_PROXIMITY_GUIDANCE.items():
+        if round_number + rounds_remaining in SURFACING_ROUNDS:
+            return f"\n    {text}\n"
+    return ""
+
+
+# The tactical objective, shared by all six calls in a turn. It used to appear only in the
+# mover's PROPOSAL prompt, which meant the four responders argued with no stated objective at
+# all and - worse - the mover's own final DECISION call, the one that actually commits, never
+# saw it. A detective could propose a sound move and then talk itself out of it at commit time
+# against nothing but its own psychology block. Stating it once here puts it in front of every
+# call for about 2% more prompt tokens.
+HOW_TO_READ_YOUR_OPTIONS = """
+    YOUR OPTIONS ARE PRE-ANNOTATED - use these numbers, do not recompute them. Listed best-first.
+    "distance_to_mrx_zone": hops to the nearest node Mr. X could be on; 0 means it IS one of
+    them, lower is closing in. "onward_moves_after": moves you would have left next round; 0 is
+    a dead end. "zone_size_after" (shown only when your options differ on it): nodes he could
+    still reach next round if you stand there - LOWER IS BETTER, you are on an escape route.
+    "you_were_here_recently": you left that node within the last two rounds."""
+
+
 def get_psychology_prompt(round_number: int, det_id: str) -> str:
-    """Injects the 3 goals plus the round's collaboration tendency, stated as a literal number."""
+    """
+    Injects the 3 goals, the round's collaboration tendency (stated as a literal number), how
+    to read the per-candidate annotations, and this round's rung of the intel-freshness ladder.
+    """
     percentage, label = get_collaboration_tier(round_number)
 
     return f"""
@@ -319,7 +556,8 @@ def get_psychology_prompt(round_number: int, det_id: str) -> str:
     COLLABORATION TENDENCY: {label} ({percentage}%). Round {round_number} of {MAX_ROUND}.
     {COLLABORATION_BEHAVIOR[label]}
     Weigh a teammate's argument at roughly {percentage}% against your own read of the board.
-
+    {HOW_TO_READ_YOUR_OPTIONS}
+    {get_surfacing_proximity_prompt(round_number)}
     STRICT RULE: NO TWO DETECTIVES CAN OCCUPY THE SAME NODE. Never name a node another
     detective is already standing on or has already committed to this round.
 
@@ -351,24 +589,34 @@ def format_board_block(state: ScotlandYardState, zone_block: str, committed: dic
 
 
 def format_options_block(det_id: str, state: ScotlandYardState, legal_moves_context: dict,
-                         distances_to_zone: dict) -> str:
+                         distances_to_zone: dict, has_revisit: bool = False) -> str:
     """
-    One detective's own position, tickets, and annotated candidate destinations.
+    One detective's own position, tickets, and annotated candidate destinations, best-first.
 
-    Each candidate carries two deterministic annotations the model is told how to read:
-    "distance_to_mrx_zone" (0 means the node IS one of Mr. X's possible current locations) and
-    "onward_moves_after" (how many moves would remain from there next round, after paying for
-    this one - a 0 is a dead end).
+    What each annotation means is explained once in get_psychology_prompt's shared block rather
+    than repeated here, since both the mover and every responder read this same block.
+
+    `has_revisit` gates the anti-doubling-back warning: it is the one piece of guidance that is
+    about THIS list rather than about the game, and spelling out a rule that none of the
+    candidates can break is prompt weight spent on nothing.
     """
     detective = state["detectives"][det_id]
     tickets = {k: v for k, v in detective.items() if k.endswith("_tickets")}
+    revisit_warning = (
+        '\n        Some destinations below are marked "you_were_here_recently" - you left that '
+        "node within the last two rounds. Shuffling back and forth between two nodes burns the "
+        "team's moves while Mr. X's zone widens around you. Do not pick one unless it is your "
+        "only legal move, or it genuinely closes on him better than every alternative."
+        if has_revisit else ""
+    )
     return f"""
         {AGENT_DISPLAY_NAMES[det_id]} is standing on Node {detective['node_id']} \
 ({distances_to_zone.get(detective['node_id'])} hops from the nearest node in Mr. X's zone).
         {AGENT_DISPLAY_NAMES[det_id]}'s remaining tickets: {json.dumps(tickets)}
-        {AGENT_DISPLAY_NAMES[det_id]}'s ONLY legal destinations this turn (this list already
-        excludes nodes occupied by another detective and nodes committed earlier this round):
-        {json.dumps(legal_moves_context.get(det_id, []), indent=2)}
+        {AGENT_DISPLAY_NAMES[det_id]}'s ONLY legal destinations this turn, BEST FIRST (this list
+        already excludes nodes occupied by another detective and nodes committed earlier this
+        round):
+        {json.dumps(legal_moves_context.get(det_id, []), indent=2)}{revisit_warning}
     """
 
 
@@ -389,7 +637,11 @@ async def _invoke(structured_llm, prompt: str, label: str):
 
     Timeouts and errors are logged at WARNING, not raised: a round must always produce a legal
     move for every detective, and every caller here has a deterministic fallback.
+
+    Every attempt is counted against the deployment's daily budget (limits.py), including ones
+    that fail - a call that times out has still been paid for.
     """
+    record_llm_call()
     try:
         return await asyncio.wait_for(
             structured_llm.ainvoke([HumanMessage(content=prompt)]),
@@ -557,11 +809,18 @@ async def turn_node(state: ScotlandYardState, config: RunnableConfig) -> dict:
     still_to_move = [det_id for det_id in DETECTIVE_IDS if det_id not in committed]
     legal_moves_context, legal_move_sets = fetch_legal_moves(state, still_to_move)
     annotate_zone_distances(legal_moves_context, distances_to_zone)
+    zone_nodes = zone_context["zone_nodes"] if zone_context else []
+    has_revisit = {}
     for det_id in still_to_move:
         annotate_onward_options(state, det_id, legal_moves_context)
+        annotate_zone_shrink(state, det_id, legal_moves_context, zone_nodes)
+        has_revisit[det_id] = annotate_revisits(state, det_id, legal_moves_context)
+    # Last, so it orders on the finished annotations rather than a partially-built candidate.
+    sort_candidates(legal_moves_context)
 
     board_block = format_board_block(state, zone_block, committed)
-    mover_options = format_options_block(mover, state, legal_moves_context, distances_to_zone)
+    mover_options = format_options_block(
+        mover, state, legal_moves_context, distances_to_zone, has_revisit.get(mover, False))
 
     # --- PHASE 1: the mover proposes, and broadcasts it ---
     writer({"event": "turn_started", "detective": mover})
@@ -576,10 +835,8 @@ async def turn_node(state: ScotlandYardState, config: RunnableConfig) -> dict:
 
         Task: Choose the destination YOU will move to, and explain why in 2-3 sentences. This
         is a PROPOSAL you are broadcasting to the rest of the team - they will each respond to
-        it, and you will get to revise it afterwards. Prefer destinations that close the
-        distance to Mr. X's possible zone ("distance_to_mrx_zone"; 0 means that node IS one of
-        his possible locations) without stranding yourself ("onward_moves_after" is how many
-        moves you would have left next round - never pick 0 if you have an alternative).
+        it, and you will get to revise it afterwards. Weigh the annotations exactly as the
+        HOW TO READ YOUR OPTIONS block above tells you to.
         YOU MUST CHOOSE FROM THE LEGAL DESTINATIONS LISTED ABOVE.
     """
     proposed_node, proposal_rationale = await _choose_move(
@@ -615,7 +872,8 @@ async def turn_node(state: ScotlandYardState, config: RunnableConfig) -> dict:
             )
         else:
             own_position_block = format_options_block(
-                responder, state, legal_moves_context, distances_to_zone)
+                responder, state, legal_moves_context, distances_to_zone,
+                has_revisit.get(responder, False))
             preference_task = (
                 "Then state which node YOU would take on your own turn, chosen from YOUR legal "
                 "destinations above. Your answer is advisory: it reserves nothing and you may "
@@ -753,10 +1011,18 @@ async def turn_node(state: ScotlandYardState, config: RunnableConfig) -> dict:
         + [f"[{mover_name} moves to Node {final_node}]: {decision_rationale}"]
     )
 
+    # The node just vacated, kept for two rounds so annotate_revisits can see a shuttle forming.
+    # Only recorded when the detective actually went somewhere: a forfeited turn leaves it
+    # standing where it was, and "recently vacated" would then flag the node it is still on.
+    previously_at = list((state.get("recent_positions") or {}).get(mover, []))
+    if final_node != from_node:
+        previously_at = (previously_at + [from_node])[-2:]
+
     return {
         "detectives": applied["detectives"],
         "mr_x": applied["mr_x"],
         "committed_moves": {mover: final_node},
+        "recent_positions": {mover: previously_at},
         "turn_records": {mover: turn_record},
         "turn_index": state["turn_index"] + 1,
         "captured_by": mover if applied["captured"] else None,

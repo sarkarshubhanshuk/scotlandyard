@@ -5,14 +5,18 @@ These are the functions every other layer trusts for legality and spatial reason
 until now they had no direct coverage at all - they were only ever exercised incidentally
 through a full LLM round, which is slow, costs money, and is non-deterministic.
 """
+import random
+
 from scotland_yard.game_master import (
     _bfs_from,
     compute_distances_to_zone,
     compute_mrx_zone,
+    compute_mrx_zone_from_tickets,
     compute_valid_moves,
     get_node_info,
     map_data,
     node_index,
+    project_zone_one_hop,
 )
 
 
@@ -115,3 +119,91 @@ class TestBfsAndZone:
         # should get a distance. If this ever fails, the board data has an isolated component.
         distances = compute_distances_to_zone(compute_mrx_zone(13, max_hops=1).keys())
         assert len(distances) == len(map_data)
+
+
+class TestTicketNarrowedZone:
+    """
+    The typed walk that replaced the untyped ball for detectives' possible-zone reasoning.
+
+    The invariant that matters is one-directional: this set may be WIDER than the truth (that
+    only makes detectives cautious) but it must never be NARROWER, because it is used to rule
+    locations out. test_the_true_position_is_always_inside_the_zone is the test that actually
+    guards the game's fairness; the rest describe the mechanism.
+    """
+
+    def test_a_typed_hop_only_reaches_that_connection_type(self):
+        taxi_only = compute_mrx_zone_from_tickets(13, ["taxi"])
+        expected = {c["destination"] for c in get_node_info(13)["connections"] if c["type"] == "taxi"}
+        assert taxi_only == expected
+
+    def test_a_black_ticket_reaches_every_connection_type(self):
+        black = compute_mrx_zone_from_tickets(13, ["black"])
+        expected = {c["destination"] for c in get_node_info(13)["connections"]}
+        assert black == expected, "black buys any connection - that is the whole point of it"
+
+    def test_no_tickets_spent_means_he_is_exactly_where_he_was_seen(self):
+        assert compute_mrx_zone_from_tickets(13, []) == {13}
+
+    def test_the_typed_zone_is_a_subset_of_the_untyped_ball(self):
+        # Same claim the whole change rests on: strictly better information, never different
+        # information. Compared at equal hop counts against what the fallback would produce.
+        for start in (1, 13, 67, 128, 199):
+            for tickets in (["taxi", "taxi"], ["bus", "taxi"], ["taxi", "bus", "taxi"]):
+                typed = compute_mrx_zone_from_tickets(start, tickets)
+                if typed is None:
+                    continue
+                ball = set(compute_mrx_zone(start, max_hops=len(tickets)))
+                assert typed <= ball
+
+    def test_the_true_position_is_always_inside_the_zone(self):
+        # THE fairness test. Walk Mr. X around the real board, record only what the detectives
+        # would actually be told (each hop's ticket type), then assert the zone derived from
+        # that log still contains where he really ended up. 200 seeded-random routes.
+        rng = random.Random(4242)
+        for _ in range(200):
+            start = rng.choice(list(node_index))
+            position = start
+            tickets = []
+            for _ in range(rng.randint(1, 6)):
+                connections = get_node_info(position)["connections"]
+                if not connections:
+                    break
+                hop = rng.choice(connections)
+                tickets.append("black" if hop["type"] == "boat" else hop["type"])
+                position = hop["destination"]
+            if not tickets:
+                continue
+            zone = compute_mrx_zone_from_tickets(start, tickets)
+            assert zone is not None and position in zone, (
+                f"walk from {start} via {tickets} ended at {position}, which the zone excluded"
+            )
+
+    def test_a_detective_standing_in_the_way_is_not_a_possible_location(self):
+        neighbours = {c["destination"] for c in get_node_info(13)["connections"] if c["type"] == "taxi"}
+        blocked = next(iter(neighbours))
+        zone = compute_mrx_zone_from_tickets(13, ["taxi"], occupied_nodes=[blocked])
+        assert blocked not in zone
+
+    def test_a_walk_that_dead_ends_reports_none_rather_than_an_empty_zone(self):
+        # A claimed metro hop from a node with no metro connection is impossible, which means
+        # an assumption upstream is wrong: the caller must fall back to the wider ball, not be
+        # handed an empty set it would read as "he is nowhere". The node is found rather than
+        # hardcoded so this cannot quietly stop testing anything if the board data changes.
+        metro_less = next(
+            node_id for node_id in sorted(node_index)
+            if not any(c["type"] == "metro" for c in get_node_info(node_id)["connections"])
+        )
+        assert compute_mrx_zone_from_tickets(metro_less, ["metro"]) is None
+
+
+class TestProjectZoneOneHop:
+    def test_projection_is_untyped_because_the_next_ticket_is_unknown(self):
+        projected = project_zone_one_hop({13})
+        assert projected == {c["destination"] for c in get_node_info(13)["connections"]}
+
+    def test_blocking_a_node_shrinks_the_projection(self):
+        openly = project_zone_one_hop({13})
+        blocker = next(iter(openly))
+        closed = project_zone_one_hop({13}, blocked_nodes={blocker})
+        assert blocker not in closed
+        assert len(closed) < len(openly), "standing on an exit must measurably close space"

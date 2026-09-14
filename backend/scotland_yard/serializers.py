@@ -32,6 +32,7 @@ def serialize_public_state(session: GameSession) -> dict:
         "game_id": session.game_id,
         "status": session.status,
         "winner": session.winner,
+        "winning_detective": session.winning_detective,
         "round_number": state["round_number"],
         "mr_x": mr_x_public,
         "detectives": {

@@ -36,6 +36,16 @@ class GameSession:
     state: ScotlandYardState
     status: Literal["awaiting_mr_x_move", "detective_loop_running", "game_over"] = "awaiting_mr_x_move"
     winner: Optional[Literal["detectives", "mr_x"]] = None
+    # Which detective physically caught Mr. X, if that's how the game ended - None for every
+    # other ending (Mr. X survives to round 24, all detectives are stranded, or Mr. X runs out
+    # of legal moves without ever actually being landed on). Set once, in round_resolver.py's
+    # _game_over, from state["captured_by"] (agents.py:apply_detective_move).
+    winning_detective: Optional[str] = None
+    # The browser that created this game, as an opaque bearer token also held in that browser's
+    # HttpOnly cookie. This is the whole of the access control: a shared URL carries the game id
+    # but not the cookie, so the recipient cannot act on someone else's game. There are no
+    # accounts, so ownership is per-browser and ends when the cookie does.
+    owner_token: Optional[str] = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     # Monotonic timestamp of the last request that touched this game, maintained by
     # touch(). Drives TTL eviction in create_game; see SESSION_TTL_SECONDS.
@@ -157,6 +167,7 @@ def create_game(seed_positions: Optional[Dict[str, int]] = None) -> GameSession:
         "turn_records": {},
         "final_moves": {},
         "final_move_details": {},
+        "recent_positions": {},
     }
 
     _evict_stale_games()

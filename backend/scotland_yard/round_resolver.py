@@ -31,11 +31,13 @@ def _other_detective_nodes(state: ScotlandYardState, exclude_det_id: str) -> lis
     return [d["node_id"] for det_id, d in state["detectives"].items() if det_id != exclude_det_id]
 
 
-def _game_over(session: GameSession, winner: str) -> RoundResult:
+def _game_over(session: GameSession, winner: str, captured_by: Optional[str] = None) -> RoundResult:
     session.status = "game_over"
     session.winner = winner
-    logger.info("Game %s over at round %s: %s win.",
-                session.game_id, session.state["round_number"], winner)
+    session.winning_detective = captured_by
+    logger.info("Game %s over at round %s: %s win.%s",
+                session.game_id, session.state["round_number"], winner,
+                f" ({captured_by} caught Mr. X)" if captured_by else "")
     return {
         "status": session.status,
         "winner": session.winner,
@@ -100,7 +102,7 @@ def resolve_round(session: GameSession) -> RoundResult:
     captured_by = state.get("captured_by")
     if captured_by:
         logger.info("%s landed on Mr. X at Node %s.", captured_by, mr_x["current_node"])
-        return _game_over(session, "detectives")
+        return _game_over(session, "detectives", captured_by=captured_by)
 
     # No capture this round - check the three remaining win conditions before continuing.
     new_detective_nodes = [d["node_id"] for d in state["detectives"].values()]

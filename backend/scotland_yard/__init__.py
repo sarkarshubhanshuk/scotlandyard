@@ -11,8 +11,9 @@ Module map (see docs/mechanics/game_mechanics.md for how the mechanics actually 
   state            The LangGraph ScotlandYardState TypedDict and its reducers.
   session          GameSession + the in-memory game store.
   transport        Which ticket a given detective move spends.
+  travel_log       Reading Mr. X's public ticket log back out, round by round.
   llm_client       The cached OpenRouter chat clients the agents call.
-  agents           propose/debate/vote LangGraph nodes and their prompts.
+  agents           The per-detective turn node (propose/respond/commit) and its prompts.
   graph            The LangGraph state machine wiring those nodes together.
   mrx_turn         Validation and application of a human Mr. X move.
   round_resolver   Drives a full round and applies its outcome to the board.

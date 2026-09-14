@@ -62,6 +62,11 @@ export interface PublicGameState {
   game_id: string;
   status: GameStatus;
   winner: Winner;
+  // Which detective physically caught Mr. X, if that's how the game ended - null for every
+  // other ending (he survives to round 24, the detectives are all stranded, or he runs out of
+  // legal moves without ever actually being landed on). Mirrors backend/session.py's
+  // GameSession.winning_detective.
+  winning_detective: DetectiveId | null;
   round_number: number;
   mr_x: PublicMrX;
   detectives: Record<DetectiveId, PublicDetective>;

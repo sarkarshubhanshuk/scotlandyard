@@ -81,6 +81,41 @@ Then open <http://localhost:5173> and click **New Game**.
 > frontend will report the game as not found. This is a deliberate design decision — see
 > [ADR-0005](docs/adr/0005-in-memory-session-store.md).
 
+## Deploying it for other people
+
+The whole app - SPA and API - ships as one container (`Dockerfile`, built from the repository
+root). It is designed for a **Hugging Face Docker Space**, which is free, needs no card, and
+only sleeps after long inactivity:
+
+```bash
+docker build -t scotland-yard .
+docker run --rm -p 7860:7860   -e OPENROUTER_API_KEY=sk-...   scotland-yard
+# then open http://localhost:7860
+```
+
+Name the Space `scotland-yard` and it is reachable at
+`https://<your-user>-scotland-yard.hf.space`. Set `OPENROUTER_API_KEY` as a Space **secret** -
+never in the image; `.dockerignore` excludes `.env` so it cannot be copied in by accident.
+
+**Run exactly one replica.** Games live in memory and `/turn-ack` has to reach the very
+coroutine awaiting it (ADR-0005, ADR-0010), so a second replica would strand acks on the wrong
+process and stall every turn. See **ADR-0014** for the full reasoning.
+
+### What protects a public link
+
+| Concern | Control |
+|---|---|
+| Someone else playing your game from a shared URL | A per-browser token in an `HttpOnly` cookie; game routes 403 without it |
+| The API key leaking | Server-side only, never serialized; supplied as a platform secret |
+| Someone using the LLM for their own ends | No endpoint accepts free text - Mr. X's input is a node id and a ticket type, and prompts are built server-side |
+| Someone running up the bill | `limits.py` caps concurrent games, games per IP, and a daily call budget - **plus a hard credit limit on the OpenRouter key**, which is the only bound that survives a bug |
+
+Tunable via environment: `MAX_ACTIVE_GAMES`, `MAX_GAMES_PER_IP_PER_HOUR`,
+`DAILY_LLM_CALL_BUDGET`, `ALLOWED_ORIGINS`, `COOKIE_SECURE`, `FRONTEND_DIST`, `HOST`, `PORT`.
+
+A completed 24-round game is roughly **720 LLM calls**, so size the budget accordingly. Games
+do not survive a restart, redeploy or sleep - that is ADR-0005, not a deployment bug.
+
 ## Testing
 
 ```bash

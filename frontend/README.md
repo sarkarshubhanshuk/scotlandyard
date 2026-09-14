@@ -12,7 +12,7 @@ agents running in the backend and have no client of their own (see
 | `npm run build` | Type-check and production build (runs `sync-assets` first). |
 | `npm run preview` | Serve the production build — the only way to test without StrictMode. |
 | `npm run lint` | ESLint, type-checked rules. |
-| `npm run sync-assets` | Copy board/ticket/pawn art from `../data` into `public/`. |
+| `npm run sync-assets` | Copy board/ticket/pawn/how-to-play art from `../data` into `public/`. |
 
 The backend must be running at `http://localhost:8000`. Override with `VITE_API_BASE_URL` in
 `.env.local` (see `.env.example`).
@@ -24,7 +24,8 @@ src/
   screens/      HomeScreen (new game), GameScreen (owns the one PublicGameState)
   layout/       GameLayout — the board/sidebar split
   board/        Phaser: BoardCanvas (React bridge) + BoardScene (the scene itself)
-  components/   TicketInventory, ChatLog, TravelLog, GameOverBanner, BackendUnreachable
+  components/   TicketInventory, ChatLog, TravelLog, GameOverBanner, HowToPlayModal,
+                BackendUnreachable
   hooks/        useMrXMoveWizard (the move state machine), useRoundStream (SSE)
   api/          client.ts — the only place that talks to the backend
   types.ts      Hand-written mirror of the backend's payloads

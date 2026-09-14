@@ -135,7 +135,9 @@ def build_next_round_state(previous_state: ScotlandYardState) -> ScotlandYardSta
 
     NOTE: detective positions and ticket inventories are NOT touched here - each move was
     already applied the moment its own turn ended (ADR-0010), so mr_x and detectives carry
-    forward exactly as they stand.
+    forward exactly as they stand. `recent_positions` carries forward for the opposite reason:
+    it is the one piece of per-detective memory that is only useful ACROSS rounds (see
+    state.py), so resetting it here would defeat its entire purpose.
     """
     return {
         "round_number": previous_state["round_number"] + 1,
@@ -148,4 +150,5 @@ def build_next_round_state(previous_state: ScotlandYardState) -> ScotlandYardSta
         "captured_by": None,
         "final_moves": {},
         "final_move_details": {},
+        "recent_positions": previous_state.get("recent_positions", {}),
     }

@@ -38,7 +38,7 @@ export const AGENT_SHORT_LABEL_TO_ID: Record<string, DetectiveId> = Object.fromE
 // Specific hex values chosen for this project, not plain CSS named colors.
 export const AGENT_COLORS: Record<DetectiveId, number> = {
   agent_red: 0xe0115f,
-  agent_blue: 0x00e5ff,
+  agent_blue: 0x0f52ba,
   agent_green: 0x2e8b57,
   agent_orange: 0xf28500,
   agent_purple: 0x9966cc,

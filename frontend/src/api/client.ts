@@ -22,6 +22,11 @@ interface ErrorBody {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: { "Content-Type": "application/json" },
+    // The game-ownership cookie the API sets on /games. Deployed, the SPA and API share an
+    // origin and this would be redundant - but in dev they are :5173 and :8000, and without it
+    // every request would arrive anonymous and be refused, so dev and prod would disagree about
+    // something worth testing in dev.
+    credentials: "include",
     ...init,
   });
   if (!res.ok) {
@@ -88,7 +93,9 @@ export function postTurnAck(gameId: string, roundNumber: number, detective: Dete
 }
 
 export function openRoundStream(gameId: string): EventSource {
-  return new EventSource(`${API_BASE}/games/${gameId}/round/stream`);
+  // withCredentials is what carries the ownership cookie cross-origin in dev. EventSource cannot
+  // set headers at all, which is precisely why ownership is a cookie rather than a bearer header.
+  return new EventSource(`${API_BASE}/games/${gameId}/round/stream`, { withCredentials: true });
 }
 
 export { ApiError, API_BASE };

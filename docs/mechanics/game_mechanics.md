@@ -204,15 +204,30 @@ it never move. Each `turn` node run is one detective's whole turn:
   per round, which was correct while detectives did not physically move until the round resolved
   — but under per-turn application (ADR-0010) the occupancy this BFS is blocked through changes
   five times a round, and a round-start snapshot would show a later detective paths blocked
-  through nodes its teammates had already vacated. Five BFS pairs per round instead of one is
+  through nodes its teammates had already vacated. Ten graph walks per round instead of two is
   nothing beside 30 LLM calls; `state["mrx_zone_context"]` and its memo wrapper are gone.
-- **The zone**: every node reachable from Mr. X's last-known node within
-  `min(round_number - last_known_round, 4)` hops, blocked through currently-occupied detective
-  nodes (per rules.md's "Mr. X cannot move to, or pass through, a Node occupied by a
-  Detective"), ticket-blind (documented tradeoff — `known_issues.md` ISSUE-015). Shown as a
-  literal node list when ≤20 nodes; above that, only the count — a larger list would cover most
-  of the 199-node board and add prompt cost without adding real narrowing-down value. `None`
-  (handled explicitly, with a "hasn't surfaced yet" message) during rounds 1-2.
+- **The zone** (**ADR-0013**): one ticket-typed layer per hop Mr. X has logged since the
+  reveal, not an untyped ball — `S₀ = {last_known_node}`, then each successive layer keeps only
+  edges whose type matches the ticket that hop actually spent (`"black"` widens to every type,
+  which is exactly what a black ticket buys). Blocked through currently-occupied detective nodes
+  per rules.md's "Mr. X cannot move to, or pass through, a Node occupied by a Detective". On a
+  surfacing round the sequence is empty and the zone is the single node he is standing on, since
+  detectives move after he does.
+- **No hop cap.** The old `min(…, 4)` cap existed because the untyped ball saturated the board
+  (88 nodes at 4 hops); the typed walk averages 35 at the same depth. A cap cannot be applied to
+  it anyway — "the last four tickets" means nothing without knowing which set they were spent
+  from. The cap survives only on the fallback ball.
+- **Fallback, and why it is one-directional**: this set is used to rule locations *out*, so
+  wider than the truth only makes detectives cautious while narrower makes the game unfair.
+  Anything that cannot be reconciled — a malformed log, a round count that disagrees, a walk
+  that dead-ends — falls back to the untyped, hop-capped ball and logs `[ZONE FALLBACK]` at
+  WARNING rather than narrowing on a guess.
+- Shown as a literal node list when ≤20 nodes; above that, only the count. Narrowing moved the
+  2-hop case (max 19 nodes) under that threshold, so the prompt now shows real candidate nodes
+  where it used to show an unusable count — the step change, more than the smaller number
+  itself. `None` (handled explicitly, with a "hasn't surfaced yet" message) during rounds 1-2.
+- The prompt also states the ticket sequence the narrowing is *based on*, so the model can see
+  why four nodes rather than thirteen — a number to trust rather than argue with.
 - **The distance signal**: one multi-source BFS from the whole zone gives every board node's
   hop-distance to the nearest zone node. Rather than a full candidate-move × zone-node matrix
   (which would run to thousands of numbers at wide hop counts), each candidate move and each
@@ -235,6 +250,70 @@ it never move. Each `turn` node run is one detective's whole turn:
   `distance_to_mrx_zone` is: it is a cheap board lookup, and asking a small model to simulate
   ticket arithmetic is exactly the kind of thing it gets quietly wrong. Costs one integer per
   candidate.
+
+**Containment Annotation** (`agents.py:annotate_zone_shrink`) — **ADR-0013**
+- Each candidate also carries `zone_size_after`: how many nodes Mr. X could still reach next
+  round *if this detective stands there*, computed by re-projecting the zone one untyped hop
+  with that destination blocked. Lower is better — it means standing on an escape route rather
+  than merely near him.
+- It exists because hop-distance alone cannot express containment. Five detectives each
+  minimising their own `distance_to_mrx_zone` all converge on whichever side of the zone faces
+  them, and Mr. X leaves by the other — the convergence-not-triangulation trap recorded in
+  `known_issues.md` ISSUE-016. The shrink is directly measurable, so it is measured rather than
+  described to the model in words it would have to apply geometrically.
+- Untyped by necessity: his *next* ticket has not been played yet, so there is nothing to filter
+  the edges by (unlike the zone walk itself).
+- **Dropped entirely when every candidate scores the same** — the common case for a detective
+  several hops out, where nothing it can reach this round touches his space. A column of
+  identical numbers is prompt weight carrying no decision.
+
+**Revisit Annotation** (`agents.py:annotate_revisits`, `state.py:recent_positions`)
+- Flags candidates the detective vacated within the last two rounds, and reports whether any
+  exist so `format_options_block` can omit the whole warning when nothing can trigger it.
+- Detectives are otherwise **completely stateless across rounds**: `messages` is written once per
+  turn but never read back into a prompt, and everything else resets at the round boundary. So
+  stepping back onto the node just left looked exactly as attractive as it did the first time,
+  which is how two nodes become a shuttle. `recent_positions` is the only per-detective memory
+  that survives `build_next_round_state`, for precisely that reason.
+- Only recorded when the detective actually moved: a forfeited turn leaves it standing where it
+  was, and "recently vacated" would then flag the node it is still on.
+
+**Candidate Ordering** (`agents.py:sort_candidates`)
+- Options are rendered best-first — `(distance asc, zone_size_after asc, onward desc, node id)`.
+  The list previously came out in `map.json`'s own connection order, which carries no meaning.
+  Free in both tokens and latency, and small models weight what they read first. The node-id tie
+  break exists purely so the ordering is reproducible.
+
+**Intel-Freshness Ladder** (`agents.py:get_surfacing_proximity_prompt`, injected by `get_psychology_prompt`)
+- How much Mr. X's location is worth knowing swings on a fixed cycle, so the emphasis swings
+  with it. Four rungs, keyed purely on `round_number`:
+
+  | Rounds | Rung | Emphasis |
+  |---|---|---|
+  | 1, 6, 11, 16, 22 | 2 before a reveal | weigh `onward_moves_after` a little more |
+  | 2, 7, 12, 17, 23 | 1 before a reveal | weigh `onward_moves_after` strongly — today's zone estimate is about to be replaced |
+  | 3, 8, 13, 18, 24 | **the reveal itself** | **converge** — the zone is a single node and will never be tighter |
+  | 4, 9, 14, 19 | 1 after a reveal | **keep closing** while the trail is warm |
+  | 5, 10, 15, 20, 21 | — | balanced default, no extra paragraph |
+
+- Recency is checked before proximity: acting on a position already known outranks preparing for
+  one that is coming. They cannot currently both match (reveals are ≥5 rounds apart and only two
+  rungs reach each way), so the ordering is a statement of intent rather than a live tiebreak.
+- The "converge" rungs exist because detectives were observed drifting away from Mr. X in exactly
+  the rounds his position was best known — the window where the zone is tightest is also the only
+  one in which closing distance can actually corner him, and every round of hesitation widens it
+  again.
+- Deliberately **no new annotation** — `onward_moves_after` already measures the thing this is
+  after (how many next-round moves a candidate destination would leave, with *this* detective's
+  actual remaining tickets deducted). A raw board-connectivity count (nodes/transport types)
+  would be a cruder, ticket-blind version of the same signal, and `known_issues.md` ISSUE-016
+  already rejected a similarly-flavored addition on the small model's already-documented
+  reasoning-budget fragility (ISSUE-006/007). Reweighting existing data was chosen over adding
+  more of it.
+- Gated **purely on `round_number`**, shared verbatim by every one of a turn's six calls (same
+  mechanism as the collaboration-tendency paragraph below) — so it shapes the mover's proposal
+  and final decision *and* every other detective's advisory own-move preference identically,
+  with no per-detective distance check.
 
 **Collaboration tendency** (`agents.py:get_collaboration_tier`, `get_psychology_prompt`)
 - `get_psychology_prompt` keeps its three motivations unchanged (1. Team Win, 2. Selfish Glory,
@@ -314,6 +393,7 @@ ended, so `detectives` and `mr_x` are already current.
 | `turn_index` | `int` | Index into `DETECTIVE_IDS` of the detective currently taking its turn; the router finalizes once it reaches 5 |
 | `committed_moves` | `Dict[str, int]` | Detective → node, accumulates within a round; a record of who has already moved, not a set of reservations |
 | `captured_by` | `Optional[str]` | The detective that landed on Mr. X, set the instant it happens; the router reads it to skip every remaining turn |
+| `recent_positions` | `Dict[str, List[int]]` | The last two nodes each detective vacated. The ONLY per-detective memory that survives a round boundary (`build_next_round_state` carries it forward) — without it a detective cannot tell it is shuttling. See `annotate_revisits` |
 | `turn_records` | `Dict[str, TurnRecord]` | Per turn: the proposal, the four responses, the origin node, the ticket spent, and the final decision |
 | `final_moves` | `Dict[str, int]` | Output of `finalize_round_node`; the round's resolved moves |
 | `final_move_details` | `Dict[str, dict]` | `finalize_round_node`'s from/to/transport preview per detective, for the frontend Chat Log - see Finalize above |
@@ -342,6 +422,17 @@ ended, so `detectives` and `mr_x` are already current.
 - `backend/scotland_yard/agents.py:responders_for` — the cyclic response order for a given mover
 - `backend/scotland_yard/agents.py:get_psychology_prompt`, `get_collaboration_tier` — the 3 motivations and the
   round-based collaboration ladder
+- `backend/scotland_yard/agents.py:get_surfacing_proximity_prompt`, `SURFACING_PROXIMITY_GUIDANCE`,
+  `SURFACING_RECENCY_GUIDANCE`, `HOW_TO_READ_YOUR_OPTIONS` — the intel-freshness ladder, and the
+  annotation legend every one of a turn's six calls now shares (it used to appear only in the
+  mover's proposal, leaving the four responders and the mover's own final commit with no stated
+  objective at all)
+- `backend/scotland_yard/travel_log.py:hops_since_surfacing`, `bucket_hops_by_round` — re-deriving
+  which logged hops belong to which round, including the surfacing-round double-move case where
+  the reveal is the intermediate node (**ADR-0013**)
+- `backend/scotland_yard/game_master.py:compute_mrx_zone_from_tickets`, `project_zone_one_hop` —
+  the ticket-typed zone walk and the one-hop containment projection
+- `backend/scotland_yard/agents.py:annotate_zone_shrink`, `annotate_revisits`, `sort_candidates`
 - `backend/scotland_yard/agents.py:MoveChoice`, `TurnResponseChoice` — the two fixed structured-output schemas
 - `backend/scotland_yard/agents.py:_invoke`, `_choose_move`, `_enforce_legal_node` — the per-call deadline, the
   one-retry wrapper, and the deterministic enforcement that backs it
@@ -509,7 +600,11 @@ Starlette API (`backend/scotland_yard/server.py`).
 - **Capture is decided inside the turn that causes it**, not here — the instant a detective's new
   node equals Mr. X's real `current_node`, `captured_by` is set and the graph's router skips
   every remaining turn, so the detectives behind it never move *or* deliberate. `resolve_round`
-  only reads that verdict.
+  only reads that verdict, threading it onto `session.winning_detective` (`_game_over`'s own
+  `captured_by` argument) so the frontend can credit a specific detective ("Caught by Agent
+  Red") rather than only knowing "the detectives won". Stays `None` for the OTHER "detectives
+  win" sub-condition below (Mr. X out of legal moves — nobody to credit) and for either "Mr. X
+  wins" ending, where it's simply not applicable.
 - If no capture: checks whether Mr. X now has any legal move at all (detectives win if not),
   then whether all 5 detectives are simultaneously trapped (Mr. X wins if so), then whether
   `round_number == 24` was just completed (Mr. X wins). Otherwise calls `build_next_round_state`
@@ -518,7 +613,17 @@ Starlette API (`backend/scotland_yard/server.py`).
 **API layer** (`backend/scotland_yard/server.py`, `backend/scotland_yard/serializers.py`)
 - `POST /games`, `GET /games/{id}`, `GET /games/{id}/mrx/legal-moves`,
   `POST /games/{id}/mrx/move`, `GET /games/{id}/round/stream` (SSE via `sse_starlette`, chosen
-  over WebSocket since this is one-directional server→client data once opened).
+  over WebSocket since this is one-directional server→client data once opened), plus `/health`
+  for platform liveness checks.
+- **Every game-scoped route is ownership-checked** (**ADR-0014**): `POST /games` mints an opaque
+  token, returns it in an `HttpOnly` cookie and records it on the session, and the rest require a
+  `hmac.compare_digest` match. An unknown id 404s *before* that check, so a dead link reads as
+  "no such game" rather than hinting one exists. `limits.py` additionally refuses new games past
+  a concurrency/per-IP cap (429) and refuses to *start* a round past the daily LLM-call budget
+  (503) - before the stream opens, never mid-round, since a refusal halfway would strand a game
+  with some detectives moved.
+- In a deployment this same app also serves the built SPA, so there is one origin; in dev Vite
+  serves it separately and the client sends credentials explicitly so both paths behave alike.
 - `serializers.serialize_public_state` is the **single choke point** every route and streamed
   event goes through to build an outward-facing payload. `mr_x.current_node` (his real position)
   IS included as of the board's always-visible Mr. X pawn feature — safe because the only
@@ -548,6 +653,7 @@ Starlette API (`backend/scotland_yard/server.py`).
 | `mr_x.transport_history` | Appended to by `mrx_turn` on every hop (records the ticket type spent, not necessarily the underlying route type — a black ticket is logged as `"black"`, matching the rules' obfuscation intent). A double-move additionally inserts a `"double"` sentinel immediately before its own two hop entries, matching rules.md's stated broadcast order — never a valid `ticket_type_spent` itself, only ever inserted by `submit_mr_x_move`'s double-move branch. |
 | `detectives[*].node_id`, ticket counts | Mutated by `resolve_round`, never by the graph itself |
 | `final_moves` | Read (never written) by `resolve_round`; still produced exactly as §1 describes |
+| `session.winning_detective` | Set by `resolve_round`'s `_game_over` from `state["captured_by"]`; `None` unless a detective actually landed on Mr. X. Serialized by `serialize_public_state` for the frontend's game-over banner. |
 
 ### Implementation References
 

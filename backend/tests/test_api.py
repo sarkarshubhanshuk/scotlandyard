@@ -13,13 +13,16 @@ structural-validation bugs lived.
 import pytest
 from starlette.testclient import TestClient
 
-from scotland_yard import server
+from scotland_yard import limits, server
 from scotland_yard.rules_constants import DETECTIVE_IDS
 
 
 @pytest.fixture
 def client():
-    with TestClient(server.app) as c:
+    # https, not http: the game-ownership cookie is marked Secure, and a client on a plain-http
+    # origin that is not localhost would silently drop it - every game-scoped request would then
+    # arrive anonymous and 403, testing the rejection path instead of the real one.
+    with TestClient(server.app, base_url="https://testserver") as c:
         yield c
 
 
@@ -255,3 +258,132 @@ class TestTurnAck:
         response = client.post(f"/games/{game_id}/turn-ack", json=body)
         assert response.status_code == 400, response.text
         assert "Malformed request" in response.json()["error"]
+
+
+class TestGameOwnership:
+    """
+    The access control that replaces having no accounts at all: a game belongs to the browser
+    that created it, proved by an opaque token in an HttpOnly cookie. This is what makes a
+    shared URL useless to the recipient - they get the game id, but not the cookie.
+    """
+
+    def test_creating_a_game_sets_an_httponly_cookie(self, client):
+        response = client.post("/games")
+        assert response.status_code == 201
+        cookie = response.headers["set-cookie"]
+        assert server.PLAYER_COOKIE in cookie
+        assert "HttpOnly" in cookie, "the token must not be readable from page JavaScript"
+        assert "SameSite=lax" in cookie.replace("samesite", "SameSite")
+
+    def test_someone_following_a_shared_link_is_refused(self, client, game):
+        game_id, _ = game
+        # A second browser: same URL, no cookie. This is exactly the link-sharing case.
+        with TestClient(server.app, base_url="https://testserver") as stranger:
+            for method, path in [
+                ("get", f"/games/{game_id}"),
+                ("get", f"/games/{game_id}/map"),
+                ("get", f"/games/{game_id}/mrx/legal-moves"),
+                ("get", f"/games/{game_id}/round/stream"),
+            ]:
+                response = getattr(stranger, method)(path)
+                assert response.status_code == 403, f"{path} leaked to a non-owner"
+            assert stranger.post(
+                f"/games/{game_id}/mrx/move",
+                json={"move_type": "single", "target_node": 1, "ticket_type_spent": "taxi"},
+            ).status_code == 403
+            assert stranger.post(
+                f"/games/{game_id}/turn-ack",
+                json={"round_number": 1, "detective": "agent_red"},
+            ).status_code == 403
+
+    def test_a_forged_token_is_refused(self, client, game):
+        game_id, _ = game
+        with TestClient(server.app, base_url="https://testserver") as forger:
+            forger.cookies.set(server.PLAYER_COOKIE, "not-the-real-token")
+            assert forger.get(f"/games/{game_id}").status_code == 403
+
+    def test_the_owner_keeps_access_across_requests(self, client, game):
+        game_id, _ = game
+        assert client.get(f"/games/{game_id}").status_code == 200
+        assert client.get(f"/games/{game_id}/map").status_code == 200
+
+    def test_one_browser_can_hold_several_games_at_once(self, client):
+        first = client.post("/games").json()["game_id"]
+        second = client.post("/games").json()["game_id"]
+        assert first != second
+        # The second creation reuses the existing token rather than rotating it, so the first
+        # game does not become inaccessible the moment a player starts another.
+        assert client.get(f"/games/{first}").status_code == 200
+        assert client.get(f"/games/{second}").status_code == 200
+
+    def test_an_unknown_game_still_404s_for_a_stranger(self, client):
+        # 404 is checked BEFORE ownership, so a dead link reads as "no such game" rather than
+        # hinting that one exists and is simply not yours.
+        with TestClient(server.app, base_url="https://testserver") as stranger:
+            assert stranger.get("/games/does-not-exist").status_code == 404
+
+
+class TestSpaAndHealth:
+    def test_health_is_ok(self, client):
+        response = client.get("/health")
+        assert response.status_code == 200
+        assert response.text == "ok"
+
+
+class TestDeploymentLimits:
+    """
+    The caps that make a public, loginless link survivable: a completed game is roughly 720 LLM
+    calls, so without these "very low usage" would be a hope rather than a property. None of
+    them replaces a hard credit limit on the OpenRouter key - they exist so the service refuses
+    politely long before the key starts erroring mid-game.
+    """
+
+    def test_a_burst_of_new_games_from_one_client_is_throttled(self, client, monkeypatch):
+        monkeypatch.setattr(limits, "MAX_GAMES_PER_IP_PER_HOUR", 2)
+        assert client.post("/games").status_code == 201
+        assert client.post("/games").status_code == 201
+
+        refused = client.post("/games")
+        assert refused.status_code == 429
+        assert "started a lot of games" in refused.json()["error"]
+
+    def test_a_refused_creation_does_not_count_against_the_caller(self, client, monkeypatch):
+        monkeypatch.setattr(limits, "MAX_ACTIVE_GAMES", 0)
+        assert client.post("/games").status_code == 429
+        # The concurrent-game wall, not the per-IP one - so once there is room again the same
+        # client is served immediately rather than serving out a penalty it never earned.
+        monkeypatch.setattr(limits, "MAX_ACTIVE_GAMES", 5)
+        assert client.post("/games").status_code == 201
+
+    def test_too_many_live_games_refuses_a_new_one(self, client, monkeypatch):
+        monkeypatch.setattr(limits, "MAX_ACTIVE_GAMES", 1)
+        assert client.post("/games").status_code == 201
+        refused = client.post("/games")
+        assert refused.status_code == 429
+        assert "Too many games" in refused.json()["error"]
+
+    def test_the_daily_budget_refuses_a_round_before_it_starts(self, client, game, monkeypatch):
+        """
+        Checked before the stream opens, never mid-round: refusing halfway would leave a game
+        with some detectives moved and no way to finish the round.
+        """
+        game_id, _ = game
+        server.GAMES[game_id].status = "detective_loop_running"
+        monkeypatch.setattr(limits, "DAILY_LLM_CALL_BUDGET", 0)
+
+        refused = client.get(f"/games/{game_id}/round/stream")
+        assert refused.status_code == 503
+        assert "thinking limit" in refused.json()["error"]
+
+    def test_every_llm_attempt_counts_including_failures(self):
+        # _invoke records before it calls, so a timeout or an auth error still counts - it has
+        # been paid for either way.
+        limits.reset_for_tests()
+        assert limits.llm_calls_today() == 0
+        limits.record_llm_call()
+        limits.record_llm_call()
+        assert limits.llm_calls_today() == 2
+
+    def test_a_malformed_limit_env_var_falls_back_instead_of_crashing(self, monkeypatch):
+        monkeypatch.setenv("MAX_ACTIVE_GAMES", "not-a-number")
+        assert limits._int_env("MAX_ACTIVE_GAMES", 20) == 20
