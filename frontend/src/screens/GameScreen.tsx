@@ -50,7 +50,10 @@ export function GameScreen() {
   const { gameId } = useParams<{ gameId: string }>();
   const [gameState, setGameState] = useState<PublicGameState | null>(null);
   const [mapData, setMapData] = useState<MapData | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // unreachable distinguishes "the fetch itself failed" from a real response the server sent on
+  // purpose (a 403 "belongs to another player", a 429 rate limit, ...) - see HomeScreen's own
+  // copy of this same fix for why conflating the two is actively misleading.
+  const [error, setError] = useState<{ message: string; unreachable: boolean } | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
 
@@ -83,7 +86,8 @@ export function GameScreen() {
         if (err instanceof ApiError && err.status === 404) {
           setNotFound(true);
         } else {
-          setError(err instanceof Error ? err.message : String(err));
+          const message = err instanceof Error ? err.message : String(err);
+          setError({ message, unreachable: !(err instanceof ApiError) });
         }
       }
     }
@@ -106,7 +110,14 @@ export function GameScreen() {
   }
 
   if (error) {
-    return <BackendUnreachable error={error} onRetry={() => setRetryToken((t) => t + 1)} />;
+    return error.unreachable ? (
+      <BackendUnreachable error={error.message} onRetry={() => setRetryToken((t) => t + 1)} />
+    ) : (
+      <div className="sy-error">
+        <p>{error.message}</p>
+        <Link to="/">Start a new game</Link>
+      </div>
+    );
   }
 
   if (!gameId || !gameState || !mapData) {

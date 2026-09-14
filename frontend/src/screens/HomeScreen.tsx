@@ -1,13 +1,19 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { createGame } from "../api/client";
+import { ApiError, createGame } from "../api/client";
 import { BackendUnreachable } from "../components/BackendUnreachable";
 import { HowToPlayModal } from "../components/HowToPlayModal";
 
 export function HomeScreen() {
   const navigate = useNavigate();
   const [starting, setStarting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // unreachable distinguishes "the fetch itself failed" (ApiError was never constructed - the
+  // backend genuinely wasn't reached, so BackendUnreachable's dev-setup hint is relevant) from a
+  // real response the server sent on purpose, e.g. limits.py's rate-limit refusal. Without this,
+  // a 429's own message ("You have started a lot of games recently...") rendered underneath a
+  // "Failed to reach the backend - is it running?" banner that flatly contradicted it, since the
+  // backend had very much just answered.
+  const [error, setError] = useState<{ message: string; unreachable: boolean } | null>(null);
   const [showHowToPlay, setShowHowToPlay] = useState(false);
 
   async function handleNewGame() {
@@ -17,7 +23,8 @@ export function HomeScreen() {
       const game = await createGame();
       void navigate(`/game/${game.game_id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setError({ message, unreachable: !(err instanceof ApiError) });
       setStarting(false);
     }
   }
@@ -45,7 +52,12 @@ export function HomeScreen() {
         How to Play
       </button>
       {showHowToPlay && <HowToPlayModal onClose={() => setShowHowToPlay(false)} />}
-      {error && <BackendUnreachable error={error} />}
+      {error &&
+        (error.unreachable ? (
+          <BackendUnreachable error={error.message} />
+        ) : (
+          <p className="sy-error">{error.message}</p>
+        ))}
     </div>
   );
 }
